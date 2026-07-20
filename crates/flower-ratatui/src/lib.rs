@@ -12,7 +12,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState};
 
-use flower_core::{Mode, Model, VKind};
+use flower_core::{Backend, Mode, Model, VKind};
 
 /// Color a value preview by its kind.
 fn value_style(kind: VKind) -> Style {
@@ -28,8 +28,8 @@ fn value_style(kind: VKind) -> Style {
 }
 
 /// Render the whole editor into `f`. `header` names the document in the header
-/// bar (typically the file name).
-pub fn draw(f: &mut Frame, model: &Model, header: &str) {
+/// bar (typically the file name, plus whatever the app wants — e.g. format).
+pub fn draw<B: Backend>(f: &mut Frame, model: &Model<B>, header: &str) {
     let chunks = Layout::vertical([
         Constraint::Length(1), // header
         Constraint::Min(0),    // tree
@@ -37,14 +37,14 @@ pub fn draw(f: &mut Frame, model: &Model, header: &str) {
     ])
     .split(f.area());
 
-    draw_header(f, model, header, chunks[0]);
+    draw_header(f, model.dirty, header, chunks[0]);
     draw_tree(f, model, chunks[1]);
     draw_footer(f, model, chunks[2]);
 }
 
-fn draw_header(f: &mut Frame, model: &Model, header: &str, area: Rect) {
-    let dirty = if model.dirty { " ●" } else { "" };
-    let title = format!(" flower — {}{}  [{:?}]", header, dirty, model.format());
+fn draw_header(f: &mut Frame, dirty: bool, header: &str, area: Rect) {
+    let dirty = if dirty { " ●" } else { "" };
+    let title = format!(" flower — {}{}", header, dirty);
     let line = Line::from(Span::styled(
         title,
         Style::default()
@@ -55,7 +55,7 @@ fn draw_header(f: &mut Frame, model: &Model, header: &str, area: Rect) {
     f.render_widget(line, area);
 }
 
-fn draw_tree(f: &mut Frame, model: &Model, area: Rect) {
+fn draw_tree<B: Backend>(f: &mut Frame, model: &Model<B>, area: Rect) {
     let items: Vec<ListItem> = model
         .rows
         .iter()
@@ -108,7 +108,7 @@ fn draw_tree(f: &mut Frame, model: &Model, area: Rect) {
     f.render_stateful_widget(list, area, &mut state);
 }
 
-fn draw_footer(f: &mut Frame, model: &Model, area: Rect) {
+fn draw_footer<B: Backend>(f: &mut Frame, model: &Model<B>, area: Rect) {
     let line = match &model.mode {
         Mode::Editing { buffer } => Line::from(vec![
             Span::styled(" edit ", Style::default().bg(Color::Yellow).fg(Color::Black)),

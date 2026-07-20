@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
 
-use flower_core::{Mode, Model};
+use flower_core::{FigBackend, Mode, Model};
 
 fn main() -> Result<()> {
     let path = match std::env::args_os().nth(1) {
@@ -27,19 +27,26 @@ fn main() -> Result<()> {
     })?;
 
     let bytes = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
-    let mut model = Model::new(&bytes, fmt)?;
+    let backend = FigBackend::open(&bytes, fmt)?;
+    let mut model = Model::new(backend)?;
 
     let mut terminal = ratatui::init();
-    let result = run(&mut terminal, &mut model, &path);
+    let result = run(&mut terminal, &mut model, &path, fmt);
     ratatui::restore();
     result
 }
 
-fn run(terminal: &mut ratatui::DefaultTerminal, model: &mut Model, path: &Path) -> Result<()> {
-    let name = path
+fn run(
+    terminal: &mut ratatui::DefaultTerminal,
+    model: &mut Model<FigBackend>,
+    path: &Path,
+    fmt: fig::Format,
+) -> Result<()> {
+    let file = path
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.display().to_string());
+    let name = format!("{file}  [{fmt:?}]");
 
     loop {
         terminal.draw(|f| flower_ratatui::draw(f, model, &name))?;
@@ -63,7 +70,7 @@ fn run(terminal: &mut ratatui::DefaultTerminal, model: &mut Model, path: &Path) 
 }
 
 /// Returns `true` when the app should quit.
-fn handle_normal(model: &mut Model, code: KeyCode, path: &Path) -> bool {
+fn handle_normal(model: &mut Model<FigBackend>, code: KeyCode, path: &Path) -> bool {
     match code {
         KeyCode::Char('q') => return true,
         KeyCode::Char('j') | KeyCode::Down => model.move_down(),
@@ -79,7 +86,7 @@ fn handle_normal(model: &mut Model, code: KeyCode, path: &Path) -> bool {
     false
 }
 
-fn handle_editing(model: &mut Model, code: KeyCode) {
+fn handle_editing(model: &mut Model<FigBackend>, code: KeyCode) {
     match code {
         KeyCode::Char(c) => model.edit_push(c),
         KeyCode::Backspace => model.edit_backspace(),
@@ -89,7 +96,7 @@ fn handle_editing(model: &mut Model, code: KeyCode) {
     }
 }
 
-fn save(model: &mut Model, path: &Path) {
+fn save(model: &mut Model<FigBackend>, path: &Path) {
     match std::fs::write(path, model.source_snapshot()) {
         Ok(()) => {
             model.mark_saved();

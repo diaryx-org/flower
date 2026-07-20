@@ -1,19 +1,17 @@
 //! The frontend-neutral editor model and its structural operations.
 //!
-//! The `fig::Editor` is the single source of truth: it owns the document's
-//! source bytes and applies every edit as a lossless, path-addressed splice.
-//! After each mutation we re-derive the `Value` tree (and the flat rows) from
-//! `Editor::source()`, so the model always reflects the canonical bytes.
-//!
-//! This type holds no filesystem or terminal state. The embedder constructs it
-//! from bytes ([`Model::new`]), renders [`Model::rows`], drives the navigation
-//! and edit methods, and persists [`Model::source_snapshot`] however it likes.
+//! `Model` is generic over a [`Backend`]: it builds path-addressed [`EditOp`]s,
+//! applies them through the backend, and re-derives its view from
+//! [`Backend::to_value`] after each change. It owns no editor, no format, no
+//! filesystem, and no terminal — the backend owns the document; the embedder
+//! owns file I/O and rendering.
 
 use std::collections::HashSet;
 
 use anyhow::Result;
-use fig::{Document, Editor, Format, Value};
+use fig::Value;
 
+use crate::backend::{Backend, EditOp};
 use crate::tree::{self, Row, Seg};
 
 /// Interaction mode: normal navigation, or editing a scalar's text.
@@ -22,11 +20,10 @@ pub enum Mode {
     Editing { buffer: String },
 }
 
-pub struct Model {
-    format: Format,
-    editor: Editor,
+pub struct Model<B> {
+    backend: B,
 
-    /// Derived view state, rebuilt from `editor.source()` after every edit.
+    /// Derived view state, rebuilt from `backend.to_value()` after every edit.
     value: Value,
     pub rows: Vec<Row>,
     collapsed: HashSet<Vec<Seg>>,
@@ -37,15 +34,11 @@ pub struct Model {
     pub dirty: bool,
 }
 
-impl Model {
-    /// Build a model over a copy of `source` parsed as `format`.
-    pub fn new(source: &[u8], format: Format) -> Result<Self> {
-        let editor = Editor::open(source, format)
-            .map_err(|e| anyhow::anyhow!("fig failed to parse the document: {e}"))?;
-
+impl<B: Backend> Model<B> {
+    /// Build a model over `backend`.
+    pub fn new(backend: B) -> Result<Self> {
         let mut model = Model {
-            format,
-            editor,
+            backend,
             value: Value::Null,
             rows: Vec::new(),
             collapsed: HashSet::new(),
@@ -58,17 +51,9 @@ impl Model {
         Ok(model)
     }
 
-    pub fn format(&self) -> Format {
-        self.format
-    }
-
-    /// A copy of the editor's current (canonical) source — what the embedder
-    /// writes to disk on save.
+    /// The canonical serialized document — what the embedder writes on save.
     pub fn source_snapshot(&self) -> String {
-        self.editor
-            .source()
-            .map(|s| s.to_string())
-            .unwrap_or_default()
+        self.backend.source().unwrap_or_default()
     }
 
     pub fn set_status(&mut self, s: impl Into<String>) {
@@ -82,18 +67,12 @@ impl Model {
 
     // ── view derivation ───────────────────────────────────────────────────────
 
-    /// Re-derive `value` + `rows` from the editor's current source.
+    /// Re-derive `value` + `rows` from the backend's current tree.
     fn reload(&mut self) -> Result<()> {
-        let source = self
-            .editor
-            .source()
-            .map_err(|e| anyhow::anyhow!("reading edited source: {e}"))?
-            .to_string();
-        let doc = Document::parse(source.as_bytes(), self.format)
-            .map_err(|e| anyhow::anyhow!("reparsing edited source: {e}"))?;
-        self.value = doc
+        self.value = self
+            .backend
             .to_value()
-            .map_err(|e| anyhow::anyhow!("building value tree: {e}"))?;
+            .map_err(|e| anyhow::anyhow!("reading value tree: {e}"))?;
         self.rebuild_rows();
         Ok(())
     }
@@ -239,12 +218,14 @@ impl Model {
         };
         let path = row.path.clone();
         let value = tree::parse_scalar(&buffer);
-
-        match self.editor.replace_value(&tree::to_fig(&path), value) {
-            Ok(()) => self.after_edit(&path, "value updated"),
-            // fig rolled the splice back; the document is untouched.
-            Err(e) => self.status = format!("rejected: {e}"),
-        }
+        self.commit(
+            EditOp::ReplaceValue {
+                path: path.clone(),
+                value,
+            },
+            path,
+            "value updated",
+        );
     }
 
     /// `x`: delete the selected mapping entry or sequence item.
@@ -253,23 +234,36 @@ impl Model {
             return;
         };
         let path = row.path.clone();
-        let result = match path.last() {
+        let (op, anchor) = match path.last() {
             Some(Seg::Index(i)) => {
-                let parent = tree::to_fig(&path[..path.len() - 1]);
-                self.editor.remove_item(&parent, *i)
+                let seq_path = path[..path.len() - 1].to_vec();
+                (
+                    EditOp::RemoveItem {
+                        seq_path: seq_path.clone(),
+                        index: *i,
+                    },
+                    seq_path,
+                )
             }
-            Some(Seg::Key(_)) => self.editor.delete(&tree::to_fig(&path)),
+            Some(Seg::Key(_)) => (
+                EditOp::DeleteKey { path: path.clone() },
+                path[..path.len() - 1].to_vec(),
+            ),
             None => {
                 self.status = "cannot delete the document root".to_string();
                 return;
             }
         };
-        match result {
-            Ok(()) => {
-                let parent = path[..path.len() - 1].to_vec();
-                self.after_edit(&parent, "deleted");
-            }
-            Err(e) => self.status = format!("delete failed: {e}"),
+        self.commit(op, anchor, "deleted");
+    }
+
+    /// Apply one edit through the backend, then refresh the view (or report the
+    /// rollback). The single path every mutation funnels through.
+    fn commit(&mut self, op: EditOp, anchor: Vec<Seg>, msg: &str) {
+        match self.backend.apply(op) {
+            Ok(()) => self.after_edit(&anchor, msg),
+            // The backend rolled back / declined; the document is untouched.
+            Err(e) => self.status = format!("rejected: {e}"),
         }
     }
 
@@ -307,6 +301,8 @@ impl Model {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::backend::FigBackend;
+    use fig::Format;
 
     const SAMPLE: &str = "\
 # flower sample config — comments and formatting below should survive edits
@@ -325,11 +321,12 @@ max_connections = 100
 timeout = 30.5
 ";
 
-    fn sample_model() -> Model {
-        Model::new(SAMPLE.as_bytes(), Format::Toml).expect("open sample")
+    fn sample_model() -> Model<FigBackend> {
+        let backend = FigBackend::open(SAMPLE.as_bytes(), Format::Toml).expect("open backend");
+        Model::new(backend).expect("build model")
     }
 
-    fn select(model: &mut Model, path: &[Seg]) {
+    fn select(model: &mut Model<FigBackend>, path: &[Seg]) {
         model.selected = model
             .rows
             .iter()
@@ -337,7 +334,7 @@ timeout = 30.5
             .unwrap_or_else(|| panic!("no row for {path:?}"));
     }
 
-    fn type_value(model: &mut Model, text: &str) {
+    fn type_value(model: &mut Model<FigBackend>, text: &str) {
         if let Mode::Editing { buffer } = &mut model.mode {
             buffer.clear();
         }

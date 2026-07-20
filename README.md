@@ -85,14 +85,26 @@ path is `fig::Editor`'s path-addressed ops. After every edit the model re-derive
 the tree from `Editor::source()`, so the editor's owned source is always
 canonical.
 
-### Next: a commit-sink `Backend` trait
+### The commit-sink `Backend` trait
 
-`flower-core::Model` currently drives a `fig::Editor` directly. The planned
-integration (e.g. driving `prov`'s frontmatter editor, which also maintains
-inverse links / fixity / journaling) generalizes that into a small trait —
-"apply a path-addressed edit, yield the current value tree" — with impls for a
-raw `fig::Editor`/`fig::Embed` and for a `prov`-mediated editor. That is the
-seam a `prov` GUI plugs into.
+`flower-core::Model` is generic over a `Backend` — it never touches a concrete
+editor. It builds path-addressed `EditOp`s, applies them through the backend,
+and reads the tree back via `Backend::to_value`:
+
+```rust
+pub trait Backend {
+    fn apply(&mut self, op: EditOp) -> Result<(), BackendError>;
+    fn to_value(&self) -> Result<Value, BackendError>;   // metadata region, for rendering
+    fn source(&self) -> Result<String, BackendError>;    // full bytes, for save
+}
+```
+
+- `FigBackend` (shipped) drives a raw `fig::Editor` — a standalone config file.
+- A future **prov backend** will apply the same ops through prov's frontmatter
+  editor, so the GUI gets inverse-link / fixity / journaling maintenance for
+  free without `Model` knowing about them. That is the seam a `prov` GUI plugs
+  into. `to_value` returning the value tree (not just source) is deliberate: an
+  embed/prov backend renders the *metadata region*, not the whole host file.
 
 ## Roadmap
 

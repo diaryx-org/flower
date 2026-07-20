@@ -7,10 +7,12 @@
 //! a future flower-gpui, …) renders [`Model::rows`] and drives the model's
 //! methods; the embedder owns file I/O.
 
+pub mod backend;
 pub mod format;
 pub mod model;
 pub mod tree;
 
+pub use backend::{Backend, BackendError, EditOp, FigBackend};
 pub use format::detect;
 pub use model::{Mode, Model};
 pub use tree::{Row, Seg, VKind};

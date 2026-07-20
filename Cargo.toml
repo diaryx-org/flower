@@ -7,8 +7,11 @@ edition = "2024"
 version = "0.1.0"
 
 [workspace.dependencies]
-# Zig-backed config AST + lossless editor (default features: json/yaml/toml/fig).
-fig = { path = "../fig/bindings/rust/fig" }
+# Zig-backed config AST + lossless editor, from crates.io (default features:
+# json/yaml/toml/fig). Matches prov's fig source so their `fig::Value` types
+# unify when flower-prov depends on both. Bump when we need newer fig; only
+# switch to a path/patch dep once we actually need unpublished fig changes.
+fig = "2.5"
 ratatui = "0.29"
 anyhow = "1"
 # Internal crates.

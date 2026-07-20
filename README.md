@@ -99,12 +99,32 @@ pub trait Backend {
 }
 ```
 
-- `FigBackend` (shipped) drives a raw `fig::Editor` — a standalone config file.
-- A future **prov backend** will apply the same ops through prov's frontmatter
-  editor, so the GUI gets inverse-link / fixity / journaling maintenance for
-  free without `Model` knowing about them. That is the seam a `prov` GUI plugs
-  into. `to_value` returning the value tree (not just source) is deliberate: an
-  embed/prov backend renders the *metadata region*, not the whole host file.
+- `FigBackend` (in flower-core) drives a raw `fig::Editor` — a standalone config
+  file.
+- `ProvBackend` (in `crates/flower-prov`) drives the *metadata region* of a
+  [`prov`](../prov) document through prov's carrier-aware `MetaEditor`. Editing
+  frontmatter leaves the prose body byte-for-byte untouched — proven by a
+  headless integration test. `to_value` returns just the metadata tree (what
+  flower renders); `source` returns the whole document (frontmatter + body) for
+  save; `body()` exposes the region a `leaf` editor would own.
+
+Relation fields (`contents`/`part_of`/`links`) that maintain inverse links
+*across* documents are out of scope for `ProvBackend` — those belong to prov's
+`mutate` layer and want a later, relationship-aware surface.
+
+### The composition, end to end
+
+A `prov` GUI is then two independent editor models over one file, coordinated by
+prov (which owns the atomic write, fixity, and journaling):
+
+```
+metadata:  flower_core::Model<ProvBackend>   → prov edit  ┐
+body:      leaf_core::Doc (from body string) → prov write  ├─ one prov document
+                                                           ┘
+```
+
+The metadata half is done and tested here; wiring the `leaf` body half is the
+next step.
 
 ## Roadmap
 

@@ -1,0 +1,14 @@
+[package]
+name = "flower"
+version = "0.1.0"
+edition = "2024"
+description = "A structural TUI editor for config files, built on fig's lossless AST editor."
+
+[dependencies]
+# The config AST + lossless, path-addressed span-splice editor. Path-dep on the
+# sibling checkout (mirrors how bough depends on twig). Default features give
+# json/yaml/toml/fig via fig-sys's prebuilt libfig.a — no Zig toolchain needed.
+fig = { path = "../fig/bindings/rust/fig" }
+# TUI framework; we use its re-exported crossterm so backend versions can't skew.
+ratatui = "0.29"
+anyhow = "1"

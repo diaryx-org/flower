@@ -1,0 +1,14 @@
+# flower sample config — comments and formatting below should survive edits
+title = "flower"
+version = 1
+enabled = true
+
+# the server block
+[server]
+host = "localhost"
+port = 8080
+tags = ["alpha", "beta"]
+
+[server.limits]
+max_connections = 100
+timeout = 30.5

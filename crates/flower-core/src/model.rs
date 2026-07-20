@@ -241,6 +241,21 @@ impl<B: Backend> Model<B> {
         );
     }
 
+    /// Programmatically replace the value at `path` (any depth), refreshing the
+    /// view. The non-interactive counterpart to [`edit_commit`](Self::edit_commit)
+    /// — for an embedder or FFI that edits by path rather than through the
+    /// selection.
+    pub fn set_value_at(&mut self, path: &[Seg], value: Value) {
+        self.commit(
+            EditOp::ReplaceValue {
+                path: path.to_vec(),
+                value,
+            },
+            path.to_vec(),
+            "value updated",
+        );
+    }
+
     /// `x`: delete the selected mapping entry or sequence item.
     pub fn delete_selected(&mut self) {
         let Some(row) = self.selected_row() else {

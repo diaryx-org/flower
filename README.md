@@ -101,38 +101,14 @@ pub trait Backend {
 
 - `FigBackend` (in flower-core) drives a raw `fig::Editor` — a standalone config
   file.
-- `ProvBackend` (in `crates/flower-prov`) drives the *metadata region* of a
-  [`prov`](../prov) document through prov's carrier-aware `MetaEditor`. Editing
-  frontmatter leaves the prose body byte-for-byte untouched — proven by a
-  headless integration test. `to_value` returns just the metadata tree (what
-  flower renders); `source` returns the whole document (frontmatter + body) for
-  save; `body()` exposes the region a `leaf` editor would own.
+- A **prov backend** (`ProvBackend`, in the [`provui`](../provui) repo) drives
+  the *metadata region* of a prov document through prov's carrier-aware
+  `MetaEditor`, leaving the prose body untouched. That composition (flower for
+  metadata + leaf for the body, over one prov document) is proven by a headless
+  test in provui.
 
-Relation fields (`contents`/`part_of`/`links`) that maintain inverse links
-*across* documents are out of scope for `ProvBackend` — those belong to prov's
-`mutate` layer and want a later, relationship-aware surface.
-
-### The composition, end to end
-
-A `prov` GUI is then two independent editor models over one file, coordinated by
-prov (which owns the atomic write, fixity, and journaling):
-
-```
-metadata:  flower_core::Model<ProvBackend>   → prov edit   ┐
-body:      leaf_core::Doc (from body string) → set_body     ├─ one prov document
-                                                            ┘
-```
-
-Both halves are proven by a headless integration test
-(`full_round_trip_metadata_via_flower_and_body_via_leaf`): flower edits the
-frontmatter, leaf edits the prose body, both land in one document with comments,
-fences, and untouched keys/body all preserved. The two regions are independent —
-leaf owns the body as its own buffer, so there are no shared byte offsets to
-coordinate.
-
-When the prov GUI gets its own repo, `flower-prov` (and a proper leaf↔body
-adapter) migrate there: flower-core stays config-generic and prov stays
-consumer-agnostic, so the app-specific bridge belongs to the app.
+flower-core stays config-generic and prov stays consumer-agnostic, so the
+app-specific bridge lives in provui, not here — flower doesn't depend on prov.
 
 ## Roadmap
 

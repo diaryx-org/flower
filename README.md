@@ -118,13 +118,21 @@ A `prov` GUI is then two independent editor models over one file, coordinated by
 prov (which owns the atomic write, fixity, and journaling):
 
 ```
-metadata:  flower_core::Model<ProvBackend>   → prov edit  ┐
-body:      leaf_core::Doc (from body string) → prov write  ├─ one prov document
-                                                           ┘
+metadata:  flower_core::Model<ProvBackend>   → prov edit   ┐
+body:      leaf_core::Doc (from body string) → set_body     ├─ one prov document
+                                                            ┘
 ```
 
-The metadata half is done and tested here; wiring the `leaf` body half is the
-next step.
+Both halves are proven by a headless integration test
+(`full_round_trip_metadata_via_flower_and_body_via_leaf`): flower edits the
+frontmatter, leaf edits the prose body, both land in one document with comments,
+fences, and untouched keys/body all preserved. The two regions are independent —
+leaf owns the body as its own buffer, so there are no shared byte offsets to
+coordinate.
+
+When the prov GUI gets its own repo, `flower-prov` (and a proper leaf↔body
+adapter) migrate there: flower-core stays config-generic and prov stays
+consumer-agnostic, so the app-specific bridge belongs to the app.
 
 ## Roadmap
 

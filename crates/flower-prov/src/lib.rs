@@ -22,8 +22,8 @@
 use fig::Value;
 use flower_core::tree::to_fig;
 use flower_core::{Backend, BackendError, EditOp, Seg};
-use prov::Document;
 use prov::edit::MetaEditor;
+use prov::{Document, MetaCarrier};
 
 fn be(e: impl std::fmt::Display) -> BackendError {
     BackendError(e.to_string())
@@ -59,6 +59,27 @@ impl ProvBackend {
     /// would own. Empty for a whole-file config document.
     pub fn body(&self) -> Result<String, BackendError> {
         Ok(self.document()?.body)
+    }
+
+    /// Replace the prose body, leaving the metadata block untouched — the write
+    /// path for edits a `leaf` editor makes to [`body`](Self::body).
+    ///
+    /// Uses fig's `Embed::replace_body` (the same lossless primitive prov edits
+    /// through). A production GUI would route this through prov's write path so
+    /// fixity/`updated` restamping fires; here it demonstrates that the metadata
+    /// and body regions edit independently over one document.
+    pub fn set_body(&mut self, body: &str) -> Result<(), BackendError> {
+        match self.document()?.carrier {
+            Some(MetaCarrier::Fenced(kind)) => {
+                let mut embed = fig::Embed::open(self.text.as_bytes(), kind).map_err(be)?;
+                embed.replace_body(body).map_err(be)?;
+                self.text = embed.render().map_err(be)?.to_string();
+                Ok(())
+            }
+            _ => Err(BackendError(
+                "document has no fenced body to replace".into(),
+            )),
+        }
     }
 }
 
@@ -206,5 +227,43 @@ Body prose that must survive metadata edits.
         let out = model.source_snapshot();
         assert!(out.contains("- a"), "kept first item:\n{out}");
         assert!(!out.contains("- b"), "removed second item:\n{out}");
+    }
+
+    /// The whole composition, headless: flower edits the metadata, leaf edits the
+    /// body, both land in one prov document with everything else preserved.
+    #[test]
+    fn full_round_trip_metadata_via_flower_and_body_via_leaf() {
+        use leaf_core::{Doc, Format};
+
+        let mut model = model();
+
+        // 1. Metadata edit, through flower's structural model.
+        select(&mut model, &[Seg::Key("title".into())]);
+        model.begin_edit();
+        type_value(&mut model, "New Title");
+
+        // 2. Body edit, through leaf — a separate editor over just the body
+        //    region. leaf owns the body as its own buffer (no shared offsets).
+        let body = model.backend().body().expect("body");
+        let mut doc = Doc::from_source(body, Format::Markdown).expect("leaf doc");
+        doc.insert("Edited: ");
+        let new_body = doc.source.clone();
+
+        // 3. Write the edited body back into the same document.
+        model.backend_mut().set_body(&new_body).expect("set body");
+
+        // 4. One document now carries both edits; nothing else moved.
+        let out = model.source_snapshot();
+        assert!(out.contains("title: New Title"), "flower metadata edit:\n{out}");
+        assert!(out.contains("# the title"), "frontmatter comment kept:\n{out}");
+        assert!(out.contains("Edited: "), "leaf body edit:\n{out}");
+        assert!(
+            out.contains("Body prose that must survive metadata edits."),
+            "rest of body kept:\n{out}"
+        );
+        assert!(out.starts_with("---\n"), "fences intact:\n{out}");
+        // The metadata block and body are disjoint: the body edit left the
+        // frontmatter's other keys exactly as flower wrote them.
+        assert!(out.contains("draft: true") && out.contains("- a"), "meta intact:\n{out}");
     }
 }

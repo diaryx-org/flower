@@ -56,6 +56,19 @@ impl<B: Backend> Model<B> {
         self.backend.source().unwrap_or_default()
     }
 
+    /// The backend, for backend-specific reads (e.g. a prov backend's body).
+    pub fn backend(&self) -> &B {
+        &self.backend
+    }
+
+    /// The backend, for backend-specific operations that do **not** change the
+    /// metadata tree flower renders (e.g. replacing a prov document's prose
+    /// body). An op that *does* change the metadata leaves the view stale — go
+    /// through the model's own edit methods for those.
+    pub fn backend_mut(&mut self) -> &mut B {
+        &mut self.backend
+    }
+
     pub fn set_status(&mut self, s: impl Into<String>) {
         self.status = s.into();
     }

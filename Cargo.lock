@@ -175,11 +175,29 @@ name = "fig-sys-windows-x64-msvc"
 version = "2.5.2"
 
 [[package]]
-name = "flower"
+name = "flower-core"
 version = "0.1.0"
 dependencies = [
  "anyhow",
  "fig",
+]
+
+[[package]]
+name = "flower-ratatui"
+version = "0.1.0"
+dependencies = [
+ "flower-core",
+ "ratatui",
+]
+
+[[package]]
+name = "flower-tui"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "fig",
+ "flower-core",
+ "flower-ratatui",
  "ratatui",
 ]
 

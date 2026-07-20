@@ -55,22 +55,44 @@ Supported formats: JSON/JSONC/JSON5, YAML, TOML, ZON, and the `fig` dialect
 
 ## Architecture
 
+A Cargo workspace, split so the editing logic is frontend-neutral (mirroring
+`leaf-core` / `leaf-ratatui` / `leaf-tui`):
+
 ```
-fig (Zig)  →  fig-sys (FFI, libfig.a)  →  fig crate (Editor/Document/Value)
-           →  flower::app::App  →  flower::tree (Value → navigable Rows)  →  ratatui UI
+fig (Zig) → fig-sys (FFI, libfig.a) → fig crate (Editor/Document/Value)
+                                          │
+                          crates/flower-core   (the model — no UI, no fs)
+                             │                     │
+              crates/flower-ratatui (widget)   crates/flower-tui (app: file I/O + event loop)
 ```
 
-- `src/format.rs` — file extension → `fig::Format`.
-- `src/tree.rs` — flattens a `fig::Value` into a list of navigable `Row`s, each
-  carrying its `fig` path (a `Vec<Seg>` of `Key`/`Index`), honoring a
-  collapsed-set. This path is exactly what `fig::Editor` ops take.
-- `src/app.rs` — editor state: owns the `fig::Editor` (source of truth),
-  the derived `Value`/rows, selection, and the edit ops.
-- `src/ui.rs` — ratatui rendering (header / tree / footer + edit line).
+- **`crates/flower-core`** — the frontend-neutral model. Depends only on `fig`
+  and `std`.
+  - `format.rs` — file extension → `fig::Format`.
+  - `tree.rs` — flattens a `fig::Value` into navigable `Row`s, each carrying its
+    `fig` path (a `Vec<Seg>` of `Key`/`Index`) — exactly what `fig::Editor` ops
+    take — honoring a collapsed-set.
+  - `model.rs` — `Model`: owns the `fig::Editor` (source of truth), the derived
+    `Value`/rows, selection, and the edit ops. Constructed from bytes; the
+    embedder owns the file.
+- **`crates/flower-ratatui`** — a `draw(frame, &Model, header)` widget. Depends
+  on `flower-core` + `ratatui`.
+- **`crates/flower-tui`** — the terminal app (binary `flower`): reads the file,
+  runs the event loop, writes on save. Depends on both.
 
 The read path is `fig::Document::to_value()` (a semantic `Value` tree); the write
-path is `fig::Editor`'s path-addressed ops. After every edit we re-derive the
-tree from `Editor::source()`, so the editor's owned source is always canonical.
+path is `fig::Editor`'s path-addressed ops. After every edit the model re-derives
+the tree from `Editor::source()`, so the editor's owned source is always
+canonical.
+
+### Next: a commit-sink `Backend` trait
+
+`flower-core::Model` currently drives a `fig::Editor` directly. The planned
+integration (e.g. driving `prov`'s frontmatter editor, which also maintains
+inverse links / fixity / journaling) generalizes that into a small trait —
+"apply a path-addressed edit, yield the current value tree" — with impls for a
+raw `fig::Editor`/`fig::Embed` and for a `prov`-mediated editor. That is the
+seam a `prov` GUI plugs into.
 
 ## Roadmap
 

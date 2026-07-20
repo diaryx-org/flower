@@ -1,0 +1,16 @@
+[package]
+name = "flower-tui"
+edition.workspace = true
+version.workspace = true
+description = "Terminal app: a structural config editor on flower-core + flower-ratatui + fig."
+
+[[bin]]
+name = "flower"
+path = "src/main.rs"
+
+[dependencies]
+flower-core.workspace = true
+flower-ratatui.workspace = true
+fig.workspace = true
+ratatui.workspace = true
+anyhow.workspace = true

@@ -1,0 +1,9 @@
+[package]
+name = "flower-ratatui"
+edition.workspace = true
+version.workspace = true
+description = "A ratatui widget that renders and drives flower-core's config tree."
+
+[dependencies]
+flower-core.workspace = true
+ratatui.workspace = true

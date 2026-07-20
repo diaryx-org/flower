@@ -1,0 +1,9 @@
+[package]
+name = "flower-core"
+edition.workspace = true
+version.workspace = true
+description = "Frontend-neutral structural editing model for config files, over fig."
+
+[dependencies]
+fig.workspace = true
+anyhow.workspace = true

@@ -1,14 +1,17 @@
-//! Editor state and the structural operations.
+//! The frontend-neutral editor model and its structural operations.
 //!
 //! The `fig::Editor` is the single source of truth: it owns the document's
 //! source bytes and applies every edit as a lossless, path-addressed splice.
 //! After each mutation we re-derive the `Value` tree (and the flat rows) from
-//! `Editor::source()`, so what's on screen always reflects the canonical bytes.
+//! `Editor::source()`, so the model always reflects the canonical bytes.
+//!
+//! This type holds no filesystem or terminal state. The embedder constructs it
+//! from bytes ([`Model::new`]), renders [`Model::rows`], drives the navigation
+//! and edit methods, and persists [`Model::source_snapshot`] however it likes.
 
 use std::collections::HashSet;
-use std::path::PathBuf;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use fig::{Document, Editor, Format, Value};
 
 use crate::tree::{self, Row, Seg};
@@ -19,8 +22,7 @@ pub enum Mode {
     Editing { buffer: String },
 }
 
-pub struct App {
-    file_path: PathBuf,
+pub struct Model {
     format: Format,
     editor: Editor,
 
@@ -33,18 +35,15 @@ pub struct App {
     pub mode: Mode,
     pub status: String,
     pub dirty: bool,
-    pub should_quit: bool,
 }
 
-impl App {
-    pub fn open(file_path: PathBuf, format: Format) -> Result<Self> {
-        let bytes = std::fs::read(&file_path)
-            .with_context(|| format!("reading {}", file_path.display()))?;
-        let editor = Editor::open(&bytes, format)
-            .map_err(|e| anyhow::anyhow!("fig failed to parse the file: {e}"))?;
+impl Model {
+    /// Build a model over a copy of `source` parsed as `format`.
+    pub fn new(source: &[u8], format: Format) -> Result<Self> {
+        let editor = Editor::open(source, format)
+            .map_err(|e| anyhow::anyhow!("fig failed to parse the document: {e}"))?;
 
-        let mut app = App {
-            file_path,
+        let mut model = Model {
             format,
             editor,
             value: Value::Null,
@@ -54,31 +53,34 @@ impl App {
             mode: Mode::Normal,
             status: "opened".to_string(),
             dirty: false,
-            should_quit: false,
         };
-        app.reload()?;
-        Ok(app)
-    }
-
-    pub fn file_name(&self) -> String {
-        self.file_path
-            .file_name()
-            .map(|s| s.to_string_lossy().into_owned())
-            .unwrap_or_else(|| self.file_path.display().to_string())
+        model.reload()?;
+        Ok(model)
     }
 
     pub fn format(&self) -> Format {
         self.format
     }
 
-    /// A copy of the editor's current (canonical) source. Handy for tests and
-    /// any "show me the raw text" view.
+    /// A copy of the editor's current (canonical) source — what the embedder
+    /// writes to disk on save.
     pub fn source_snapshot(&self) -> String {
         self.editor
             .source()
             .map(|s| s.to_string())
             .unwrap_or_default()
     }
+
+    pub fn set_status(&mut self, s: impl Into<String>) {
+        self.status = s.into();
+    }
+
+    /// Clear the dirty flag after the embedder has persisted the source.
+    pub fn mark_saved(&mut self) {
+        self.dirty = false;
+    }
+
+    // ── view derivation ───────────────────────────────────────────────────────
 
     /// Re-derive `value` + `rows` from the editor's current source.
     fn reload(&mut self) -> Result<()> {
@@ -116,7 +118,7 @@ impl App {
         }
     }
 
-    // ── navigation ──────────────────────────────────────────────────────────
+    // ── navigation ────────────────────────────────────────────────────────────
 
     pub fn move_down(&mut self) {
         if self.selected + 1 < self.rows.len() {
@@ -130,7 +132,9 @@ impl App {
 
     /// `l`: expand a collapsed container, else step into its first child.
     pub fn expand_or_enter(&mut self) {
-        let Some(row) = self.selected_row() else { return };
+        let Some(row) = self.selected_row() else {
+            return;
+        };
         if row.is_container() {
             if !row.expanded {
                 let path = row.path.clone();
@@ -147,7 +151,9 @@ impl App {
 
     /// `h`: collapse an expanded container, else step out to the parent row.
     pub fn collapse_or_leave(&mut self) {
-        let Some(row) = self.selected_row() else { return };
+        let Some(row) = self.selected_row() else {
+            return;
+        };
         if row.is_container() && row.expanded {
             let path = row.path.clone();
             self.collapsed.insert(path.clone());
@@ -170,7 +176,9 @@ impl App {
 
     /// `Enter`/`Space`: toggle a container's expansion, or edit a scalar.
     pub fn activate(&mut self) {
-        let Some(row) = self.selected_row() else { return };
+        let Some(row) = self.selected_row() else {
+            return;
+        };
         if row.is_container() {
             let path = row.path.clone();
             if row.expanded {
@@ -185,15 +193,16 @@ impl App {
         }
     }
 
-    // ── editing ─────────────────────────────────────────────────────────────
+    // ── editing ───────────────────────────────────────────────────────────────
 
     pub fn begin_edit(&mut self) {
-        let Some(row) = self.selected_row() else { return };
+        let Some(row) = self.selected_row() else {
+            return;
+        };
         if !row.is_scalar() {
             self.status = "can only edit scalar values".to_string();
             return;
         }
-        // Seed the buffer with the current value, resolved from the live tree.
         let seed = self
             .value_at(&row.path)
             .map(|v| tree::edit_seed(&v))
@@ -225,24 +234,24 @@ impl App {
         let buffer = std::mem::take(buffer);
         self.mode = Mode::Normal;
 
-        let Some(row) = self.selected_row() else { return };
+        let Some(row) = self.selected_row() else {
+            return;
+        };
         let path = row.path.clone();
         let value = tree::parse_scalar(&buffer);
 
         match self.editor.replace_value(&tree::to_fig(&path), value) {
-            Ok(()) => {
-                self.after_edit(&path, "value updated");
-            }
-            Err(e) => {
-                // fig rolled the splice back; the document is untouched.
-                self.status = format!("rejected: {e}");
-            }
+            Ok(()) => self.after_edit(&path, "value updated"),
+            // fig rolled the splice back; the document is untouched.
+            Err(e) => self.status = format!("rejected: {e}"),
         }
     }
 
     /// `x`: delete the selected mapping entry or sequence item.
     pub fn delete_selected(&mut self) {
-        let Some(row) = self.selected_row() else { return };
+        let Some(row) = self.selected_row() else {
+            return;
+        };
         let path = row.path.clone();
         let result = match path.last() {
             Some(Seg::Index(i)) => {
@@ -257,24 +266,10 @@ impl App {
         };
         match result {
             Ok(()) => {
-                // The deleted path is gone; aim selection at its parent.
                 let parent = path[..path.len() - 1].to_vec();
                 self.after_edit(&parent, "deleted");
             }
             Err(e) => self.status = format!("delete failed: {e}"),
-        }
-    }
-
-    pub fn save(&mut self) {
-        match self.editor.source() {
-            Ok(src) => match std::fs::write(&self.file_path, src) {
-                Ok(()) => {
-                    self.dirty = false;
-                    self.status = format!("saved {}", self.file_name());
-                }
-                Err(e) => self.status = format!("save failed: {e}"),
-            },
-            Err(e) => self.status = format!("save failed: {e}"),
         }
     }
 
@@ -296,7 +291,10 @@ impl App {
         for seg in path {
             cur = match (seg, cur) {
                 (Seg::Key(k), Value::Map(entries)) => {
-                    &entries.iter().find(|(mk, _)| matches!(mk, Value::Str(s) if s == k))?.1
+                    &entries
+                        .iter()
+                        .find(|(mk, _)| matches!(mk, Value::Str(s) if s == k))?
+                        .1
                 }
                 (Seg::Index(i), Value::Seq(items)) => items.get(*i)?,
                 _ => return None,
@@ -310,89 +308,104 @@ impl App {
 mod tests {
     use super::*;
 
-    fn sample_app() -> App {
-        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("sample.toml");
-        App::open(path, Format::Toml).expect("open sample.toml")
+    const SAMPLE: &str = "\
+# flower sample config — comments and formatting below should survive edits
+title = \"flower\"
+version = 1
+enabled = true
+
+# the server block
+[server]
+host = \"localhost\"
+port = 8080
+tags = [\"alpha\", \"beta\"]
+
+[server.limits]
+max_connections = 100
+timeout = 30.5
+";
+
+    fn sample_model() -> Model {
+        Model::new(SAMPLE.as_bytes(), Format::Toml).expect("open sample")
     }
 
-    fn select(app: &mut App, path: &[Seg]) {
-        app.selected = app
+    fn select(model: &mut Model, path: &[Seg]) {
+        model.selected = model
             .rows
             .iter()
             .position(|r| r.path == path)
             .unwrap_or_else(|| panic!("no row for {path:?}"));
     }
 
-    fn type_value(app: &mut App, text: &str) {
-        // Replace whatever the edit buffer was seeded with.
-        if let Mode::Editing { buffer } = &mut app.mode {
+    fn type_value(model: &mut Model, text: &str) {
+        if let Mode::Editing { buffer } = &mut model.mode {
             buffer.clear();
         }
         for c in text.chars() {
-            app.edit_push(c);
+            model.edit_push(c);
         }
-        app.edit_commit();
+        model.edit_commit();
     }
 
     #[test]
     fn edits_a_scalar_losslessly() {
-        let mut app = sample_app();
+        let mut model = sample_model();
 
-        select(&mut app, &[Seg::Key("version".into())]);
-        app.begin_edit();
-        type_value(&mut app, "2");
+        select(&mut model, &[Seg::Key("version".into())]);
+        model.begin_edit();
+        type_value(&mut model, "2");
 
-        let src = app.source_snapshot();
+        let src = model.source_snapshot();
         assert!(src.contains("version = 2"), "value changed:\n{src}");
-        // Everything untouched stays byte-identical — comments included.
         assert!(src.contains("# the server block"), "comment preserved:\n{src}");
-        assert!(src.contains("# flower sample config"), "header preserved:\n{src}");
-        assert!(app.dirty);
+        assert!(
+            src.contains("# flower sample config"),
+            "header preserved:\n{src}"
+        );
+        assert!(model.dirty);
     }
 
     #[test]
     fn edits_a_nested_string() {
-        let mut app = sample_app();
+        let mut model = sample_model();
 
         select(
-            &mut app,
+            &mut model,
             &[Seg::Key("server".into()), Seg::Key("host".into())],
         );
-        app.begin_edit();
-        type_value(&mut app, "example.com");
+        model.begin_edit();
+        type_value(&mut model, "example.com");
 
-        let src = app.source_snapshot();
+        let src = model.source_snapshot();
         assert!(src.contains("host = \"example.com\""), "nested edit:\n{src}");
         assert!(src.contains("port = 8080"), "sibling untouched:\n{src}");
     }
 
     #[test]
     fn deletes_a_key() {
-        let mut app = sample_app();
+        let mut model = sample_model();
 
-        select(&mut app, &[Seg::Key("enabled".into())]);
-        app.delete_selected();
+        select(&mut model, &[Seg::Key("enabled".into())]);
+        model.delete_selected();
 
-        let src = app.source_snapshot();
+        let src = model.source_snapshot();
         assert!(!src.contains("enabled = true"), "key removed:\n{src}");
         assert!(src.contains("title = \"flower\""), "siblings kept:\n{src}");
     }
 
     #[test]
     fn navigation_folds_and_reanchors() {
-        let mut app = sample_app();
+        let mut model = sample_model();
 
-        // Collapse [server]; its children should disappear from the row list.
-        select(&mut app, &[Seg::Key("server".into())]);
-        app.collapse_or_leave();
+        select(&mut model, &[Seg::Key("server".into())]);
+        model.collapse_or_leave();
         assert!(
-            !app.rows
+            !model
+                .rows
                 .iter()
                 .any(|r| r.path == [Seg::Key("server".into()), Seg::Key("host".into())]),
             "collapsed children hidden"
         );
-        // Selection stays on the container we collapsed.
-        assert_eq!(app.rows[app.selected].path, [Seg::Key("server".into())]);
+        assert_eq!(model.rows[model.selected].path, [Seg::Key("server".into())]);
     }
 }
-

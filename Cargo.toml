@@ -1,14 +1,16 @@
-[package]
-name = "flower"
-version = "0.1.0"
-edition = "2024"
-description = "A structural TUI editor for config files, built on fig's lossless AST editor."
+[workspace]
+resolver = "3"
+members = ["crates/*"]
 
-[dependencies]
-# The config AST + lossless, path-addressed span-splice editor. Path-dep on the
-# sibling checkout (mirrors how bough depends on twig). Default features give
-# json/yaml/toml/fig via fig-sys's prebuilt libfig.a — no Zig toolchain needed.
+[workspace.package]
+edition = "2024"
+version = "0.1.0"
+
+[workspace.dependencies]
+# Zig-backed config AST + lossless editor (default features: json/yaml/toml/fig).
 fig = { path = "../fig/bindings/rust/fig" }
-# TUI framework; we use its re-exported crossterm so backend versions can't skew.
 ratatui = "0.29"
 anyhow = "1"
+# Internal crates.
+flower-core = { path = "crates/flower-core" }
+flower-ratatui = { path = "crates/flower-ratatui" }

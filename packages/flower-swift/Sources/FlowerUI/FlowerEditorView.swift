@@ -113,6 +113,62 @@ public final class FlowerModel: ObservableObject {
         if editingId == row.id { editingId = nil }
         state = doc.delete(index: i)
     }
+
+    /// Set a boolean scalar directly — the commit behind an inline `Toggle`.
+    public func setBool(_ row: RowView, _ value: Bool) {
+        guard let i = index(of: row.id) else { return }
+        state = doc.setValue(index: i, text: value ? "true" : "false")
+    }
+
+    // ── insert & reorder ──────────────────────────────────────────────────────
+
+    /// Whether `row` can hold children — i.e. "Add" applies to it.
+    public func canAddChild(_ row: RowView) -> Bool { row.isContainer }
+
+    /// Add a child to the container `row`: a fresh `new_key` for a mapping, or an
+    /// appended item for a sequence — then open the new scalar for editing.
+    public func addChild(_ row: RowView) {
+        guard let i = index(of: row.id), row.isContainer else { return }
+        let prefix = row.id.isEmpty ? "" : row.id + "."
+        if row.kind == "seq" {
+            let count = state.rows.filter { isDirectChild($0, of: row) }.count
+            state = doc.appendItem(index: i, text: "")
+            if let created = state.rows.first(where: { $0.id == prefix + String(count) }) {
+                beginEdit(created)
+            }
+        } else {
+            let key = freshKey(under: row)
+            state = doc.insertKey(index: i, key: key, text: "")
+            if let created = state.rows.first(where: { $0.id == prefix + key }) {
+                beginEdit(created)
+            }
+        }
+    }
+
+    /// Whether `row` can be reordered (anything but the document root).
+    public func canReorder(_ row: RowView) -> Bool { !row.id.isEmpty }
+
+    public func moveRowUp(_ row: RowView) {
+        guard let i = index(of: row.id) else { return }
+        state = doc.moveRowUp(index: i)
+    }
+
+    public func moveRowDown(_ row: RowView) {
+        guard let i = index(of: row.id) else { return }
+        state = doc.moveRowDown(index: i)
+    }
+
+    private func isDirectChild(_ r: RowView, of parent: RowView) -> Bool {
+        r.depth == parent.depth + 1 && (parent.id.isEmpty || r.id.hasPrefix(parent.id + "."))
+    }
+
+    private func freshKey(under row: RowView) -> String {
+        let existing = Set(state.rows.filter { isDirectChild($0, of: row) }.map(\.label))
+        if !existing.contains("new_key") { return "new_key" }
+        var n = 2
+        while existing.contains("new_key\(n)") { n += 1 }
+        return "new_key\(n)"
+    }
 }
 
 /// The tree editor surface: a flat, indented list of the document's visible rows.
@@ -140,8 +196,9 @@ public struct FlowerEditor: View {
     }
 }
 
-/// One row of the tree: indentation, a disclosure/scalar glyph, the key, and the
-/// value — swapped for a text field while this row is being edited.
+/// One row of the tree: indentation, a disclosure/scalar glyph, the key, and a
+/// type-aware value editor — a `Toggle` for a bool, a stepped field for a number,
+/// a plain field otherwise.
 private struct FlowerRow: View {
     let row: RowView
     @ObservedObject var model: FlowerModel
@@ -175,36 +232,92 @@ private struct FlowerRow: View {
                 Spacer(minLength: 0)
             } else {
                 Text("=").foregroundStyle(.tertiary)
-                if isEditing {
-                    TextField("value", text: $model.editBuffer)
-                        .font(theme.valueFont)
-                        .textFieldStyle(.plain)
-                        .focused($focused)
-                        .onSubmit { model.commitEdit() }
-                        #if os(macOS)
-                        .onExitCommand { model.cancelEdit() }
-                        #endif
-                        .onAppear { focused = true }
-                } else {
-                    Text(row.preview)
-                        .font(theme.valueFont)
-                        .foregroundStyle(theme.color(forKind: row.kind))
-                }
+                valueView
                 Spacer(minLength: 0)
             }
         }
         .contentShape(Rectangle())
-        .onTapGesture { model.activate(row) }
+        .onTapGesture { if !(row.kind == "bool") { model.activate(row) } }
         .padding(.vertical, 1)
         .background(
             RoundedRectangle(cornerRadius: 5)
                 .fill(isSelected ? Color.accentColor.opacity(0.15) : Color.clear)
         )
-        .contextMenu {
-            if !row.isContainer {
-                Button("Edit") { model.beginEdit(row) }
-            }
-            Button("Delete", role: .destructive) { model.delete(row) }
+        .contextMenu { contextMenu }
+    }
+
+    private var isNumber: Bool { row.kind == "int" || row.kind == "float" }
+
+    /// The type-aware value editor for a scalar row.
+    @ViewBuilder private var valueView: some View {
+        if row.kind == "bool" {
+            // A bool commits immediately — no separate edit mode.
+            Toggle("", isOn: Binding(
+                get: { row.preview == "true" },
+                set: { model.setBool(row, $0) }
+            ))
+            .labelsHidden()
+            .toggleStyle(.switch)
+            .scaleEffect(0.7)
+            .frame(height: 16)
+        } else if isEditing {
+            if isNumber { numberEditor } else { editField(keyboardNumeric: false) }
+        } else {
+            Text(row.preview.isEmpty ? "—" : row.preview)
+                .font(theme.valueFont)
+                .foregroundStyle(row.preview.isEmpty ? Color.secondary.opacity(0.5)
+                                                     : theme.color(forKind: row.kind))
         }
+    }
+
+    @ViewBuilder private var numberEditor: some View {
+        HStack(spacing: 4) {
+            editField(keyboardNumeric: true)
+                .frame(maxWidth: 120)
+            Button { step(+1) } label: { Image(systemName: "chevron.up") }
+                .buttonStyle(.plain).foregroundStyle(.secondary)
+            Button { step(-1) } label: { Image(systemName: "chevron.down") }
+                .buttonStyle(.plain).foregroundStyle(.secondary)
+        }
+    }
+
+    private func editField(keyboardNumeric: Bool) -> some View {
+        let field = TextField("value", text: $model.editBuffer)
+            .font(theme.valueFont)
+            .textFieldStyle(.plain)
+            .focused($focused)
+            .onSubmit { model.commitEdit() }
+            .onAppear { focused = true }
+        #if os(macOS)
+        return field.onExitCommand { model.cancelEdit() }
+        #else
+        return field.keyboardType(keyboardNumeric ? .numbersAndPunctuation : .default)
+        #endif
+    }
+
+    /// Bump the numeric edit buffer by `delta`, keeping int/float shape.
+    private func step(_ delta: Int) {
+        let text = model.editBuffer.trimmingCharacters(in: .whitespaces)
+        if let i = Int(text) {
+            model.editBuffer = String(i + delta)
+        } else if let d = Double(text) {
+            model.editBuffer = String(d + Double(delta))
+        }
+    }
+
+    @ViewBuilder private var contextMenu: some View {
+        if !row.isContainer {
+            Button("Edit") { model.beginEdit(row) }
+        }
+        if model.canAddChild(row) {
+            Button(row.kind == "seq" ? "Add Item" : "Add Key") { model.addChild(row) }
+        }
+        if model.canReorder(row) {
+            Divider()
+            Button("Move Up") { model.moveRowUp(row) }
+            Button("Move Down") { model.moveRowDown(row) }
+        }
+        Divider()
+        Button("Delete", role: .destructive) { model.delete(row) }
     }
 }

@@ -64,6 +64,48 @@ final class FlowerModelTests: XCTestCase {
         XCTAssertTrue(model.source().contains("title = \"flower\""))
     }
 
+    func testAddChildAppendsToASequenceAndOpensItForEditing() throws {
+        let model = try makeModel()
+        guard let tags = model.state.rows.first(where: { $0.id == "server.tags" }) else {
+            return XCTFail("no tags row")
+        }
+        model.addChild(tags)
+        XCTAssertTrue(model.state.rows.contains { $0.id == "server.tags.2" })
+        XCTAssertEqual(model.editingId, "server.tags.2", "new item opens for editing")
+        model.editBuffer = "gamma"
+        model.commitEdit()
+        XCTAssertTrue(model.source().contains("gamma"))
+    }
+
+    func testAddChildInsertsAKeyIntoAMapping() throws {
+        let model = try makeModel()
+        guard let server = model.state.rows.first(where: { $0.id == "server" }) else {
+            return XCTFail("no server row")
+        }
+        model.addChild(server)
+        XCTAssertTrue(model.state.rows.contains { $0.id == "server.new_key" })
+        XCTAssertEqual(model.editingId, "server.new_key")
+    }
+
+    func testMoveRowReordersWithinParent() throws {
+        let model = try makeModel()
+        guard let beta = model.state.rows.first(where: { $0.id == "server.tags.1" }) else {
+            return XCTFail("no tags[1] row")
+        }
+        model.moveRowUp(beta)
+        let src = model.source()
+        XCTAssertLessThan(src.range(of: "beta")!.lowerBound, src.range(of: "alpha")!.lowerBound)
+    }
+
+    func testSetBoolCommitsImmediately() throws {
+        let model = try makeModel()
+        guard let enabled = model.state.rows.first(where: { $0.id == "enabled" }) else {
+            return XCTFail("no enabled row")
+        }
+        model.setBool(enabled, false)
+        XCTAssertTrue(model.source().contains("enabled = false"))
+    }
+
     func testThemeColoursValuesByKind() {
         let theme = FlowerTheme.default
         // Distinct kinds map to distinct colours; containers use chrome (secondary).

@@ -29,6 +29,8 @@ struct ContentView: View {
                 Circle().fill(.secondary).frame(width: 6, height: 6)
             }
             Spacer()
+            structureControls
+            Divider().frame(height: 18)
             Button {
                 // A real host writes model.source() to disk here; this demo just
                 // clears the dirty flag to exercise the round trip.
@@ -42,6 +44,32 @@ struct ContentView: View {
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
         .background(.bar)
+    }
+
+    /// Structural editing controls, acting on the selected row: add a child to a
+    /// container, reorder within the parent, delete.
+    @ViewBuilder private var structureControls: some View {
+        let row = model.selectedRow
+        Button {
+            if let row { model.addChild(row) }
+        } label: { Image(systemName: "plus") }
+            .help("Add a key or item to the selected container")
+            .disabled(!(row.map(model.canAddChild) ?? false))
+
+        Button {
+            if let row { model.moveRowUp(row) }
+        } label: { Image(systemName: "arrow.up") }
+            .disabled(!(row.map(model.canReorder) ?? false))
+
+        Button {
+            if let row { model.moveRowDown(row) }
+        } label: { Image(systemName: "arrow.down") }
+            .disabled(!(row.map(model.canReorder) ?? false))
+
+        Button(role: .destructive) {
+            if let row { model.delete(row) }
+        } label: { Image(systemName: "trash") }
+            .disabled(row == nil)
     }
 
     private var footer: some View {

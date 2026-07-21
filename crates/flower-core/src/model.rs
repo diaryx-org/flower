@@ -256,6 +256,138 @@ impl<B: Backend> Model<B> {
         );
     }
 
+    /// Insert `key = value` into the mapping at `map_path`, selecting the new
+    /// entry. A frontend offers this on a map container; the backend rejects a
+    /// duplicate key or a non-mapping target, leaving the document untouched.
+    pub fn insert_key(&mut self, map_path: &[Seg], key: &str, value: Value) {
+        let mut anchor = map_path.to_vec();
+        anchor.push(Seg::Key(key.to_string()));
+        self.commit(
+            EditOp::InsertKey {
+                map_path: map_path.to_vec(),
+                key: key.to_string(),
+                value,
+            },
+            anchor,
+            "inserted",
+        );
+    }
+
+    /// Append `value` to the sequence at `seq_path`, selecting the new item.
+    pub fn append_item(&mut self, seq_path: &[Seg], value: Value) {
+        let idx = self.seq_len(seq_path);
+        let mut anchor = seq_path.to_vec();
+        anchor.push(Seg::Index(idx));
+        self.commit(
+            EditOp::AppendItem {
+                seq_path: seq_path.to_vec(),
+                value,
+            },
+            anchor,
+            "appended",
+        );
+    }
+
+    /// Move the selected row one place earlier among its siblings — a sequence
+    /// item via fig's array-move, a mapping entry via a one-swap reorder.
+    pub fn move_selected_up(&mut self) {
+        self.reorder_selected(-1);
+    }
+
+    /// Move the selected row one place later among its siblings.
+    pub fn move_selected_down(&mut self) {
+        self.reorder_selected(1);
+    }
+
+    /// The shared body of [`move_selected_up`](Self::move_selected_up) /
+    /// [`move_selected_down`](Self::move_selected_down): shift the selected row by
+    /// `delta` positions within its parent container.
+    fn reorder_selected(&mut self, delta: isize) {
+        let Some(row) = self.selected_row() else {
+            return;
+        };
+        let path = row.path.clone();
+        let Some(last) = path.last().cloned() else {
+            self.status = "cannot move the document root".to_string();
+            return;
+        };
+        let parent = path[..path.len() - 1].to_vec();
+        match last {
+            Seg::Index(i) => {
+                let len = self.seq_len(&parent);
+                let to = i as isize + delta;
+                if to < 0 || to as usize >= len {
+                    self.status = "already at the edge".to_string();
+                    return;
+                }
+                let to = to as usize;
+                let mut anchor = parent.clone();
+                anchor.push(Seg::Index(to));
+                self.commit(
+                    EditOp::MoveItem {
+                        seq_path: parent,
+                        from: i,
+                        to,
+                    },
+                    anchor,
+                    "moved",
+                );
+            }
+            Seg::Key(k) => {
+                let keys = self.map_keys(&parent);
+                let Some(pos) = keys.iter().position(|x| *x == k) else {
+                    return;
+                };
+                let target = pos as isize + delta;
+                if target < 0 || target as usize >= keys.len() {
+                    self.status = "already at the edge".to_string();
+                    return;
+                }
+                let mut order = keys;
+                order.swap(pos, target as usize);
+                self.commit(
+                    EditOp::ReorderKeys {
+                        map_path: parent,
+                        keys: order,
+                    },
+                    path,
+                    "moved",
+                );
+            }
+        }
+    }
+
+    /// The mapping keys at `path`, in document order (empty for a non-mapping).
+    fn map_keys(&self, path: &[Seg]) -> Vec<String> {
+        match self.value_at_or_root(path) {
+            Value::Map(entries) => entries
+                .iter()
+                .filter_map(|(k, _)| match k {
+                    Value::Str(s) => Some(s.clone()),
+                    _ => None,
+                })
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// The length of the sequence at `path` (0 for a non-sequence).
+    fn seq_len(&self, path: &[Seg]) -> usize {
+        match self.value_at_or_root(path) {
+            Value::Seq(items) => items.len(),
+            _ => 0,
+        }
+    }
+
+    /// The value at `path`, or the whole tree for the empty (root) path.
+    fn value_at_or_root(&self, path: &[Seg]) -> Value {
+        if path.is_empty() {
+            self.value.clone()
+        } else {
+            self.value_at(path).unwrap_or(Value::Null)
+        }
+    }
+
     /// `x`: delete the selected mapping entry or sequence item.
     pub fn delete_selected(&mut self) {
         let Some(row) = self.selected_row() else {
@@ -416,6 +548,62 @@ timeout = 30.5
         let src = model.source_snapshot();
         assert!(!src.contains("enabled = true"), "key removed:\n{src}");
         assert!(src.contains("title = \"flower\""), "siblings kept:\n{src}");
+    }
+
+    #[test]
+    fn appends_a_sequence_item() {
+        let mut model = sample_model();
+        let tags = vec![Seg::Key("server".into()), Seg::Key("tags".into())];
+        model.append_item(&tags, Value::Str("gamma".into()));
+
+        let src = model.source_snapshot();
+        assert!(src.contains("gamma"), "item appended:\n{src}");
+        assert!(src.contains("alpha") && src.contains("beta"), "siblings kept");
+        assert!(model.dirty);
+    }
+
+    #[test]
+    fn inserts_a_mapping_key() {
+        let mut model = sample_model();
+        let server = vec![Seg::Key("server".into())];
+        model.insert_key(&server, "scheme", Value::Str("https".into()));
+
+        let src = model.source_snapshot();
+        // fig may quote the inserted key (`"scheme" = …`); both are valid TOML.
+        assert!(
+            src.contains("scheme") && src.contains("= \"https\""),
+            "key inserted:\n{src}"
+        );
+        assert!(src.contains("host = \"localhost\""), "siblings kept");
+    }
+
+    #[test]
+    fn moves_a_sequence_item_and_reorders_keys() {
+        let mut model = sample_model();
+
+        // Move the second tag ("beta", index 1) up to index 0.
+        select(
+            &mut model,
+            &[
+                Seg::Key("server".into()),
+                Seg::Key("tags".into()),
+                Seg::Index(1),
+            ],
+        );
+        model.move_selected_up();
+        let src = model.source_snapshot();
+        let a = src.find("alpha").unwrap();
+        let b = src.find("beta").unwrap();
+        assert!(b < a, "beta now precedes alpha:\n{src}");
+
+        // Move a top-level mapping entry down: title should follow version.
+        select(&mut model, &[Seg::Key("title".into())]);
+        model.move_selected_down();
+        let src = model.source_snapshot();
+        assert!(
+            src.find("version").unwrap() < src.find("title").unwrap(),
+            "version now precedes title:\n{src}"
+        );
     }
 
     #[test]

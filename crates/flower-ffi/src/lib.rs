@@ -243,6 +243,57 @@ impl FlowerDoc {
         m.delete_selected();
         view_of(&m)
     }
+
+    // ── insert & reorder ──────────────────────────────────────────────────────
+
+    /// Insert `key = text` into the **mapping** at `index`, inferring the value
+    /// type by literal shape. A no-op with a status hint when the row isn't a
+    /// mapping; the backend rejects a duplicate key.
+    pub fn insert_key(&self, index: u32, key: String, text: String) -> DocView {
+        let mut m = self.lock();
+        select_index(&mut m, index);
+        match m.rows.get(m.selected).map(|r| (r.vkind, r.path.clone())) {
+            Some((VKind::Map, path)) => {
+                let value = flower_core::tree::parse_scalar(&text);
+                m.insert_key(&path, &key, value);
+            }
+            Some(_) => m.set_status("select a mapping to add a key"),
+            None => {}
+        }
+        view_of(&m)
+    }
+
+    /// Append `text` to the **sequence** at `index`, inferring the value type by
+    /// literal shape. A no-op with a status hint when the row isn't a sequence.
+    pub fn append_item(&self, index: u32, text: String) -> DocView {
+        let mut m = self.lock();
+        select_index(&mut m, index);
+        match m.rows.get(m.selected).map(|r| (r.vkind, r.path.clone())) {
+            Some((VKind::Seq, path)) => {
+                let value = flower_core::tree::parse_scalar(&text);
+                m.append_item(&path, value);
+            }
+            Some(_) => m.set_status("select a sequence to add an item"),
+            None => {}
+        }
+        view_of(&m)
+    }
+
+    /// Move the row at `index` one place earlier among its siblings.
+    pub fn move_row_up(&self, index: u32) -> DocView {
+        let mut m = self.lock();
+        select_index(&mut m, index);
+        m.move_selected_up();
+        view_of(&m)
+    }
+
+    /// Move the row at `index` one place later among its siblings.
+    pub fn move_row_down(&self, index: u32) -> DocView {
+        let mut m = self.lock();
+        select_index(&mut m, index);
+        m.move_selected_down();
+        view_of(&m)
+    }
 }
 
 impl FlowerDoc {
@@ -410,6 +461,44 @@ tags = [\"alpha\", \"beta\"]
         // Toggling again re-expands.
         let v = d.toggle(i);
         assert!(v.rows.iter().any(|r| r.id == "server.host"));
+    }
+
+    #[test]
+    fn append_item_adds_to_a_sequence() {
+        let d = doc();
+        let i = row_index(&d.view(), "server.tags");
+        let v = d.append_item(i, "gamma".to_string());
+        assert!(v.dirty);
+        assert!(d.source().contains("gamma"));
+        assert!(v.rows.iter().any(|r| r.id == "server.tags.2"), "new item visible");
+    }
+
+    #[test]
+    fn insert_key_adds_to_a_mapping() {
+        let d = doc();
+        let i = row_index(&d.view(), "server");
+        let v = d.insert_key(i, "scheme".to_string(), "https".to_string());
+        assert!(v.dirty);
+        assert!(d.source().contains("scheme") && d.source().contains("= \"https\""));
+    }
+
+    #[test]
+    fn insert_key_on_a_scalar_is_a_hinted_noop() {
+        let d = doc();
+        let i = row_index(&d.view(), "version");
+        let v = d.insert_key(i, "x".to_string(), "1".to_string());
+        assert!(!v.dirty);
+        assert!(v.status.contains("mapping"));
+    }
+
+    #[test]
+    fn move_row_reorders_within_the_parent() {
+        let d = doc();
+        // Move the second tag up; beta should then precede alpha.
+        let i = row_index(&d.view(), "server.tags.1");
+        d.move_row_up(i);
+        let src = d.source();
+        assert!(src.find("beta").unwrap() < src.find("alpha").unwrap());
     }
 
     #[test]

@@ -27,6 +27,25 @@ pub enum EditOp {
     DeleteKey { path: Vec<Seg> },
     /// Remove item `index` from the sequence at `seq_path`.
     RemoveItem { seq_path: Vec<Seg>, index: usize },
+    /// Insert `key = value` into the mapping at `map_path`.
+    InsertKey {
+        map_path: Vec<Seg>,
+        key: String,
+        value: Value,
+    },
+    /// Append `value` to the sequence at `seq_path`.
+    AppendItem { seq_path: Vec<Seg>, value: Value },
+    /// Move the item at `from` to `to` in the sequence at `seq_path`.
+    MoveItem {
+        seq_path: Vec<Seg>,
+        from: usize,
+        to: usize,
+    },
+    /// Reorder the mapping at `map_path` so its entries follow `keys`.
+    ReorderKeys {
+        map_path: Vec<Seg>,
+        keys: Vec<String>,
+    },
 }
 
 /// A backend failure, carrying the underlying message. An error means the edit
@@ -86,6 +105,30 @@ impl Backend for FigBackend {
             EditOp::RemoveItem { seq_path, index } => self
                 .editor
                 .remove_item(&tree::to_fig(&seq_path), index)
+                .map_err(err),
+            EditOp::InsertKey {
+                map_path,
+                key,
+                value,
+            } => self
+                .editor
+                .insert_value(&tree::to_fig(&map_path), &key, value)
+                .map_err(err),
+            EditOp::AppendItem { seq_path, value } => self
+                .editor
+                .append_value(&tree::to_fig(&seq_path), value)
+                .map_err(err),
+            EditOp::MoveItem {
+                seq_path,
+                from,
+                to,
+            } => self
+                .editor
+                .move_item(&tree::to_fig(&seq_path), from, to)
+                .map_err(err),
+            EditOp::ReorderKeys { map_path, keys } => self
+                .editor
+                .reorder_keys(&tree::to_fig(&map_path), &keys)
                 .map_err(err),
         }
     }

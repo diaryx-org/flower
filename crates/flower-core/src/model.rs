@@ -12,6 +12,7 @@ use anyhow::Result;
 use fig::Value;
 
 use crate::backend::{Backend, EditOp};
+use crate::schema::{FieldRule, Schema, Validation};
 use crate::tree::{self, Row, Seg};
 
 /// Interaction mode: normal navigation, or editing a scalar's text.
@@ -31,6 +32,11 @@ pub struct Model<B> {
     /// document). Empty for a standalone config; a prov/diaryx embedder passes the
     /// managed-key set so those fields stay lossless and out of view.
     hidden: HashSet<String>,
+    /// The schema governing this document, if any — from the backend
+    /// ([`Backend::schema`]) or injected by the embedder ([`Model::set_schema`]).
+    /// Drives type-directed parsing and commit-time value validation; absent, the
+    /// model behaves exactly as before.
+    schema: Option<Schema>,
 
     pub selected: usize,
     pub mode: Mode,
@@ -49,12 +55,16 @@ impl<B: Backend> Model<B> {
     /// [`tree::build_rows`](crate::tree::build_rows)). For an embedder whose
     /// format reserves some top-level keys (prov/diaryx-managed frontmatter).
     pub fn with_hidden(backend: B, hidden: Vec<String>) -> Result<Self> {
+        // The backend supplies the schema when it knows one (a prov backend);
+        // otherwise it stays `None` until an embedder injects one.
+        let schema = backend.schema();
         let mut model = Model {
             backend,
             value: Value::Null,
             rows: Vec::new(),
             collapsed: HashSet::new(),
             hidden: hidden.into_iter().collect(),
+            schema,
             selected: 0,
             mode: Mode::Normal,
             status: "opened".to_string(),
@@ -62,6 +72,25 @@ impl<B: Backend> Model<B> {
         };
         model.reload()?;
         Ok(model)
+    }
+
+    /// Inject a schema out-of-band — the embedder precedent, mirroring
+    /// [`with_hidden`](Self::with_hidden). For a host whose backend does not
+    /// supply one but that *knows* the governing schema (a diaryx host feeding a
+    /// fig-backed frontmatter block plus its resolved workspace config).
+    pub fn set_schema(&mut self, schema: Schema) {
+        self.schema = Some(schema);
+    }
+
+    /// The schema governing the document, if any.
+    pub fn schema(&self) -> Option<&Schema> {
+        self.schema.as_ref()
+    }
+
+    /// The schema rule governing the node at `path`, if any — for a frontend
+    /// deciding a widget (a picker for an enum field) or presentation.
+    pub fn rule_at(&self, path: &[Seg]) -> Option<&FieldRule> {
+        self.schema.as_ref().and_then(|s| s.rule_for(path))
     }
 
     /// The kind of the document root, for a frontend deciding how to add a
@@ -265,7 +294,12 @@ impl<B: Backend> Model<B> {
             return;
         };
         let path = row.path.clone();
-        let value = tree::parse_scalar(&buffer);
+        // Type-directed parse when the schema knows the field's type (a `str`
+        // field keeps `"123"` a string); otherwise fall back to shape-guessing.
+        let value = match self.rule_at(&path).and_then(|r| r.ty) {
+            Some(ty) => ty.coerce(&buffer),
+            None => tree::parse_scalar(&buffer),
+        };
         self.commit(
             EditOp::ReplaceValue {
                 path: path.clone(),
@@ -289,6 +323,19 @@ impl<B: Backend> Model<B> {
             path.to_vec(),
             "value updated",
         );
+    }
+
+    /// Set the scalar at `path` from an edit-buffer `text`, coercing by the
+    /// schema's expected type when known (a `str` field keeps `"123"` a string)
+    /// and otherwise guessing by literal shape — the by-path, schema-aware analog
+    /// of [`edit_commit`](Self::edit_commit). Validation (closed-vocabulary
+    /// rejection) still happens at the commit funnel.
+    pub fn set_scalar_text(&mut self, path: &[Seg], text: &str) {
+        let value = match self.rule_at(path).and_then(|r| r.ty) {
+            Some(ty) => ty.coerce(text),
+            None => tree::parse_scalar(text),
+        };
+        self.set_value_at(path, value);
     }
 
     /// Rename the mapping entry at `path` to `new_key`, keeping its value and
@@ -475,10 +522,32 @@ impl<B: Backend> Model<B> {
     }
 
     /// Apply one edit through the backend, then refresh the view (or report the
-    /// rollback). The single path every mutation funnels through.
+    /// rollback). The single path every mutation funnels through — and the choke
+    /// point where the schema validates values: a closed vocabulary rejects an
+    /// unknown value here, before it reaches the backend; an open one applies but
+    /// surfaces a soft warning. fig's reparse stays the last-resort backstop.
     fn commit(&mut self, op: EditOp, anchor: Vec<Seg>, msg: &str) {
+        let mut warn: Option<String> = None;
+        if let Some((path, value)) = op_target(&op)
+            && let Some(rule) = self.rule_at(&path)
+        {
+            match rule.validate(value) {
+                Validation::Reject(why) => {
+                    self.status = format!("rejected: {why}");
+                    return;
+                }
+                Validation::Warn(why) => warn = Some(why),
+                Validation::Ok => {}
+            }
+        }
         match self.backend.apply(op) {
-            Ok(()) => self.after_edit(&anchor, msg),
+            Ok(()) => {
+                self.after_edit(&anchor, msg);
+                // A soft-warn overrides the success status so the user sees it.
+                if let Some(why) = warn {
+                    self.status = why;
+                }
+            }
             // The backend rolled back / declined; the document is untouched.
             Err(e) => self.status = format!("rejected: {e}"),
         }
@@ -512,6 +581,32 @@ impl<B: Backend> Model<B> {
             };
         }
         Some(cur.clone())
+    }
+}
+
+/// The (target path, value) a value-bearing [`EditOp`] writes — what schema
+/// validation checks. An append's item index isn't known here, so a placeholder
+/// `Index(0)` stands in; it only serves to match an `EachItem` rule pattern, which
+/// is index-agnostic. Structural ops (delete, move, reorder, rename) carry no new
+/// value and return `None`.
+fn op_target(op: &EditOp) -> Option<(Vec<Seg>, &Value)> {
+    match op {
+        EditOp::ReplaceValue { path, value } => Some((path.clone(), value)),
+        EditOp::InsertKey {
+            map_path,
+            key,
+            value,
+        } => {
+            let mut p = map_path.clone();
+            p.push(Seg::Key(key.clone()));
+            Some((p, value))
+        }
+        EditOp::AppendItem { seq_path, value } => {
+            let mut p = seq_path.clone();
+            p.push(Seg::Index(0));
+            Some((p, value))
+        }
+        _ => None,
     }
 }
 
@@ -741,6 +836,64 @@ timeout = 30.5
             "nope",
         );
         assert!(model.status.contains("mapping keys"));
+    }
+
+    #[test]
+    fn schema_closed_vocabulary_rejects_an_unknown_edit() {
+        use crate::schema::{Constraint, FieldRule, FieldType, PathPat, Presentation, Term};
+        let src = "audience = [\"public\"]\ntitle = \"note\"\n";
+        let backend = FigBackend::open(src.as_bytes(), Format::Toml).expect("open");
+        let mut model = Model::new(backend).expect("model");
+        model.set_schema(crate::schema::Schema::new(vec![FieldRule {
+            at: PathPat::each_item_of("audience"),
+            ty: Some(FieldType::Str),
+            constraint: Some(Constraint::Enum {
+                values: vec![Term::value("public"), Term::value("private")],
+                closed: true,
+            }),
+            present: Presentation::default(),
+        }]));
+
+        // An unknown value is rejected at the commit funnel; the document is
+        // untouched (fig never sees the edit).
+        select(&mut model, &[Seg::Key("audience".into()), Seg::Index(0)]);
+        model.begin_edit();
+        type_value(&mut model, "familly");
+        assert!(model.status.contains("rejected"), "status: {}", model.status);
+        assert!(
+            model.source_snapshot().contains("public"),
+            "document unchanged:\n{}",
+            model.source_snapshot()
+        );
+
+        // A known value commits normally.
+        model.begin_edit();
+        type_value(&mut model, "private");
+        let out = model.source_snapshot();
+        assert!(out.contains("private"), "known value applied:\n{out}");
+        assert!(!out.contains("public"), "old value replaced:\n{out}");
+    }
+
+    #[test]
+    fn schema_typed_field_keeps_a_numeric_string_as_text() {
+        use crate::schema::{FieldRule, FieldType, PathPat, Presentation};
+        let src = "code = \"x\"\n";
+        let backend = FigBackend::open(src.as_bytes(), Format::Toml).expect("open");
+        let mut model = Model::new(backend).expect("model");
+        model.set_schema(crate::schema::Schema::new(vec![FieldRule {
+            at: PathPat::key("code"),
+            ty: Some(FieldType::Str),
+            constraint: None,
+            present: Presentation::default(),
+        }]));
+
+        select(&mut model, &[Seg::Key("code".into())]);
+        model.begin_edit();
+        type_value(&mut model, "123");
+        // Schema says `str`, so the buffer stays a quoted string rather than being
+        // coerced to an integer the way the shape-guessing heuristic would.
+        let out = model.source_snapshot();
+        assert!(out.contains("code = \"123\""), "kept as string:\n{out}");
     }
 
     #[test]

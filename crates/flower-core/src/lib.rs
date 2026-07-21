@@ -10,9 +10,14 @@
 pub mod backend;
 pub mod format;
 pub mod model;
+pub mod schema;
 pub mod tree;
 
 pub use backend::{Backend, BackendError, EditOp, FigBackend};
 pub use format::detect;
 pub use model::{Mode, Model};
+pub use schema::{
+    Cardinality, Constraint, FieldRule, FieldType, Icon, PathPat, Presentation, Schema, SegPat,
+    Term, Tint, Validation,
+};
 pub use tree::{Row, Seg, VKind};

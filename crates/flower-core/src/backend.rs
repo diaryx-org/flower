@@ -80,6 +80,15 @@ pub trait Backend {
     /// The canonical serialized form the embedder persists on save (for an embed
     /// backend, the full rendered host file).
     fn source(&self) -> Result<String, BackendError>;
+
+    /// The schema governing this document, if the backend knows one. The backend
+    /// is exactly the component that knows *where the document came from*, so it is
+    /// the right place to know what governs it — a prov backend returns the schema
+    /// resolved from the workspace config; a standalone config file has none.
+    /// Defaulted to `None` so existing backends are unaffected.
+    fn schema(&self) -> Option<crate::schema::Schema> {
+        None
+    }
 }
 
 /// A [`Backend`] over a standalone config file, backed by [`fig::Editor`].

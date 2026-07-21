@@ -1,0 +1,609 @@
+<title>Flower — settings-style mockup</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  /* ─ Tokens ─────────────────────────────────────────────────────────────
+     A calm, botanical-neutral settings surface. Neutrals carry a faint green
+     bias (flower/leaf), the accent is a muted botanical green, and each row's
+     icon tile gets its own category hue — the device that makes a form read as
+     "settings" rather than a data table. Type is the native UI stack on
+     purpose: a settings panel should look like the system's own. */
+  :root {
+    --ground: #eaeee7;
+    --panel: #f6f8f3;
+    --card: #ffffff;
+    --ink: #1a241f;
+    --muted: #66756c;
+    --faint: #93a097;
+    --line: #e6eae3;
+    --line-strong: #d8ded4;
+    --accent: #35794f;
+    --accent-soft: #e7f1ea;
+    --sel: #edf4ee;
+    --field: #eef1eb;
+    --shadow: 0 1px 2px rgba(20, 40, 28, .05), 0 12px 30px rgba(20, 40, 28, .07);
+    --radius: 14px;
+
+    --tile-author: #5566d8;
+    --tile-tags: #2aa39a;
+    --tile-vis: #c98a26;
+    --tile-pin: #d85f84;
+    --tile-pri: #8a68df;
+    --tile-host: #3a8bd4;
+    --tile-port: #6b7886;
+    --tile-tls: #35794f;
+    --tile-limits: #4f80c9;
+
+    --font: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --ground: #0e120f;
+      --panel: #141a15;
+      --card: #1b211d;
+      --ink: #e9eeea;
+      --muted: #94a19a;
+      --faint: #69726b;
+      --line: #29312b;
+      --line-strong: #333c35;
+      --accent: #74c99e;
+      --accent-soft: #1d2a22;
+      --sel: #1f2b23;
+      --field: #232a25;
+      --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 14px 32px rgba(0, 0, 0, .38);
+    }
+  }
+  :root[data-theme="light"] {
+    --ground: #eaeee7; --panel: #f6f8f3; --card: #ffffff; --ink: #1a241f;
+    --muted: #66756c; --faint: #93a097; --line: #e6eae3; --line-strong: #d8ded4;
+    --accent: #35794f; --accent-soft: #e7f1ea; --sel: #edf4ee; --field: #eef1eb;
+    --shadow: 0 1px 2px rgba(20,40,28,.05), 0 12px 30px rgba(20,40,28,.07);
+  }
+  :root[data-theme="dark"] {
+    --ground: #0e120f; --panel: #141a15; --card: #1b211d; --ink: #e9eeea;
+    --muted: #94a19a; --faint: #69726b; --line: #29312b; --line-strong: #333c35;
+    --accent: #74c99e; --accent-soft: #1d2a22; --sel: #1f2b23; --field: #232a25;
+    --shadow: 0 1px 2px rgba(0,0,0,.3), 0 14px 32px rgba(0,0,0,.38);
+  }
+
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: var(--font);
+    color: var(--ink);
+    background:
+      radial-gradient(1200px 600px at 50% -10%, color-mix(in srgb, var(--accent) 7%, transparent), transparent 60%),
+      var(--ground);
+    -webkit-font-smoothing: antialiased;
+    line-height: 1.4;
+  }
+  .stage {
+    max-width: 760px;
+    margin: 0 auto;
+    padding: 40px 20px 72px;
+    display: flex;
+    flex-direction: column;
+    gap: 22px;
+  }
+
+  /* ─ Page header ─ */
+  .masthead { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .brand { display: flex; align-items: center; gap: 9px; }
+  .brand .leaf { width: 22px; height: 22px; color: var(--accent); }
+  .brand b { font-size: 19px; font-weight: 650; letter-spacing: -.01em; }
+  .brand span { color: var(--muted); font-size: 14px; }
+  .masthead .spacer { flex: 1; }
+
+  /* Segmented view switch */
+  .segmented {
+    display: inline-flex;
+    background: color-mix(in srgb, var(--ink) 7%, transparent);
+    border-radius: 9px;
+    padding: 2px;
+    gap: 2px;
+  }
+  .segmented button {
+    font: inherit; font-size: 13px; font-weight: 550;
+    color: var(--muted);
+    border: 0; background: transparent; cursor: pointer;
+    padding: 5px 13px; border-radius: 7px;
+    transition: color .15s, background .15s, box-shadow .15s;
+  }
+  .segmented button[aria-selected="true"] {
+    color: var(--ink);
+    background: var(--card);
+    box-shadow: 0 1px 2px rgba(0,0,0,.12);
+  }
+  .segmented button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+  /* ─ Faux app window ─ */
+  .window {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: 16px;
+    box-shadow: var(--shadow);
+    overflow: hidden;
+  }
+  .titlebar {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    align-items: center;
+    gap: 10px;
+    padding: 11px 14px;
+    background: color-mix(in srgb, var(--card) 55%, var(--panel));
+    border-bottom: 1px solid var(--line);
+  }
+  .lights { display: flex; gap: 7px; }
+  .lights i { width: 11px; height: 11px; border-radius: 50%; display: block; }
+  .lights i:nth-child(1) { background: #ec6a5e; }
+  .lights i:nth-child(2) { background: #f4bf4f; }
+  .lights i:nth-child(3) { background: #61c554; }
+  .title { text-align: center; font-size: 13px; font-weight: 600; color: var(--muted); }
+  .title b { color: var(--ink); font-weight: 600; }
+  .tools { display: flex; gap: 4px; justify-content: flex-end; color: var(--muted); }
+  .tools button {
+    display: grid; place-items: center;
+    width: 28px; height: 24px; border-radius: 7px;
+    border: 0; background: transparent; color: inherit; cursor: pointer;
+  }
+  .tools button:hover { background: color-mix(in srgb, var(--ink) 8%, transparent); color: var(--ink); }
+  .tools svg { width: 16px; height: 16px; }
+
+  .content { padding: 22px 20px 8px; }
+
+  /* ─ Settings groups ─ */
+  .group { margin-bottom: 24px; }
+  .group > h2 {
+    margin: 0 0 8px 14px;
+    font-size: 12px; font-weight: 650;
+    letter-spacing: .06em; text-transform: uppercase;
+    color: var(--faint);
+  }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    overflow: hidden;
+  }
+
+  .row {
+    display: grid;
+    grid-template-columns: 30px 1fr auto;
+    align-items: center;
+    gap: 13px;
+    padding: 11px 14px;
+    min-height: 52px;
+    position: relative;
+    cursor: default;
+    transition: background .12s;
+  }
+  .row + .row::before {
+    content: "";
+    position: absolute; left: 57px; right: 0; top: 0;
+    border-top: 1px solid var(--line);
+  }
+  .row:hover { background: color-mix(in srgb, var(--ink) 3.5%, transparent); }
+  .row.selected { background: var(--sel); }
+  .row.drill { cursor: pointer; }
+
+  .tile {
+    width: 30px; height: 30px; border-radius: 8px;
+    display: grid; place-items: center;
+    color: var(--t);
+    background: color-mix(in srgb, var(--t) 16%, transparent);
+  }
+  .tile svg { width: 18px; height: 18px; }
+
+  .label { min-width: 0; }
+  .label .name { font-size: 15px; font-weight: 500; letter-spacing: -.005em; }
+  .label .desc { font-size: 12.5px; color: var(--muted); margin-top: 1px; }
+  .label .desc.fromcomment::before {
+    content: ""; display: inline-block;
+    width: 6px; height: 6px; border-radius: 50%;
+    background: color-mix(in srgb, var(--accent) 55%, transparent);
+    margin-right: 6px; vertical-align: middle;
+  }
+
+  .control { display: flex; align-items: center; gap: 10px; justify-self: end; }
+  .value { font-size: 15px; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .value .edit { color: var(--ink); }
+  .chev { width: 17px; height: 17px; color: var(--faint); }
+
+  /* Switch */
+  .switch {
+    --w: 42px; --h: 25px;
+    width: var(--w); height: var(--h);
+    border: 0; padding: 0; border-radius: 999px; cursor: pointer;
+    background: var(--line-strong);
+    position: relative; transition: background .18s;
+    flex: none;
+  }
+  .switch::after {
+    content: ""; position: absolute; top: 2.5px; left: 2.5px;
+    width: 20px; height: 20px; border-radius: 50%;
+    background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.28);
+    transition: transform .18s;
+  }
+  .switch[aria-checked="true"] { background: var(--accent); }
+  .switch[aria-checked="true"]::after { transform: translateX(17px); }
+  .switch:focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+
+  /* Segmented enum picker */
+  .enum {
+    display: inline-flex; background: var(--field);
+    border-radius: 9px; padding: 2px;
+  }
+  .enum button {
+    font: inherit; font-size: 13px; font-weight: 520; color: var(--muted);
+    border: 0; background: transparent; cursor: pointer;
+    padding: 4px 11px; border-radius: 7px; transition: all .14s;
+  }
+  .enum button[aria-selected="true"] {
+    color: var(--ink); background: var(--card);
+    box-shadow: 0 1px 2px rgba(0,0,0,.14);
+  }
+
+  /* Stepper */
+  .stepper {
+    display: inline-flex; align-items: center;
+    background: var(--field); border-radius: 9px; overflow: hidden;
+  }
+  .stepper button {
+    font: inherit; border: 0; background: transparent; cursor: pointer;
+    color: var(--ink); width: 30px; height: 30px; display: grid; place-items: center;
+  }
+  .stepper button:hover { background: color-mix(in srgb, var(--ink) 8%, transparent); }
+  .stepper svg { width: 14px; height: 14px; }
+  .stepper .n { min-width: 34px; text-align: center; font-size: 15px; font-variant-numeric: tabular-nums; }
+
+  /* Slider */
+  .slider { display: flex; align-items: center; gap: 11px; }
+  .slider .track {
+    width: 128px; height: 5px; border-radius: 3px;
+    background: var(--field); position: relative;
+  }
+  .slider .fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 3px; background: var(--accent); }
+  .slider .knob {
+    position: absolute; top: 50%; width: 17px; height: 17px; border-radius: 50%;
+    background: var(--card); border: 1px solid var(--line-strong);
+    box-shadow: 0 1px 3px rgba(0,0,0,.22); transform: translate(-50%, -50%);
+  }
+  .slider input { position: absolute; inset: -8px 0; width: 100%; opacity: 0; cursor: pointer; }
+  .slider .num { font-size: 15px; color: var(--ink); font-variant-numeric: tabular-nums; min-width: 14px; }
+
+  /* Field pill */
+  .fieldpill {
+    font: inherit; font-size: 15px; color: var(--ink);
+    background: var(--field); border: 1px solid transparent;
+    border-radius: 8px; padding: 5px 11px; text-align: right;
+    min-width: 130px; transition: border-color .14s, background .14s;
+  }
+  .fieldpill:focus { outline: 0; border-color: var(--accent); background: var(--card); }
+
+  /* Chips */
+  .chips { display: flex; flex-wrap: wrap; gap: 7px; justify-content: flex-end; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 13px; font-weight: 500;
+    padding: 4px 6px 4px 11px; border-radius: 999px;
+    background: var(--accent-soft); color: var(--accent);
+  }
+  .chip button {
+    border: 0; background: transparent; cursor: pointer; color: inherit;
+    width: 16px; height: 16px; border-radius: 50%; display: grid; place-items: center; opacity: .7;
+  }
+  .chip button:hover { opacity: 1; background: color-mix(in srgb, var(--accent) 18%, transparent); }
+  .chip.add {
+    background: transparent; color: var(--muted);
+    border: 1px dashed var(--line-strong); padding: 4px 11px; cursor: pointer;
+  }
+  .chip.add:hover { color: var(--accent); border-color: var(--accent); }
+
+  /* Managed footer inside window */
+  .managed {
+    display: flex; align-items: center; gap: 8px;
+    padding: 12px 18px 18px; color: var(--faint); font-size: 12.5px;
+  }
+  .managed svg { width: 13px; height: 13px; }
+
+  /* ─ Source-tree (before) view ─ */
+  .tree {
+    font-family: var(--mono); font-size: 13.5px; line-height: 1.9;
+    padding: 18px 20px 26px;
+  }
+  .tree .tr { white-space: pre; }
+  .tree .k { color: var(--ink); font-weight: 500; }
+  .tree .tw { color: var(--faint); }
+  .tree .eq { color: var(--faint); }
+  .tree .s { color: #3f9d6b; }
+  .tree .n { color: #4f9bd6; }
+  .tree .b { color: #a06fe0; }
+  .tree .meta { color: var(--faint); }
+  @media (prefers-color-scheme: dark) {
+    .tree .s { color: #7fd6a3; } .tree .n { color: #7cc2f2; } .tree .b { color: #c0a2f2; }
+  }
+  :root[data-theme="light"] .tree .s { color:#3f9d6b; } :root[data-theme="light"] .tree .n{color:#4f9bd6;} :root[data-theme="light"] .tree .b{color:#a06fe0;}
+  :root[data-theme="dark"] .tree .s { color:#7fd6a3; } :root[data-theme="dark"] .tree .n{color:#7cc2f2;} :root[data-theme="dark"] .tree .b{color:#c0a2f2;}
+
+  [hidden] { display: none !important; }
+
+  /* ─ Legend ─ */
+  .legend { }
+  .legend h3 {
+    margin: 0 0 12px; font-size: 13px; font-weight: 600;
+    letter-spacing: .02em; color: var(--muted); text-align: center;
+  }
+  .maps { display: grid; grid-template-columns: repeat(auto-fill, minmax(210px, 1fr)); gap: 9px; }
+  .map {
+    display: flex; align-items: center; gap: 9px;
+    background: var(--card); border: 1px solid var(--line);
+    border-radius: 10px; padding: 9px 12px; font-size: 13px;
+  }
+  .map code {
+    font-family: var(--mono); font-size: 12px;
+    background: var(--field); padding: 2px 6px; border-radius: 5px; color: var(--ink);
+    white-space: nowrap;
+  }
+  .map .arrow { color: var(--faint); }
+  .map .to { color: var(--muted); }
+
+  .note {
+    text-align: center; color: var(--faint); font-size: 12.5px;
+    max-width: 60ch; margin: 4px auto 0; line-height: 1.6;
+  }
+
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+  @media (max-width: 520px) {
+    .fieldpill { min-width: 96px; }
+    .slider .track { width: 92px; }
+    .title { font-size: 12px; }
+  }
+</style>
+
+<!-- Icon sprite -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-leaf" viewBox="0 0 24 24" fill="currentColor"><path d="M20 4S8.5 3 5.5 10c-2 4.7.5 8.5.5 8.5S4 14 8 11c3-2.2 7-2.5 7-2.5S9 10 6.8 16.4C10 20 17 19 19.5 12 21 8 20 4 20 4z"/></symbol>
+  <symbol id="i-person" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="12" cy="8" r="3.4"/><path d="M5.5 19c.6-3.4 3.3-5 6.5-5s5.9 1.6 6.5 5"/></symbol>
+  <symbol id="i-tag" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M4 4h7l9 9-7 7-9-9V4z"/><circle cx="8" cy="8" r="1.4" fill="currentColor" stroke="none"/></symbol>
+  <symbol id="i-eye" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="2.6"/></symbol>
+  <symbol id="i-pin" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4h6l-1 6 3 3H7l3-3-1-6z"/><path d="M12 16v4"/></symbol>
+  <symbol id="i-bars" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M6 20v-5M12 20V8M18 20V12"/></symbol>
+  <symbol id="i-globe" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><circle cx="12" cy="12" r="8.2"/><path d="M3.8 12h16.4M12 3.8c2.4 2.3 2.4 13.9 0 16.4M12 3.8c-2.4 2.3-2.4 13.9 0 16.4"/></symbol>
+  <symbol id="i-hash" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M9 4 7 20M17 4l-2 16M4 9h16M3 15h16"/></symbol>
+  <symbol id="i-shield" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M12 3l7 3v5c0 4.5-3 7.5-7 9-4-1.5-7-4.5-7-9V6l7-3z"/><path d="M9 12l2 2 4-4"/></symbol>
+  <symbol id="i-sliders" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M4 8h10M18 8h2M4 16h4M12 16h8"/><circle cx="16" cy="8" r="2.1"/><circle cx="10" cy="16" r="2.1"/></symbol>
+  <symbol id="i-chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 6l6 6-6 6"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></symbol>
+  <symbol id="i-minus" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"/></symbol>
+  <symbol id="i-x" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></symbol>
+  <symbol id="i-lock" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><rect x="5" y="10.5" width="14" height="9.5" rx="2"/><path d="M8 10.5V8a4 4 0 0 1 8 0v2.5"/></symbol>
+  <symbol id="i-save" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 4v9m0 0l-3.2-3.2M12 13l3.2-3.2M5 16v2a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-2"/></symbol>
+</svg>
+
+<div class="stage">
+  <header class="masthead">
+    <div class="brand">
+      <svg class="leaf"><use href="#i-leaf" /></svg>
+      <b>flower</b>
+      <span>settings-style mockup</span>
+    </div>
+    <div class="spacer"></div>
+    <div class="segmented" role="tablist" aria-label="View">
+      <button role="tab" aria-selected="true" data-view="settings">Settings</button>
+      <button role="tab" aria-selected="false" data-view="tree">Source tree</button>
+    </div>
+  </header>
+
+  <div class="window">
+    <div class="titlebar">
+      <div class="lights"><i></i><i></i><i></i></div>
+      <div class="title"><b>flower</b> · note.yaml</div>
+      <div class="tools">
+        <button title="Add"><svg><use href="#i-plus" /></svg></button>
+        <button title="Save"><svg><use href="#i-save" /></svg></button>
+      </div>
+    </div>
+
+    <!-- SETTINGS VIEW -->
+    <div id="settings" class="content">
+      <section class="group">
+        <h2>The note</h2>
+        <div class="card">
+
+          <div class="row selected">
+            <div class="tile" style="--t: var(--tile-author)"><svg><use href="#i-person" /></svg></div>
+            <div class="label"><div class="name">Author</div></div>
+            <div class="control"><input class="fieldpill" value="alice" aria-label="Author" /></div>
+          </div>
+
+          <div class="row">
+            <div class="tile" style="--t: var(--tile-tags)"><svg><use href="#i-tag" /></svg></div>
+            <div class="label">
+              <div class="name">Tags</div>
+              <div class="desc fromcomment">Keywords for search and filtering</div>
+            </div>
+            <div class="control">
+              <div class="chips">
+                <span class="chip">journal<button aria-label="Remove journal"><svg><use href="#i-x"/></svg></button></span>
+                <span class="chip">draft<button aria-label="Remove draft"><svg><use href="#i-x"/></svg></button></span>
+                <button class="chip add">Add</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="row">
+            <div class="tile" style="--t: var(--tile-vis)"><svg><use href="#i-eye" /></svg></div>
+            <div class="label">
+              <div class="name">Visibility</div>
+              <div class="desc fromcomment">Who can see this note</div>
+            </div>
+            <div class="control">
+              <div class="enum" role="tablist" aria-label="Visibility">
+                <button role="tab" aria-selected="true">Private</button>
+                <button role="tab" aria-selected="false">Unlisted</button>
+                <button role="tab" aria-selected="false">Public</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="row">
+            <div class="tile" style="--t: var(--tile-pin)"><svg><use href="#i-pin" /></svg></div>
+            <div class="label"><div class="name">Pinned</div></div>
+            <div class="control"><button class="switch" role="switch" aria-checked="false" aria-label="Pinned"></button></div>
+          </div>
+
+          <div class="row">
+            <div class="tile" style="--t: var(--tile-pri)"><svg><use href="#i-bars" /></svg></div>
+            <div class="label">
+              <div class="name">Priority</div>
+              <div class="desc fromcomment">Higher notes surface first in the list</div>
+            </div>
+            <div class="control">
+              <div class="slider" data-min="1" data-max="5">
+                <div class="track"><div class="fill"></div><div class="knob"></div>
+                  <input type="range" min="1" max="5" value="3" aria-label="Priority" />
+                </div>
+                <span class="num">3</span>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </section>
+
+      <section class="group">
+        <h2>Server</h2>
+        <div class="card">
+
+          <div class="row">
+            <div class="tile" style="--t: var(--tile-host)"><svg><use href="#i-globe" /></svg></div>
+            <div class="label"><div class="name">Host</div></div>
+            <div class="control"><input class="fieldpill" value="localhost" aria-label="Host" /></div>
+          </div>
+
+          <div class="row">
+            <div class="tile" style="--t: var(--tile-port)"><svg><use href="#i-hash" /></svg></div>
+            <div class="label">
+              <div class="name">Port</div>
+              <div class="desc fromcomment">The port the server listens on</div>
+            </div>
+            <div class="control">
+              <div class="stepper" data-min="1" data-max="65535">
+                <button class="dec" aria-label="Decrease port"><svg><use href="#i-minus"/></svg></button>
+                <span class="n">8080</span>
+                <button class="inc" aria-label="Increase port"><svg><use href="#i-plus"/></svg></button>
+              </div>
+            </div>
+          </div>
+
+          <div class="row">
+            <div class="tile" style="--t: var(--tile-tls)"><svg><use href="#i-shield" /></svg></div>
+            <div class="label"><div class="name">TLS</div><div class="desc">Encrypt connections</div></div>
+            <div class="control"><button class="switch" role="switch" aria-checked="true" aria-label="TLS"></button></div>
+          </div>
+
+          <div class="row drill" tabindex="0">
+            <div class="tile" style="--t: var(--tile-limits)"><svg><use href="#i-sliders" /></svg></div>
+            <div class="label"><div class="name">Limits</div><div class="desc">Max connections, timeout</div></div>
+            <div class="control"><span class="value">2 settings</span><svg class="chev"><use href="#i-chev" /></svg></div>
+          </div>
+
+        </div>
+      </section>
+
+      <div class="managed">
+        <svg><use href="#i-lock" /></svg>
+        5 fields managed by Prov — kept in the file, hidden here
+      </div>
+    </div>
+
+    <!-- SOURCE-TREE VIEW (today's look, for contrast) -->
+    <div id="tree" class="tree" hidden>
+      <div class="tr"><span class="tw">·</span> <span class="k">author</span> <span class="eq">=</span> <span class="s">alice</span></div>
+      <div class="tr"><span class="tw">▾</span> <span class="k">tags</span> <span class="meta">[2]</span></div>
+      <div class="tr">    <span class="tw">·</span> <span class="k">[0]</span> <span class="eq">=</span> <span class="s">journal</span></div>
+      <div class="tr">    <span class="tw">·</span> <span class="k">[1]</span> <span class="eq">=</span> <span class="s">draft</span></div>
+      <div class="tr"><span class="tw">·</span> <span class="k">visibility</span> <span class="eq">=</span> <span class="s">private</span></div>
+      <div class="tr"><span class="tw">·</span> <span class="k">pinned</span> <span class="eq">=</span> <span class="b">false</span></div>
+      <div class="tr"><span class="tw">·</span> <span class="k">priority</span> <span class="eq">=</span> <span class="n">3</span></div>
+      <div class="tr"><span class="tw">▾</span> <span class="k">server</span> <span class="meta">{4}</span></div>
+      <div class="tr">    <span class="tw">·</span> <span class="k">host</span> <span class="eq">=</span> <span class="s">localhost</span></div>
+      <div class="tr">    <span class="tw">·</span> <span class="k">port</span> <span class="eq">=</span> <span class="n">8080</span></div>
+      <div class="tr">    <span class="tw">·</span> <span class="k">tls</span> <span class="eq">=</span> <span class="b">true</span></div>
+      <div class="tr">    <span class="tw">▾</span> <span class="k">limits</span> <span class="meta">{2}</span></div>
+      <div class="tr">        <span class="tw">·</span> <span class="k">max_connections</span> <span class="eq">=</span> <span class="n">100</span></div>
+      <div class="tr">        <span class="tw">·</span> <span class="k">timeout</span> <span class="eq">=</span> <span class="n">30.5</span></div>
+    </div>
+  </div>
+
+  <section class="legend">
+    <h3>How a config file becomes a settings panel</h3>
+    <div class="maps">
+      <div class="map"><code># comment</code><span class="arrow">→</span><span class="to">row description</span></div>
+      <div class="map"><code>key:</code><span class="arrow">→</span><span class="to">labeled row + icon</span></div>
+      <div class="map"><code>true / false</code><span class="arrow">→</span><span class="to">switch</span></div>
+      <div class="map"><code>one&nbsp;of&nbsp;…</code><span class="arrow">→</span><span class="to">segmented picker</span></div>
+      <div class="map"><code>[a, b]</code><span class="arrow">→</span><span class="to">tag chips</span></div>
+      <div class="map"><code>1–5</code><span class="arrow">→</span><span class="to">slider</span></div>
+      <div class="map"><code>123</code><span class="arrow">→</span><span class="to">stepper</span></div>
+      <div class="map"><code>nested:</code><span class="arrow">→</span><span class="to">drill-in section</span></div>
+    </div>
+    <p class="note">The dotted marks are descriptions pulled from the file's comments — fig preserves them, so the config's own notes become the UI's help text. Icons, section titles, and enum choices come from a schema/config layer; everything else is inferred from the value's shape.</p>
+  </section>
+</div>
+
+<script>
+  // View switch
+  document.querySelectorAll('.segmented [data-view]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('.segmented [data-view]').forEach(b => b.setAttribute('aria-selected', b === btn));
+      const settings = btn.dataset.view === 'settings';
+      document.getElementById('settings').hidden = !settings;
+      document.getElementById('tree').hidden = settings;
+    });
+  });
+
+  // Switches
+  document.querySelectorAll('.switch').forEach(sw => {
+    sw.addEventListener('click', () => sw.setAttribute('aria-checked', sw.getAttribute('aria-checked') !== 'true'));
+  });
+
+  // Enum pickers
+  document.querySelectorAll('.enum').forEach(en => {
+    en.querySelectorAll('button').forEach(b => b.addEventListener('click', () => {
+      en.querySelectorAll('button').forEach(x => x.setAttribute('aria-selected', x === b));
+    }));
+  });
+
+  // Row selection highlight
+  document.querySelectorAll('.row').forEach(r => {
+    r.addEventListener('click', e => {
+      if (e.target.closest('button, input, .enum, .slider')) return;
+      document.querySelectorAll('.row.selected').forEach(x => x.classList.remove('selected'));
+      r.classList.add('selected');
+    });
+  });
+
+  // Steppers
+  document.querySelectorAll('.stepper').forEach(st => {
+    const n = st.querySelector('.n');
+    const min = +st.dataset.min, max = +st.dataset.max;
+    const set = d => { n.textContent = Math.max(min, Math.min(max, (+n.textContent) + d)); };
+    st.querySelector('.inc').addEventListener('click', () => set(1));
+    st.querySelector('.dec').addEventListener('click', () => set(-1));
+  });
+
+  // Sliders
+  document.querySelectorAll('.slider').forEach(sl => {
+    const input = sl.querySelector('input'), fill = sl.querySelector('.fill'),
+          knob = sl.querySelector('.knob'), num = sl.querySelector('.num');
+    const paint = () => {
+      const p = (input.value - input.min) / (input.max - input.min);
+      fill.style.width = (p * 100) + '%';
+      knob.style.left = (p * 100) + '%';
+      num.textContent = input.value;
+    };
+    input.addEventListener('input', paint);
+    paint();
+  });
+</script>

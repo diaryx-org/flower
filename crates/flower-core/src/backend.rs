@@ -46,6 +46,8 @@ pub enum EditOp {
         map_path: Vec<Seg>,
         keys: Vec<String>,
     },
+    /// Rename the mapping entry at `path` to `new_key`, keeping its value.
+    RenameKey { path: Vec<Seg>, new_key: String },
 }
 
 /// A backend failure, carrying the underlying message. An error means the edit
@@ -129,6 +131,10 @@ impl Backend for FigBackend {
             EditOp::ReorderKeys { map_path, keys } => self
                 .editor
                 .reorder_keys(&tree::to_fig(&map_path), &keys)
+                .map_err(err),
+            EditOp::RenameKey { path, new_key } => self
+                .editor
+                .replace_key(&tree::to_fig(&path), &new_key)
                 .map_err(err),
         }
     }

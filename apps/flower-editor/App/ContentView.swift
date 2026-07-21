@@ -24,7 +24,7 @@ struct ContentView: View {
         HStack(spacing: 10) {
             Image(systemName: "leaf.fill").foregroundStyle(.green)
             Text("flower").font(.headline)
-            Text("sample.toml").font(.subheadline).foregroundStyle(.secondary)
+            Text("note.yaml").font(.subheadline).foregroundStyle(.secondary)
             if model.isDirty {
                 Circle().fill(.secondary).frame(width: 6, height: 6)
             }
@@ -46,15 +46,21 @@ struct ContentView: View {
         .background(.bar)
     }
 
-    /// Structural editing controls, acting on the selected row: add a child to a
-    /// container, reorder within the parent, delete.
+    /// Structural editing controls, acting on the selected row: add (to root or a
+    /// selected container), reorder within the parent, and delete.
     @ViewBuilder private var structureControls: some View {
         let row = model.selectedRow
-        Button {
-            if let row { model.addChild(row) }
-        } label: { Image(systemName: "plus") }
-            .help("Add a key or item to the selected container")
-            .disabled(!(row.map(model.canAddChild) ?? false))
+        Menu {
+            Button("Add top-level field") { model.addRootChild() }
+            if let row, model.canAddChild(row) {
+                Button("Add to \"\(row.label)\"") { model.addChild(row) }
+            }
+        } label: {
+            Image(systemName: "plus")
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("Add a field to the document or the selected container")
 
         Button {
             if let row { model.moveRowUp(row) }
@@ -73,12 +79,18 @@ struct ContentView: View {
     }
 
     private var footer: some View {
-        HStack {
+        HStack(spacing: 10) {
             Text(model.status)
                 .font(.footnote)
                 .foregroundStyle(.secondary)
+            if model.hiddenCount > 0 {
+                Label("\(model.hiddenCount) managed fields hidden", systemImage: "lock.fill")
+                    .font(.footnote)
+                    .foregroundStyle(.tertiary)
+                    .help("Prov-managed keys (id, prov, contents, …) stay in the file but aren't shown or editable here.")
+            }
             Spacer()
-            Text("tap a value to edit · tap a ▸ to fold · right-click to delete")
+            Text("right-click a row to rename · add · reorder · delete")
                 .font(.footnote)
                 .foregroundStyle(.tertiary)
         }
@@ -99,23 +111,34 @@ private var editorBackground: Color {
 }
 
 private func makeModel() -> FlowerModel {
-    // The sample is valid TOML, so parsing cannot fail here.
-    try! FlowerModel(source: sampleToml, format: "toml")
+    // A Diaryx-style note: user fields mixed with prov-managed keys. Flower shows
+    // the user's fields and hides the managed ones — they stay in the file
+    // byte-for-byte so prov keeps owning them. In a real app this managed-key set
+    // comes from a diaryx binding (RelationSet::diaryx() + identity config), not a
+    // hardcoded list; here it's inline to demonstrate the mechanism.
+    try! FlowerModel(source: sampleNote, format: "yaml", hiddenKeys: diaryxManagedKeys)
 }
 
-private let sampleToml = """
-# flower sample config — comments and formatting survive edits
-title = "flower"
-version = 1
-enabled = true
+private let diaryxManagedKeys = [
+    "contents", "part_of", "links", "link_of", "registry",
+    "config", "recycle_bin", "id", "title", "prov",
+]
 
-# the server block
-[server]
-host = "localhost"
-port = 8080
-tags = ["alpha", "beta"]
-
-[server.limits]
-max_connections = 100
-timeout = 30.5
+private let sampleNote = """
+# Diaryx note — the managed keys below (id, title, prov, contents, …) are hidden
+# by flower; they remain in the file and prov keeps owning them.
+id: 01JQ8Z9K7M4RN0P2
+title: My First Note
+author: alice
+tags:
+  - journal
+  - draft
+visibility: private
+pinned: false
+priority: 3
+contents: []
+part_of: []
+prov:
+  version: 3
+  fixity: sha256-abc123
 """

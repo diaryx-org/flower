@@ -106,6 +106,36 @@ final class FlowerModelTests: XCTestCase {
         XCTAssertTrue(model.source().contains("enabled = false"))
     }
 
+    func testHiddenKeysAreProjectedOutButKept() throws {
+        let model = try FlowerModel(source: sample, format: "toml", hiddenKeys: ["title", "enabled"])
+        XCTAssertFalse(model.state.rows.contains { $0.id == "title" })
+        XCTAssertFalse(model.state.rows.contains { $0.id == "enabled" })
+        XCTAssertTrue(model.state.rows.contains { $0.id == "version" })
+        XCTAssertEqual(model.hiddenCount, 2)
+        XCTAssertTrue(model.source().contains("title = \"flower\""))
+    }
+
+    func testAddRootChildInsertsATopLevelKey() throws {
+        let model = try makeModel()
+        XCTAssertEqual(model.rootKind, "map")
+        model.addRootChild()
+        XCTAssertTrue(model.state.rows.contains { $0.id == "new_key" })
+        XCTAssertEqual(model.editingId, "new_key")
+    }
+
+    func testRenameKeyKeepsValue() throws {
+        let model = try makeModel()
+        guard let row = model.state.rows.first(where: { $0.id == "version" }) else {
+            return XCTFail("no version row")
+        }
+        model.beginRename(row)
+        XCTAssertEqual(model.renameBuffer, "version")
+        model.renameBuffer = "revision"
+        model.commitRename()
+        XCTAssertTrue(model.state.rows.contains { $0.id == "revision" })
+        XCTAssertTrue(model.source().contains("= 1"))
+    }
+
     func testThemeColoursValuesByKind() {
         let theme = FlowerTheme.default
         // Distinct kinds map to distinct colours; containers use chrome (secondary).

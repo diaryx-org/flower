@@ -124,14 +124,31 @@ pub fn edit_seed(v: &Value) -> String {
 }
 
 /// Build the flat row list from a document root, honoring the collapsed set
-/// (paths whose containers are collapsed).
-pub fn build_rows(root: &Value, collapsed: &HashSet<Vec<Seg>>) -> Vec<Row> {
+/// (paths whose containers are collapsed) and a set of **top-level** mapping keys
+/// to hide.
+///
+/// Hiding is scoped to the root map's own entries — a nested key that happens to
+/// share a hidden name is untouched. The hidden entries stay in the underlying
+/// `Value` (and therefore in the document's bytes); they merely produce no row.
+/// This is how a consumer whose format reserves some top-level keys (e.g. prov's
+/// managed frontmatter — `id`, `prov`, `contents`, …) keeps them lossless while
+/// showing the user only their own fields. Because only the *projection* is
+/// filtered — never the `Value` itself — sibling reorders still see the full key
+/// order and leave the hidden keys in place.
+pub fn build_rows(
+    root: &Value,
+    collapsed: &HashSet<Vec<Seg>>,
+    hidden_top_level: &HashSet<String>,
+) -> Vec<Row> {
     let mut rows = Vec::new();
     match root {
         // A map/seq root shows its children at depth 0 (no synthetic root row).
         Value::Map(entries) => {
             for (k, v) in entries {
                 let key = key_to_string(k);
+                if hidden_top_level.contains(&key) {
+                    continue;
+                }
                 push_node(&key, v, vec![Seg::Key(key.clone())], 0, collapsed, &mut rows);
             }
         }

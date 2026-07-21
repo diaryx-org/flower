@@ -78,6 +78,9 @@ pub struct RowView {
     pub is_container: bool,
     /// Meaningful only for containers: whether it is currently expanded.
     pub expanded: bool,
+    /// Whether this row is a mapping entry (its key can be renamed). `false` for a
+    /// sequence item, which has an index, not a key.
+    pub can_rename: bool,
 }
 
 /// A whole rendered frame: the visible rows, which is selected, and the
@@ -93,6 +96,12 @@ pub struct DocView {
     pub dirty: bool,
     /// The model's one-line status message (last action, or a rejected edit).
     pub status: String,
+    /// The document root's kind — `"map"`, `"seq"`, or `"scalar"` — so a frontend
+    /// knows whether a top-level "add" inserts a key or appends an item.
+    pub root_kind: String,
+    /// How many top-level keys are hidden (managed by an embedder). Lets a
+    /// frontend show a "N managed fields" affordance.
+    pub hidden_count: u32,
 }
 
 /// A live flower document bound for a native Apple frontend: a
@@ -138,12 +147,23 @@ impl std::ops::DerefMut for Inner {
 impl FlowerDoc {
     /// Parse `source` as `format` (`"json"`/`"jsonc"`/`"json5"`, `"yaml"`/`"yml"`,
     /// `"toml"`, `"zon"`, `"fig"`/`"figl"`) into a live, untitled document.
+    ///
+    /// `hidden_keys` are **top-level** mapping keys to hide from the row
+    /// projection while keeping them in the document (byte-for-byte). Pass `[]`
+    /// for a standalone config; a prov/diaryx frontend passes the managed-key set
+    /// so those fields stay lossless and out of view. The list is the caller's to
+    /// supply — flower stays format-agnostic and never names those keys itself.
     #[uniffi::constructor]
-    pub fn new(source: String, format: String) -> Result<Arc<Self>, FlowerError> {
+    pub fn new(
+        source: String,
+        format: String,
+        hidden_keys: Vec<String>,
+    ) -> Result<Arc<Self>, FlowerError> {
         let format = parse_format(&format)?;
         let backend = FigBackend::open(source.as_bytes(), format)
             .map_err(|e| FlowerError::Open { message: e.to_string() })?;
-        let model = Model::new(backend).map_err(|e| FlowerError::Open { message: e.to_string() })?;
+        let model = Model::with_hidden(backend, hidden_keys)
+            .map_err(|e| FlowerError::Open { message: e.to_string() })?;
         Ok(Arc::new(FlowerDoc { inner: Mutex::new(Inner(model)) }))
     }
 
@@ -294,6 +314,47 @@ impl FlowerDoc {
         m.move_selected_down();
         view_of(&m)
     }
+
+    /// Insert `key = text` at the **document root** (a top-level mapping entry),
+    /// inferring the value type by literal shape. The root-level counterpart to
+    /// [`insert_key`](Self::insert_key) — there is no root row to target by index.
+    /// A no-op with a status hint when the root isn't a mapping.
+    pub fn insert_root_key(&self, key: String, text: String) -> DocView {
+        let mut m = self.lock();
+        if m.root_kind() == "map" {
+            let value = flower_core::tree::parse_scalar(&text);
+            m.insert_key(&[], &key, value);
+        } else {
+            m.set_status("the document root is not a mapping");
+        }
+        view_of(&m)
+    }
+
+    /// Append `text` at the **document root** (a top-level sequence item). The
+    /// root-level counterpart to [`append_item`](Self::append_item). A no-op with
+    /// a status hint when the root isn't a sequence.
+    pub fn append_root_item(&self, text: String) -> DocView {
+        let mut m = self.lock();
+        if m.root_kind() == "seq" {
+            let value = flower_core::tree::parse_scalar(&text);
+            m.append_item(&[], value);
+        } else {
+            m.set_status("the document root is not a sequence");
+        }
+        view_of(&m)
+    }
+
+    /// Rename the mapping entry at `index` to `new_key`, keeping its value. A
+    /// no-op with a status hint when the row is a sequence item (no key); the
+    /// backend rejects a name that collides with a sibling.
+    pub fn rename_key(&self, index: u32, new_key: String) -> DocView {
+        let mut m = self.lock();
+        select_index(&mut m, index);
+        if let Some(path) = m.rows.get(m.selected).map(|r| r.path.clone()) {
+            m.rename_key(&path, &new_key);
+        }
+        view_of(&m)
+    }
 }
 
 impl FlowerDoc {
@@ -345,6 +406,7 @@ fn view_of(model: &Model<FigBackend>) -> DocView {
             preview: r.preview.clone(),
             is_container: r.is_container(),
             expanded: r.expanded,
+            can_rename: matches!(r.path.last(), Some(Seg::Key(_))),
         })
         .collect();
 
@@ -353,6 +415,8 @@ fn view_of(model: &Model<FigBackend>) -> DocView {
         selected: model.selected as u32,
         dirty: model.dirty,
         status: model.status.clone(),
+        root_kind: model.root_kind().to_string(),
+        hidden_count: model.hidden_present() as u32,
     }
 }
 
@@ -402,7 +466,7 @@ tags = [\"alpha\", \"beta\"]
 ";
 
     fn doc() -> Arc<FlowerDoc> {
-        FlowerDoc::new(SAMPLE.to_string(), "toml".to_string()).unwrap()
+        FlowerDoc::new(SAMPLE.to_string(), "toml".to_string(), Vec::new()).unwrap()
     }
 
     fn row_index(v: &DocView, id: &str) -> u32 {
@@ -411,11 +475,58 @@ tags = [\"alpha\", \"beta\"]
 
     #[test]
     fn unknown_format_is_reported() {
-        let result = FlowerDoc::new("x = 1".to_string(), "ini".to_string());
+        let result = FlowerDoc::new("x = 1".to_string(), "ini".to_string(), Vec::new());
         assert!(matches!(
             result.as_ref().map(|_| ()),
             Err(FlowerError::UnknownFormat { .. })
         ));
+    }
+
+    #[test]
+    fn hidden_keys_are_projected_out_but_kept() {
+        let d = FlowerDoc::new(
+            SAMPLE.to_string(),
+            "toml".to_string(),
+            vec!["title".into(), "enabled".into()],
+        )
+        .unwrap();
+        let v = d.view();
+        assert!(!v.rows.iter().any(|r| r.id == "title"));
+        assert!(!v.rows.iter().any(|r| r.id == "enabled"));
+        assert!(v.rows.iter().any(|r| r.id == "version"));
+        assert_eq!(v.hidden_count, 2);
+        assert_eq!(v.root_kind, "map");
+        // Still in the document.
+        assert!(d.source().contains("title = \"flower\""));
+        assert!(d.source().contains("enabled = true"));
+    }
+
+    #[test]
+    fn insert_root_key_adds_a_top_level_entry() {
+        let d = doc();
+        let v = d.insert_root_key("root_flag".to_string(), "true".to_string());
+        assert!(v.dirty);
+        assert!(v.rows.iter().any(|r| r.id == "root_flag"));
+        assert!(d.source().contains("root_flag"));
+    }
+
+    #[test]
+    fn rename_key_keeps_the_value() {
+        let d = doc();
+        let i = row_index(&d.view(), "version");
+        let v = d.rename_key(i, "revision".to_string());
+        assert!(v.dirty);
+        assert!(v.rows.iter().any(|r| r.id == "revision"));
+        assert!(d.source().contains("revision") && d.source().contains("= 1"));
+    }
+
+    #[test]
+    fn rename_key_reports_can_rename_flag() {
+        let v = doc().view();
+        let key_row = v.rows.iter().find(|r| r.id == "version").unwrap();
+        let item_row = v.rows.iter().find(|r| r.id == "server.tags.0").unwrap();
+        assert!(key_row.can_rename);
+        assert!(!item_row.can_rename);
     }
 
     #[test]

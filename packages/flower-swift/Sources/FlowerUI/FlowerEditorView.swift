@@ -31,14 +31,29 @@ public final class FlowerModel: ObservableObject {
     /// The text field's live buffer while a scalar is being edited.
     @Published public var editBuffer: String = ""
 
+    /// The row whose **key** is being renamed (its `id`), or `nil`.
+    @Published public var renamingId: String?
+    /// The live buffer while a key is being renamed.
+    @Published public var renameBuffer: String = ""
+
     let doc: FlowerDoc
 
     /// Parse `source` as `format` (`"toml"`, `"json"`, `"yaml"`, `"zon"`, `"fig"`, …).
-    public init(source: String, format: String) throws {
-        let doc = try FlowerDoc(source: source, format: format)
+    ///
+    /// `hiddenKeys` are top-level mapping keys to hide from view while keeping them
+    /// in the document (byte-for-byte) — pass the managed-key set for a
+    /// prov/diaryx frontmatter, or `[]` for a standalone config. The list is the
+    /// caller's to supply (e.g. from a diaryx binding); FlowerUI never names them.
+    public init(source: String, format: String, hiddenKeys: [String] = []) throws {
+        let doc = try FlowerDoc(source: source, format: format, hiddenKeys: hiddenKeys)
         self.doc = doc
         self.state = doc.view()
     }
+
+    /// The document root's kind — `"map"`, `"seq"`, or `"scalar"`.
+    public var rootKind: String { state.rootKind }
+    /// How many managed (hidden) top-level keys the document carries.
+    public var hiddenCount: Int { Int(state.hiddenCount) }
 
     // ── host-facing model access ──────────────────────────────────────────────
 
@@ -77,6 +92,7 @@ public final class FlowerModel: ObservableObject {
     /// already in flight on another row is committed first.
     public func activate(_ row: RowView) {
         if let editing = editingId, editing != row.id { commitEdit() }
+        if let renaming = renamingId, renaming != row.id { commitRename() }
         if row.isContainer {
             toggle(row)
         } else {
@@ -158,8 +174,60 @@ public final class FlowerModel: ObservableObject {
         state = doc.moveRowDown(index: i)
     }
 
+    /// Add a top-level entry at the document root: a fresh `new_key` for a mapping
+    /// root, or an appended item for a sequence root — then open it for editing.
+    /// The root has no row to select, so this is separate from `addChild`.
+    public func addRootChild() {
+        if rootKind == "seq" {
+            let count = state.rows.filter { $0.depth == 0 }.count
+            state = doc.appendRootItem(text: "")
+            if let created = state.rows.first(where: { $0.id == String(count) }) {
+                beginEdit(created)
+            }
+        } else if rootKind == "map" {
+            let key = freshRootKey()
+            state = doc.insertRootKey(key: key, text: "")
+            if let created = state.rows.first(where: { $0.id == key }) {
+                beginEdit(created)
+            }
+        }
+    }
+
+    // ── key rename ────────────────────────────────────────────────────────────
+
+    /// Open the mapping entry `row` for renaming its key. A no-op on a sequence
+    /// item (which has an index, not a key).
+    public func beginRename(_ row: RowView) {
+        guard row.canRename, renamingId != row.id else { return }
+        select(row)
+        editingId = nil
+        renameBuffer = row.label
+        renamingId = row.id
+    }
+
+    /// Commit the in-flight key rename.
+    public func commitRename() {
+        guard let id = renamingId, let i = index(of: id) else { return }
+        renamingId = nil
+        let name = renameBuffer.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty else { return }
+        state = doc.renameKey(index: i, newKey: name)
+    }
+
+    public func cancelRename() {
+        renamingId = nil
+    }
+
     private func isDirectChild(_ r: RowView, of parent: RowView) -> Bool {
         r.depth == parent.depth + 1 && (parent.id.isEmpty || r.id.hasPrefix(parent.id + "."))
+    }
+
+    private func freshRootKey() -> String {
+        let existing = Set(state.rows.filter { $0.depth == 0 }.map(\.label))
+        if !existing.contains("new_key") { return "new_key" }
+        var n = 2
+        while existing.contains("new_key\(n)") { n += 1 }
+        return "new_key\(n)"
     }
 
     private func freshKey(under row: RowView) -> String {
@@ -204,9 +272,11 @@ private struct FlowerRow: View {
     @ObservedObject var model: FlowerModel
     let theme: FlowerTheme
     @FocusState private var focused: Bool
+    @FocusState private var keyFocused: Bool
 
     private var isSelected: Bool { model.selectedRow?.id == row.id }
     private var isEditing: Bool { model.editingId == row.id }
+    private var isRenaming: Bool { model.renamingId == row.id }
 
     var body: some View {
         HStack(spacing: 6) {
@@ -221,9 +291,7 @@ private struct FlowerRow: View {
             .buttonStyle(.plain)
             .disabled(!row.isContainer)
 
-            Text(row.label)
-                .font(theme.labelFont)
-                .foregroundStyle(.primary)
+            keyView
 
             if row.isContainer {
                 Text(row.preview)
@@ -244,6 +312,26 @@ private struct FlowerRow: View {
                 .fill(isSelected ? Color.accentColor.opacity(0.15) : Color.clear)
         )
         .contextMenu { contextMenu }
+    }
+
+    /// The key: a label, or a text field while its key is being renamed.
+    @ViewBuilder private var keyView: some View {
+        if isRenaming {
+            TextField("key", text: $model.renameBuffer)
+                .font(theme.labelFont)
+                .textFieldStyle(.plain)
+                .focused($keyFocused)
+                .frame(maxWidth: 160)
+                .onSubmit { model.commitRename() }
+                #if os(macOS)
+                .onExitCommand { model.cancelRename() }
+                #endif
+                .onAppear { keyFocused = true }
+        } else {
+            Text(row.label)
+                .font(theme.labelFont)
+                .foregroundStyle(.primary)
+        }
     }
 
     private var isNumber: Bool { row.kind == "int" || row.kind == "float" }
@@ -307,7 +395,10 @@ private struct FlowerRow: View {
 
     @ViewBuilder private var contextMenu: some View {
         if !row.isContainer {
-            Button("Edit") { model.beginEdit(row) }
+            Button("Edit Value") { model.beginEdit(row) }
+        }
+        if row.canRename {
+            Button("Rename Key") { model.beginRename(row) }
         }
         if model.canAddChild(row) {
             Button(row.kind == "seq" ? "Add Item" : "Add Key") { model.addChild(row) }

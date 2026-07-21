@@ -27,6 +27,10 @@ pub struct Model<B> {
     value: Value,
     pub rows: Vec<Row>,
     collapsed: HashSet<Vec<Seg>>,
+    /// Top-level mapping keys to hide from the row projection (but keep in the
+    /// document). Empty for a standalone config; a prov/diaryx embedder passes the
+    /// managed-key set so those fields stay lossless and out of view.
+    hidden: HashSet<String>,
 
     pub selected: usize,
     pub mode: Mode,
@@ -37,11 +41,20 @@ pub struct Model<B> {
 impl<B: Backend> Model<B> {
     /// Build a model over `backend`.
     pub fn new(backend: B) -> Result<Self> {
+        Self::with_hidden(backend, Vec::new())
+    }
+
+    /// Build a model that hides the given **top-level** mapping keys from the row
+    /// projection while keeping them in the document (see
+    /// [`tree::build_rows`](crate::tree::build_rows)). For an embedder whose
+    /// format reserves some top-level keys (prov/diaryx-managed frontmatter).
+    pub fn with_hidden(backend: B, hidden: Vec<String>) -> Result<Self> {
         let mut model = Model {
             backend,
             value: Value::Null,
             rows: Vec::new(),
             collapsed: HashSet::new(),
+            hidden: hidden.into_iter().collect(),
             selected: 0,
             mode: Mode::Normal,
             status: "opened".to_string(),
@@ -49,6 +62,28 @@ impl<B: Backend> Model<B> {
         };
         model.reload()?;
         Ok(model)
+    }
+
+    /// The kind of the document root, for a frontend deciding how to add a
+    /// top-level entry: `"map"`, `"seq"`, or `"scalar"`.
+    pub fn root_kind(&self) -> &'static str {
+        match self.value {
+            Value::Map(_) => "map",
+            Value::Seq(_) => "seq",
+            _ => "scalar",
+        }
+    }
+
+    /// How many of the hidden top-level keys are actually present in the document
+    /// — for a "N managed fields" affordance.
+    pub fn hidden_present(&self) -> usize {
+        match &self.value {
+            Value::Map(entries) => entries
+                .iter()
+                .filter(|(k, _)| matches!(k, Value::Str(s) if self.hidden.contains(s)))
+                .count(),
+            _ => 0,
+        }
     }
 
     /// The canonical serialized document — what the embedder writes on save.
@@ -91,7 +126,7 @@ impl<B: Backend> Model<B> {
     }
 
     fn rebuild_rows(&mut self) {
-        self.rows = tree::build_rows(&self.value, &self.collapsed);
+        self.rows = tree::build_rows(&self.value, &self.collapsed, &self.hidden);
         if self.selected >= self.rows.len() {
             self.selected = self.rows.len().saturating_sub(1);
         }
@@ -254,6 +289,28 @@ impl<B: Backend> Model<B> {
             path.to_vec(),
             "value updated",
         );
+    }
+
+    /// Rename the mapping entry at `path` to `new_key`, keeping its value and
+    /// re-anchoring the selection onto the renamed entry. A no-op (with a status
+    /// hint) when `path` doesn't end in a key — a sequence item has no key. The
+    /// backend rejects a name that collides with an existing sibling key.
+    pub fn rename_key(&mut self, path: &[Seg], new_key: &str) {
+        match path.last() {
+            Some(Seg::Key(_)) => {
+                let mut anchor = path[..path.len() - 1].to_vec();
+                anchor.push(Seg::Key(new_key.to_string()));
+                self.commit(
+                    EditOp::RenameKey {
+                        path: path.to_vec(),
+                        new_key: new_key.to_string(),
+                    },
+                    anchor,
+                    "renamed",
+                );
+            }
+            _ => self.status = "only mapping keys can be renamed".to_string(),
+        }
     }
 
     /// Insert `key = value` into the mapping at `map_path`, selecting the new
@@ -604,6 +661,86 @@ timeout = 30.5
             src.find("version").unwrap() < src.find("title").unwrap(),
             "version now precedes title:\n{src}"
         );
+    }
+
+    #[test]
+    fn hidden_top_level_keys_are_projected_out_but_kept_lossless() {
+        let backend = FigBackend::open(SAMPLE.as_bytes(), Format::Toml).expect("open");
+        let mut model =
+            Model::with_hidden(backend, vec!["title".into(), "enabled".into()]).expect("model");
+
+        // Hidden keys produce no rows…
+        assert!(!model.rows.iter().any(|r| r.path == [Seg::Key("title".into())]));
+        assert!(!model.rows.iter().any(|r| r.path == [Seg::Key("enabled".into())]));
+        // …but a visible sibling is still there,
+        assert!(model.rows.iter().any(|r| r.path == [Seg::Key("version".into())]));
+        // …and the hidden keys remain in the document bytes.
+        assert!(model.source_snapshot().contains("title = \"flower\""));
+        assert!(model.source_snapshot().contains("enabled = true"));
+
+        // Editing a visible key doesn't disturb the hidden ones.
+        select(&mut model, &[Seg::Key("version".into())]);
+        model.begin_edit();
+        type_value(&mut model, "9");
+        let src = model.source_snapshot();
+        assert!(src.contains("version = 9"));
+        assert!(src.contains("title = \"flower\"") && src.contains("enabled = true"));
+    }
+
+    #[test]
+    fn reorder_leaves_hidden_keys_in_place() {
+        let backend = FigBackend::open(SAMPLE.as_bytes(), Format::Toml).expect("open");
+        let mut model = Model::with_hidden(backend, vec!["title".into()]).expect("model");
+
+        // Move a visible top-level key; the hidden `title` must keep its position.
+        select(&mut model, &[Seg::Key("enabled".into())]);
+        model.move_selected_up(); // enabled moves above version
+        let src = model.source_snapshot();
+        // title stays first (it was declared before version/enabled).
+        let title = src.find("title").unwrap();
+        let version = src.find("version").unwrap();
+        let enabled = src.find("enabled").unwrap();
+        assert!(title < version && title < enabled, "title stayed put:\n{src}");
+        assert!(enabled < version, "enabled moved above version:\n{src}");
+    }
+
+    #[test]
+    fn inserts_a_root_level_key() {
+        let mut model = sample_model();
+        model.insert_key(&[], "root_flag", Value::Bool(true));
+        let src = model.source_snapshot();
+        assert!(src.contains("root_flag"), "root key inserted:\n{src}");
+        assert!(src.contains("title = \"flower\""), "existing kept");
+    }
+
+    #[test]
+    fn renames_a_key_losslessly() {
+        let mut model = sample_model();
+        select(&mut model, &[Seg::Key("version".into())]);
+        model.rename_key(&[Seg::Key("version".into())], "revision");
+        let src = model.source_snapshot();
+        // fig may quote the new key (`"revision" = 1`); both are valid TOML.
+        assert!(
+            src.contains("revision") && src.contains("= 1"),
+            "renamed with value kept:\n{src}"
+        );
+        assert!(!src.contains("version = 1"), "old key gone");
+        // Selection re-anchored onto the renamed entry.
+        assert_eq!(model.rows[model.selected].path, [Seg::Key("revision".into())]);
+    }
+
+    #[test]
+    fn rename_rejects_a_sequence_item() {
+        let mut model = sample_model();
+        model.rename_key(
+            &[
+                Seg::Key("server".into()),
+                Seg::Key("tags".into()),
+                Seg::Index(0),
+            ],
+            "nope",
+        );
+        assert!(model.status.contains("mapping keys"));
     }
 
     #[test]

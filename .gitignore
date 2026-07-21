@@ -1,1 +1,11 @@
 /target
+
+# Build products of apps/flower-editor/bootstrap.sh and
+# scripts/build-xcframework.sh — the UniFFI-generated Swift + the xcframework are
+# regenerated from crates/flower-ffi, never committed.
+/packages/flower-swift/generated/
+/packages/flower-swift/.build/
+packages/flower-swift/.swiftpm/xcode/xcuserdata/
+
+# Local screenshots from manual app verification.
+/.screenshots/

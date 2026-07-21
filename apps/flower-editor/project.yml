@@ -1,0 +1,86 @@
+name: FlowerEditorApp
+options:
+  bundleIdPrefix: dev.flower
+  deploymentTarget:
+    iOS: "16.0"
+    macOS: "13.0"
+  createIntermediateGroups: true
+
+# One cross-platform host for the `FlowerUI` structural editor — the same SwiftUI
+# sources build for macOS and iOS; `FlowerUI` is toolkit-neutral, so `App/` is
+# chrome only.
+#
+# The editor is consumed as a local Swift package: `FlowerUI` (the renderer) →
+# `FlowerFFI` (the generated binding, built from source) → the C module in
+# `generated/headers`. The Rust staticlib is force-loaded (below) and rebuilt by
+# the pre-build script every Xcode build, so Rust changes always take effect
+# without re-running `bootstrap.sh` (needed only on first setup or when the Rust
+# *API* changes and the binding must be regenerated).
+packages:
+  FlowerFFI:
+    path: ../../packages/flower-swift
+
+targets:
+  FlowerEditorApp:
+    type: application
+    supportedDestinations: [macOS, iOS]
+    sources:
+      - path: App
+    dependencies:
+      - package: FlowerFFI
+        product: FlowerUI
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: dev.flower.editor
+        PRODUCT_NAME: FlowerEditorApp
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: Flower
+        "INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphoneos*]": YES
+        "INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphonesimulator*]": YES
+        "INFOPLIST_KEY_UISupportedInterfaceOrientations[sdk=iphoneos*]": "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+        "INFOPLIST_KEY_UISupportedInterfaceOrientations[sdk=iphonesimulator*]": "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+        "INFOPLIST_KEY_LSApplicationCategoryType[sdk=macosx*]": public.app-category.developer-tools
+        SWIFT_VERSION: "5.0"
+        ENABLE_BITCODE: NO
+        ONLY_ACTIVE_ARCH: YES
+        CODE_SIGNING_ALLOWED: NO
+        CODE_SIGNING_REQUIRED: NO
+        CODE_SIGN_IDENTITY: ""
+        "ENABLE_APP_SANDBOX[sdk=macosx*]": NO
+        # Force-load the Rust staticlib the pre-build script produces. The path is
+        # SDK-conditional (mac vs sim vs device); $(FLOWER_STATIC_LIB) picks the
+        # match. PROJECT_DIR is apps/flower-editor → ../.. is the repo root whose
+        # `target/` cargo writes into.
+        OTHER_LDFLAGS:
+          - "-force_load"
+          - "$(FLOWER_STATIC_LIB)"
+        "FLOWER_STATIC_LIB[sdk=macosx*]": "$(PROJECT_DIR)/../../target/aarch64-apple-darwin/debug/libflower_ffi.a"
+        "FLOWER_STATIC_LIB[sdk=iphonesimulator*]": "$(PROJECT_DIR)/../../target/aarch64-apple-ios-sim/debug/libflower_ffi.a"
+        "FLOWER_STATIC_LIB[sdk=iphoneos*]": "$(PROJECT_DIR)/../../target/aarch64-apple-ios/debug/libflower_ffi.a"
+      configs:
+        Release:
+          "FLOWER_STATIC_LIB[sdk=macosx*]": "$(PROJECT_DIR)/../../target/aarch64-apple-darwin/release/libflower_ffi.a"
+          "FLOWER_STATIC_LIB[sdk=iphonesimulator*]": "$(PROJECT_DIR)/../../target/aarch64-apple-ios-sim/release/libflower_ffi.a"
+          "FLOWER_STATIC_LIB[sdk=iphoneos*]": "$(PROJECT_DIR)/../../target/aarch64-apple-ios/release/libflower_ffi.a"
+    preBuildScripts:
+      - name: "Build flower-ffi staticlib"
+        basedOnDependencyAnalysis: false
+        outputFiles:
+          - "$(FLOWER_STATIC_LIB)"
+        shell: /bin/bash
+        script: |
+          set -euo pipefail
+          # Xcode's build env has a minimal PATH; add the user's toolchains.
+          export PATH="$HOME/.nix-profile/bin:$HOME/.cargo/bin:/opt/homebrew/bin:$PATH"
+          cd "${PROJECT_DIR}/../.."        # repo root (workspace Cargo.toml)
+
+          case "${PLATFORM_NAME}" in
+            macosx)           RUST_TARGET="aarch64-apple-darwin" ;;
+            iphonesimulator)  RUST_TARGET="aarch64-apple-ios-sim" ;;
+            *)                RUST_TARGET="aarch64-apple-ios" ;;
+          esac
+          [ "${CONFIGURATION}" = "Release" ] && CARGO_FLAGS="--release" || CARGO_FLAGS=""
+
+          echo "flower-ffi: cargo build -p flower-ffi --target ${RUST_TARGET} ${CARGO_FLAGS}"
+          rustup target add "${RUST_TARGET}" 2>/dev/null || true
+          cargo build -p flower-ffi --target "${RUST_TARGET}" ${CARGO_FLAGS}

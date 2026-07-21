@@ -62,9 +62,43 @@ A Cargo workspace, split so the editing logic is frontend-neutral (mirroring
 fig (Zig) → fig-sys (FFI, libfig.a) → fig crate (Editor/Document/Value)
                                           │
                           crates/flower-core   (the model — no UI, no fs)
-                             │                     │
-              crates/flower-ratatui (widget)   crates/flower-tui (app: file I/O + event loop)
+                    ┌────────────────────────┼─────────────────────────┐
+      crates/flower-ratatui        crates/flower-ffi            crates/flower-tui
+         (ratatui widget)        (UniFFI C-ABI binding)      (app: file I/O + loop)
+                                          │
+                              packages/flower-swift
+                          (FlowerFFI + FlowerUI, SwiftUI)
+                                          │
+                               apps/flower-editor
+                             (macOS/iOS example app)
 ```
+
+### The tiers
+
+| Tier | Path | What it is |
+|------|------|------------|
+| core | [`crates/flower-core`](crates/flower-core) | the frontend-neutral model — the navigable `Row` tree + path-addressed lossless edits over fig. No UI, no fs. |
+| widget | [`crates/flower-ratatui`](crates/flower-ratatui) | a `draw(frame, &Model, header)` ratatui widget. |
+| binding | [`crates/flower-ffi`](crates/flower-ffi) | the **UniFFI C-ABI binding** — wraps the filesystem-free `Model` so a native Apple app can drive it. The native-Apple peer of the ratatui widget. |
+| app | [`crates/flower-tui`](crates/flower-tui) | the terminal app (binary `flower`) — file I/O + event loop. |
+| Swift SDK | [`packages/flower-swift`](packages/flower-swift) | the Swift Package — `FlowerUI`, a SwiftUI structural tree editor, over the UniFFI `flower-ffi` binding. |
+| Swift app | [`apps/flower-editor`](apps/flower-editor) | the cross-platform (macOS + iOS) SwiftUI example, consuming `packages/flower-swift`. |
+
+The Swift frontend keeps the same contract as the TUI: **core owns the model**
+(the tree, selection, and every lossless edit), the frontend only renders the
+visible rows and forwards navigation / edit intents by row index. Every call
+across the FFI returns a `DocView` — the flat visible-row list plus selection,
+dirty, and status — one crossing that both mutates and repaints.
+
+```sh
+cargo run -- path/to/config.toml          # the TUI
+apps/flower-editor/bootstrap.sh           # generate the Swift binding + Xcode project
+```
+
+`flower-ffi` builds today for the `aarch64-apple-darwin` slice (fig-sys ships a
+prebuilt macOS-arm64 static lib); the other Apple slices (macOS-x64, iOS,
+iOS-sim) build fig from source via Zig cross-compiling and are the next step for
+a distributable `FlowerFFI.xcframework`.
 
 - **`crates/flower-core`** — the frontend-neutral model. Depends only on `fig`
   and `std`.
@@ -121,6 +155,10 @@ app-specific bridge lives in provui, not here — flower doesn't depend on prov.
   `leading_comment`/`set_trailing_comment`/…).
 - **Schema layer**: the big one — fig has none, so a "what keys/values are valid
   here" layer is ours to add; unlocks completion, typed widgets, validation.
-- **Frontend-neutral core**: if a GUI (gpui) frontend follows, split the tree /
-  selection / edit logic out of the ratatui-specific bits, mirroring
-  `leaf-core`.
+- **Native frontend affordances** (`FlowerUI`): today it edits scalars in one
+  inline text field. Next: type-aware widgets (bool toggle, number stepper, enum
+  picker), keyboard navigation, insert/reorder, and comment display — the same
+  roadmap the TUI has, in SwiftUI.
+- **The rest of the Apple slices**: cross-compile `fig` via Zig for macOS-x64,
+  iOS, and the simulator so `scripts/build-xcframework.sh` produces a full
+  `FlowerFFI.xcframework`.

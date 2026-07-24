@@ -13,7 +13,7 @@ use fig::Value;
 
 use crate::backend::{Backend, EditOp};
 use crate::schema::{FieldRule, Schema};
-use fig_schema::{Issue, Validation};
+use fig_schema::{Issue, SegPat, Validation};
 use crate::tree::{self, Row, Seg};
 
 /// Interaction mode: normal navigation, or editing a scalar's text.
@@ -114,6 +114,52 @@ impl<B: Backend> Model<B> {
                 .count(),
             _ => 0,
         }
+    }
+
+    /// The schema-declared top-level fields the document does **not** yet carry
+    /// — what an "add field" affordance offers, so a declared field is reachable
+    /// before it exists.
+    ///
+    /// Rows are projected from the *document*
+    /// ([`build_rows`](crate::tree::build_rows)), so a field the schema declares
+    /// but the document omits has no row and is otherwise unreachable: the user
+    /// would have to know the key and type it exactly. This closes that gap —
+    /// it is the schema's half of the row list, and the reason a declared type
+    /// is worth writing down for a field that is empty.
+    ///
+    /// Only a rule addressing exactly one top-level key names an addable field:
+    /// an each-item or subtree rule governs *within* a field rather than naming
+    /// one. Hidden (managed) keys are never offered — the embedder reserves
+    /// those. Order follows the schema's own rule order, so a caller can present
+    /// them as declared.
+    pub fn addable_fields(&self) -> Vec<&FieldRule> {
+        let Some(schema) = &self.schema else {
+            return Vec::new();
+        };
+        // Only a map root can take a top-level key at all.
+        let Value::Map(entries) = &self.value else {
+            return Vec::new();
+        };
+        let present: HashSet<&str> = entries
+            .iter()
+            .filter_map(|(k, _)| match k {
+                Value::Str(s) => Some(s.as_str()),
+                _ => None,
+            })
+            .collect();
+        let mut seen = HashSet::new();
+        schema
+            .rules()
+            .iter()
+            .filter(|rule| {
+                let [SegPat::Key(name)] = rule.at.0.as_slice() else {
+                    return false;
+                };
+                !present.contains(name.as_str())
+                    && !self.hidden.contains(name)
+                    && seen.insert(name.as_str())
+            })
+            .collect()
     }
 
     /// The canonical serialized document — what the embedder writes on save.
@@ -874,6 +920,76 @@ timeout = 30.5
         let out = model.source_snapshot();
         assert!(out.contains("private"), "known value applied:\n{out}");
         assert!(!out.contains("public"), "old value replaced:\n{out}");
+    }
+
+    /// A declared field the document omits is otherwise unreachable — it has no
+    /// row, because rows come from the document. This is what lets a frontend
+    /// offer it.
+    #[test]
+    fn addable_fields_are_the_declared_keys_the_document_lacks() {
+        use crate::schema::{Constraint, FieldRule};
+        use fig_schema::{FieldType, PathPat, Presentation, Term};
+        let src = "audience = [\"public\"]\ntitle = \"note\"\n";
+        let backend = FigBackend::open(src.as_bytes(), Format::Toml).expect("open");
+        let mut model =
+            Model::with_hidden(backend, vec!["title".into(), "updated".into()]).expect("model");
+        model.set_schema(crate::schema::Schema::new(vec![
+            // Present in the document — already reachable, so never offered.
+            FieldRule {
+                at: PathPat::key("audience"),
+                ty: Some(FieldType::Str),
+                constraint: None,
+                present: Presentation::default(),
+            },
+            // An each-item rule governs *within* a field; it names none.
+            FieldRule {
+                at: PathPat::each_item_of("audience"),
+                ty: Some(FieldType::Str),
+                constraint: Some(Constraint::Enum {
+                    values: vec![Term::value("public")],
+                    closed: true,
+                }),
+                present: Presentation::default(),
+            },
+            // Declared, absent, not managed — the one to offer.
+            FieldRule {
+                at: PathPat::key("created"),
+                ty: Some(FieldType::Str),
+                constraint: None,
+                present: Presentation::default(),
+            },
+            // Declared and absent, but the embedder manages it.
+            FieldRule {
+                at: PathPat::key("updated"),
+                ty: Some(FieldType::Str),
+                constraint: None,
+                present: Presentation::default(),
+            },
+        ]));
+
+        let offered: Vec<_> = model
+            .addable_fields()
+            .iter()
+            .map(|r| match r.at.0.as_slice() {
+                [SegPat::Key(k)] => k.clone(),
+                _ => unreachable!("only single-key rules are offered"),
+            })
+            .collect();
+        assert_eq!(offered, vec!["created".to_string()]);
+
+        // Once added it is a real row, so it stops being offered.
+        model.insert_key(&[], "created", Value::Str("2026-07-24".into()));
+        assert!(model.addable_fields().is_empty());
+    }
+
+    /// Without a schema there is nothing to declare, so nothing is offered —
+    /// a standalone config keeps the free-text add path.
+    #[test]
+    fn addable_fields_are_empty_without_a_schema() {
+        let src = "title = \"note\"\n";
+        let backend = FigBackend::open(src.as_bytes(), Format::Toml).expect("open");
+        let model = Model::new(backend).expect("model");
+        assert!(model.addable_fields().is_empty());
     }
 
     #[test]

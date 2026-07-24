@@ -6,4 +6,5 @@ description = "Frontend-neutral structural editing model for config files, over 
 
 [dependencies]
 fig.workspace = true
+fig-schema.workspace = true
 anyhow.workspace = true

@@ -14,15 +14,7 @@
 use std::collections::HashSet;
 
 use fig::Value;
-
-/// One step of a fig path: a mapping key or a sequence index. Owned (unlike
-/// `fig::Segment<'a>`, which borrows) so rows can outlive a single FFI call;
-/// converted to borrowing `fig::Segment`s at the edit site via [`to_fig`].
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub enum Seg {
-    Key(String),
-    Index(usize),
-}
+pub use fig_schema::Seg;
 
 /// Borrow an owned path as fig's `Segment` slice for an editor call.
 pub fn to_fig(path: &[Seg]) -> Vec<fig::Segment<'_>> {

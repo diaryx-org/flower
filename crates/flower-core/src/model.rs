@@ -12,7 +12,8 @@ use anyhow::Result;
 use fig::Value;
 
 use crate::backend::{Backend, EditOp};
-use crate::schema::{FieldRule, Schema, Validation};
+use crate::schema::{FieldRule, Schema};
+use fig_schema::{Issue, Validation};
 use crate::tree::{self, Row, Seg};
 
 /// Interaction mode: normal navigation, or editing a scalar's text.
@@ -527,7 +528,7 @@ impl<B: Backend> Model<B> {
     /// unknown value here, before it reaches the backend; an open one applies but
     /// surfaces a soft warning. fig's reparse stays the last-resort backstop.
     fn commit(&mut self, op: EditOp, anchor: Vec<Seg>, msg: &str) {
-        let mut warn: Option<String> = None;
+        let mut warn: Option<Issue> = None;
         if let Some((path, value)) = op_target(&op)
             && let Some(rule) = self.rule_at(&path)
         {
@@ -545,7 +546,7 @@ impl<B: Backend> Model<B> {
                 self.after_edit(&anchor, msg);
                 // A soft-warn overrides the success status so the user sees it.
                 if let Some(why) = warn {
-                    self.status = why;
+                    self.status = why.to_string();
                 }
             }
             // The backend rolled back / declined; the document is untouched.
@@ -840,7 +841,8 @@ timeout = 30.5
 
     #[test]
     fn schema_closed_vocabulary_rejects_an_unknown_edit() {
-        use crate::schema::{Constraint, FieldRule, FieldType, PathPat, Presentation, Term};
+        use crate::schema::{Constraint, FieldRule};
+        use fig_schema::{FieldType, PathPat, Presentation, Term};
         let src = "audience = [\"public\"]\ntitle = \"note\"\n";
         let backend = FigBackend::open(src.as_bytes(), Format::Toml).expect("open");
         let mut model = Model::new(backend).expect("model");
@@ -876,7 +878,8 @@ timeout = 30.5
 
     #[test]
     fn schema_typed_field_keeps_a_numeric_string_as_text() {
-        use crate::schema::{FieldRule, FieldType, PathPat, Presentation};
+        use crate::schema::FieldRule;
+        use fig_schema::{FieldType, PathPat, Presentation};
         let src = "code = \"x\"\n";
         let backend = FigBackend::open(src.as_bytes(), Format::Toml).expect("open");
         let mut model = Model::new(backend).expect("model");

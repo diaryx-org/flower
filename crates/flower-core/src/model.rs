@@ -33,6 +33,16 @@ pub struct Model<B> {
     /// document). Empty for a standalone config; a prov/diaryx embedder passes the
     /// managed-key set so those fields stay lossless and out of view.
     hidden: HashSet<String>,
+    /// Top-level mapping keys the *workspace* maintains: shown, but not editable.
+    ///
+    /// The complement of [`hidden`](Self::hidden), for the other kind of managed
+    /// field. A hidden key is edited through some other affordance (a title bar,
+    /// a link view) and would only clutter the list; a derived key — a recomputed
+    /// timestamp, a content hash — has no other affordance because *nothing*
+    /// edits it by hand: the workspace overwrites it on the next write. Hiding
+    /// those two alike leaves a user wondering where a field they can see in the
+    /// file went, so a derived key keeps its row and declines edits instead.
+    derived: HashSet<String>,
     /// The schema governing this document, if any — from the backend
     /// ([`Backend::schema`]) or injected by the embedder ([`Model::set_schema`]).
     /// Drives type-directed parsing and commit-time value validation; absent, the
@@ -56,6 +66,16 @@ impl<B: Backend> Model<B> {
     /// [`tree::build_rows`](crate::tree::build_rows)). For an embedder whose
     /// format reserves some top-level keys (prov/diaryx-managed frontmatter).
     pub fn with_hidden(backend: B, hidden: Vec<String>) -> Result<Self> {
+        Self::with_managed(backend, hidden, Vec::new())
+    }
+
+    /// Build a model over `backend` distinguishing the two kinds of managed key:
+    /// `hidden` ones produce no row (edited through another affordance), while
+    /// `derived` ones keep their row but decline every edit (the workspace
+    /// maintains them — see [`derived`](Self::derived)).
+    ///
+    /// A key in both is hidden: no row means nothing to mark read-only.
+    pub fn with_managed(backend: B, hidden: Vec<String>, derived: Vec<String>) -> Result<Self> {
         // The backend supplies the schema when it knows one (a prov backend);
         // otherwise it stays `None` until an embedder injects one.
         let schema = backend.schema();
@@ -65,6 +85,7 @@ impl<B: Backend> Model<B> {
             rows: Vec::new(),
             collapsed: HashSet::new(),
             hidden: hidden.into_iter().collect(),
+            derived: derived.into_iter().collect(),
             schema,
             selected: 0,
             mode: Mode::Normal,
@@ -114,6 +135,13 @@ impl<B: Backend> Model<B> {
                 .count(),
             _ => 0,
         }
+    }
+
+    /// Whether the node at `path` sits under a workspace-maintained (derived)
+    /// top-level key — for a frontend rendering it read-only rather than as an
+    /// editable control. Edits to it are declined at the commit funnel regardless.
+    pub fn is_derived(&self, path: &[Seg]) -> bool {
+        matches!(path.first(), Some(Seg::Key(k)) if self.derived.contains(k))
     }
 
     /// The schema-declared top-level fields the document does **not** yet carry
@@ -574,6 +602,15 @@ impl<B: Backend> Model<B> {
     /// unknown value here, before it reaches the backend; an open one applies but
     /// surfaces a soft warning. fig's reparse stays the last-resort backstop.
     fn commit(&mut self, op: EditOp, anchor: Vec<Seg>, msg: &str) {
+        // A workspace-maintained field declines every mutation, not just a value
+        // edit: renaming or deleting one would be undone on the next write just
+        // as surely as retyping it.
+        if let Some(key) = op_root_key(&op)
+            && self.derived.contains(key)
+        {
+            self.status = format!("rejected: `{key}` is maintained by the workspace");
+            return;
+        }
         let mut warn: Option<Issue> = None;
         if let Some((path, value)) = op_target(&op)
             && let Some(rule) = self.rule_at(&path)
@@ -636,6 +673,35 @@ impl<B: Backend> Model<B> {
 /// `Index(0)` stands in; it only serves to match an `EachItem` rule pattern, which
 /// is index-agnostic. Structural ops (delete, move, reorder, rename) carry no new
 /// value and return `None`.
+/// The top-level mapping key an op would change, if any — the unit at which a
+/// document's managed fields are declared, so an edit anywhere beneath one
+/// (an item of a managed list, a nested key) is caught along with the field
+/// itself.
+fn op_root_key(op: &EditOp) -> Option<&str> {
+    fn first_key(path: &[Seg]) -> Option<&str> {
+        match path.first() {
+            Some(Seg::Key(k)) => Some(k.as_str()),
+            _ => None,
+        }
+    }
+    match op {
+        EditOp::ReplaceValue { path, .. }
+        | EditOp::DeleteKey { path }
+        | EditOp::RenameKey { path, .. } => first_key(path),
+        EditOp::RemoveItem { seq_path, .. }
+        | EditOp::AppendItem { seq_path, .. }
+        | EditOp::MoveItem { seq_path, .. } => first_key(seq_path),
+        // An insert *at the root* names the new top-level key itself; deeper, the
+        // container it lands in is what matters.
+        EditOp::InsertKey { map_path, key, .. } => match map_path.first() {
+            None => Some(key.as_str()),
+            _ => first_key(map_path),
+        },
+        // Reordering the root's own keys moves no field's value.
+        EditOp::ReorderKeys { map_path, .. } => first_key(map_path),
+    }
+}
+
 fn op_target(op: &EditOp) -> Option<(Vec<Seg>, &Value)> {
     match op {
         EditOp::ReplaceValue { path, value } => Some((path.clone(), value)),
@@ -980,6 +1046,38 @@ timeout = 30.5
         // Once added it is a real row, so it stops being offered.
         model.insert_key(&[], "created", Value::Str("2026-07-24".into()));
         assert!(model.addable_fields().is_empty());
+    }
+
+    /// A derived field keeps its row — unlike a hidden one — but declines every
+    /// mutation, because the workspace rewrites it on the next save regardless.
+    #[test]
+    fn a_derived_field_is_visible_but_declines_edits() {
+        let src = "title = \"note\"\nupdated = \"2026-07-01\"\ncreated = \"2026-06-01\"\n";
+        let backend = FigBackend::open(src.as_bytes(), Format::Toml).expect("open");
+        let mut model =
+            Model::with_managed(backend, vec!["title".into()], vec!["updated".into()])
+                .expect("model");
+
+        // Hidden means no row; derived means a row that is marked.
+        let labels: Vec<&str> = model.rows.iter().map(|r| r.label.as_str()).collect();
+        assert_eq!(labels, vec!["updated", "created"]);
+        assert!(model.is_derived(&[Seg::Key("updated".into())]));
+        assert!(!model.is_derived(&[Seg::Key("created".into())]));
+
+        // Every shape of mutation is declined, and the document is untouched.
+        model.set_scalar_text(&[Seg::Key("updated".into())], "2026-01-01");
+        assert!(model.status.contains("maintained by the workspace"));
+        model.rename_key(&[Seg::Key("updated".into())], "modified");
+        assert!(model.status.contains("maintained by the workspace"));
+        model.selected = 0;
+        model.delete_selected();
+        assert!(model.status.contains("maintained by the workspace"));
+        let out = model.source_snapshot();
+        assert!(out.contains("updated = \"2026-07-01\""), "unchanged:\n{out}");
+
+        // A neighbouring ordinary field still edits normally.
+        model.set_scalar_text(&[Seg::Key("created".into())], "2026-06-15");
+        assert!(model.source_snapshot().contains("2026-06-15"));
     }
 
     /// Without a schema there is nothing to declare, so nothing is offered —

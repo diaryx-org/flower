@@ -11,12 +11,12 @@ version = "0.1.0"
 # json/yaml/toml/fig). Matches prov's fig source so their `fig::Value` types
 # unify when flower-prov depends on both. Bump when we need newer fig; only
 # switch to a path/patch dep once we actually need unpublished fig changes.
-fig = "2.5"
+fig = "3.0.2"
 # The generic, prov-agnostic schema engine (PathPat/FieldType/Term/Cardinality/
 # Presentation + the generic FieldRule<C>/Schema<C> matching machinery), moved
 # out of flower-core so prov and trellis can depend on it too without going
 # through flower.
-fig-schema = "0.1.0"
+fig-schema = "0.1.1"
 ratatui = "0.29"
 anyhow = "1"
 # Internal crates.

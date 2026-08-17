@@ -9,3 +9,4 @@ packages/flower-swift/.swiftpm/xcode/xcuserdata/
 
 # Local screenshots from manual app verification.
 /.screenshots/
+.env

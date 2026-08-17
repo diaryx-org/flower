@@ -5,20 +5,17 @@ members = ["crates/*"]
 [workspace.package]
 edition = "2024"
 version = "0.1.0"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/diaryx-org/flower"
+readme = "README.md"
 
 [workspace.dependencies]
-# Zig-backed config AST + lossless editor, from crates.io (default features:
-# json/yaml/toml/fig). Matches prov's fig source so their `fig::Value` types
-# unify when flower-prov depends on both. Bump when we need newer fig; only
-# switch to a path/patch dep once we actually need unpublished fig changes.
-fig = "3.0.2"
-# The generic, prov-agnostic schema engine (PathPat/FieldType/Term/Cardinality/
-# Presentation + the generic FieldRule<C>/Schema<C> matching machinery), moved
-# out of flower-core so prov and trellis can depend on it too without going
-# through flower.
+# Zig-backed config AST + lossless editor.
+fig = "3"
+# The generic, prov-agnostic schema engine
 fig-schema = "0.1.1"
 ratatui = "0.29"
 anyhow = "1"
 # Internal crates.
-flower-core = { path = "crates/flower-core" }
+flower-core = { path = "crates/flower-core", version = "0.1.0" }
 flower-ratatui = { path = "crates/flower-ratatui" }

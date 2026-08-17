@@ -26,6 +26,61 @@ pub fn to_fig(path: &[Seg]) -> Vec<fig::Segment<'_>> {
         .collect()
 }
 
+/// The node a fig path names in `root`, or `None` when the path doesn't resolve.
+/// The empty path is the root itself.
+///
+/// The one walk from a path to its node. Public because `Model` is not the only
+/// thing that needs it: a [`Backend`](crate::Backend) lowering an op it has no
+/// native primitive for has to read the current tree, and it can't see the model
+/// (the model owns *it*). A frontend resolving a row's value by path is the other
+/// caller. Both would otherwise reimplement this traversal.
+pub fn value_at<'v>(root: &'v Value, path: &[Seg]) -> Option<&'v Value> {
+    let mut cur = root;
+    for seg in path {
+        cur = match (seg, cur) {
+            (Seg::Key(k), Value::Map(entries)) => {
+                &entries
+                    .iter()
+                    .find(|(mk, _)| matches!(mk, Value::Str(s) if s == k))?
+                    .1
+            }
+            (Seg::Index(i), Value::Seq(items)) => items.get(*i)?,
+            _ => return None,
+        };
+    }
+    Some(cur)
+}
+
+/// The length of the sequence at `path`. `None` when the path doesn't resolve or
+/// names something that isn't a sequence — the two cases a caller sizing an
+/// append index or a reorder permutation has to tell apart from an empty list.
+pub fn seq_len(root: &Value, path: &[Seg]) -> Option<usize> {
+    match value_at(root, path)? {
+        Value::Seq(items) => Some(items.len()),
+        _ => None,
+    }
+}
+
+/// The mapping keys at `path`, in document order. `None` when the path doesn't
+/// resolve or names something that isn't a mapping.
+///
+/// Non-string keys are skipped: the editor addresses entries by name, so a key
+/// it cannot name is one it cannot reorder or rename.
+pub fn map_keys(root: &Value, path: &[Seg]) -> Option<Vec<String>> {
+    match value_at(root, path)? {
+        Value::Map(entries) => Some(
+            entries
+                .iter()
+                .filter_map(|(k, _)| match k {
+                    Value::Str(s) => Some(s.clone()),
+                    _ => None,
+                })
+                .collect(),
+        ),
+        _ => None,
+    }
+}
+
 /// The value kind of a row, for styling and container logic.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum VKind {

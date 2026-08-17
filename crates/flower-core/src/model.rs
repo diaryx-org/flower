@@ -76,6 +76,30 @@ impl<B: Backend> Model<B> {
     ///
     /// A key in both is hidden: no row means nothing to mark read-only.
     pub fn with_managed(backend: B, hidden: Vec<String>, derived: Vec<String>) -> Result<Self> {
+        Self::with_collapsed(backend, hidden, derived, Vec::new())
+    }
+
+    /// Build a model whose containers at `collapsed` arrive **shut**, before the
+    /// first row list is ever built.
+    ///
+    /// A document can have one field nobody reads as a list: an index document's
+    /// `contents` is one row per child — ninety-five of them in a year index,
+    /// ahead of the four fields anyone types by hand. Such a section wants to open
+    /// as a summary, not a wall you scroll past. Toggling it afterwards through
+    /// [`activate`](Self::activate) would work, but that is the *interactive*
+    /// door: it moves the selection and rebuilds the row list once per container.
+    /// Seeding the set here costs neither — the paths are in place before
+    /// `reload`, so the opening frame is already correct.
+    ///
+    /// A path that names a scalar (or nothing at all) is inert rather than an
+    /// error, so a caller can name the keys it *wants* collapsed without first
+    /// checking which of them turned out to be containers.
+    pub fn with_collapsed(
+        backend: B,
+        hidden: Vec<String>,
+        derived: Vec<String>,
+        collapsed: Vec<Vec<Seg>>,
+    ) -> Result<Self> {
         // The backend supplies the schema when it knows one (a prov backend);
         // otherwise it stays `None` until an embedder injects one.
         let schema = backend.schema();
@@ -83,7 +107,7 @@ impl<B: Backend> Model<B> {
             backend,
             value: Value::Null,
             rows: Vec::new(),
-            collapsed: HashSet::new(),
+            collapsed: collapsed.into_iter().collect(),
             hidden: hidden.into_iter().collect(),
             derived: derived.into_iter().collect(),
             schema,
@@ -305,6 +329,46 @@ impl<B: Backend> Model<B> {
         }
     }
 
+    /// Whether the container at `path` is collapsed. Answers for a node with no
+    /// row too (one nested inside another collapsed container), which
+    /// [`Row::expanded`](crate::Row) cannot.
+    pub fn is_collapsed(&self, path: &[Seg]) -> bool {
+        self.collapsed.contains(path)
+    }
+
+    /// Collapse or expand the container at `path`, leaving the selection where the
+    /// user put it — the by-path, non-interactive counterpart to
+    /// [`activate`](Self::activate).
+    ///
+    /// `activate` folds *the selected row*, so driving it from a path means moving
+    /// the selection first and putting it back after. This doesn't: it re-anchors
+    /// onto whatever was selected before, and only falls back to `path` itself when
+    /// the selection was a descendant that the fold just took off screen.
+    ///
+    /// A path naming a scalar (or nothing) is inert — see
+    /// [`with_collapsed`](Self::with_collapsed).
+    pub fn set_collapsed(&mut self, path: &[Seg], collapsed: bool) {
+        let changed = if collapsed {
+            self.collapsed.insert(path.to_vec())
+        } else {
+            self.collapsed.remove(path)
+        };
+        if !changed {
+            return;
+        }
+        let was = self.selected_row().map(|r| r.path.clone());
+        self.rebuild_rows();
+        if let Some(was) = was {
+            // A row swallowed by the fold has no path to return to; its nearest
+            // surviving ancestor is the container the user just shut.
+            if collapsed && was.len() > path.len() && was.starts_with(path) {
+                self.select_path(path);
+            } else {
+                self.select_path(&was);
+            }
+        }
+    }
+
     /// `Enter`/`Space`: toggle a container's expansion, or edit a scalar.
     pub fn activate(&mut self) {
         let Some(row) = self.selected_row() else {
@@ -336,7 +400,7 @@ impl<B: Backend> Model<B> {
         }
         let seed = self
             .value_at(&row.path)
-            .map(|v| tree::edit_seed(&v))
+            .map(tree::edit_seed)
             .unwrap_or_default();
         self.mode = Mode::Editing { buffer: seed };
     }
@@ -369,12 +433,7 @@ impl<B: Backend> Model<B> {
             return;
         };
         let path = row.path.clone();
-        // Type-directed parse when the schema knows the field's type (a `str`
-        // field keeps `"123"` a string); otherwise fall back to shape-guessing.
-        let value = match self.rule_at(&path).and_then(|r| r.ty) {
-            Some(ty) => ty.coerce(&buffer),
-            None => tree::parse_scalar(&buffer),
-        };
+        let value = self.coerce_text(&path, &buffer);
         self.commit(
             EditOp::ReplaceValue {
                 path: path.clone(),
@@ -406,11 +465,25 @@ impl<B: Backend> Model<B> {
     /// of [`edit_commit`](Self::edit_commit). Validation (closed-vocabulary
     /// rejection) still happens at the commit funnel.
     pub fn set_scalar_text(&mut self, path: &[Seg], text: &str) {
-        let value = match self.rule_at(path).and_then(|r| r.ty) {
+        let value = self.coerce_text(path, text);
+        self.set_value_at(path, value);
+    }
+
+    /// Turn edit-buffer `text` into the value that belongs at `path`: the type the
+    /// schema declares for that path when it declares one, and otherwise a guess
+    /// from the literal's shape.
+    ///
+    /// The single rule behind [`edit_commit`](Self::edit_commit),
+    /// [`set_scalar_text`](Self::set_scalar_text),
+    /// [`insert_key_text`](Self::insert_key_text) and
+    /// [`append_item_text`](Self::append_item_text). It is keyed on the path of the
+    /// value being *written*, not of its container — that is what lets an
+    /// each-item rule type a list's items independently of the list.
+    fn coerce_text(&self, path: &[Seg], text: &str) -> Value {
+        match self.rule_at(path).and_then(|r| r.ty) {
             Some(ty) => ty.coerce(text),
             None => tree::parse_scalar(text),
-        };
-        self.set_value_at(path, value);
+        }
     }
 
     /// Rename the mapping entry at `path` to `new_key`, keeping its value and
@@ -452,6 +525,22 @@ impl<B: Backend> Model<B> {
         );
     }
 
+    /// Insert `key = text` into the mapping at `map_path`, coercing `text` by the
+    /// type the schema declares for the new entry and otherwise guessing by literal
+    /// shape — the insert-shaped analog of
+    /// [`set_scalar_text`](Self::set_scalar_text).
+    ///
+    /// Prefer this to [`insert_key`](Self::insert_key) whenever the value comes
+    /// from a user's text: a caller that shape-guesses on its own writes `2026` as
+    /// an integer into a field the schema declares `str`, and gets no say from the
+    /// schema it is otherwise honoring everywhere else.
+    pub fn insert_key_text(&mut self, map_path: &[Seg], key: &str, text: &str) {
+        let mut target = map_path.to_vec();
+        target.push(Seg::Key(key.to_string()));
+        let value = self.coerce_text(&target, text);
+        self.insert_key(map_path, key, value);
+    }
+
     /// Append `value` to the sequence at `seq_path`, selecting the new item.
     pub fn append_item(&mut self, seq_path: &[Seg], value: Value) {
         let idx = self.seq_len(seq_path);
@@ -465,6 +554,21 @@ impl<B: Backend> Model<B> {
             anchor,
             "appended",
         );
+    }
+
+    /// Append `text` to the sequence at `seq_path`, coercing it by the type the
+    /// schema declares for the sequence's *items* and otherwise guessing by literal
+    /// shape — the append-shaped analog of
+    /// [`set_scalar_text`](Self::set_scalar_text).
+    ///
+    /// The item's type comes from the rule matching the item path (an each-item or
+    /// subtree rule), not from the rule on the list itself: `tags` is a `seq`, its
+    /// items are `str`.
+    pub fn append_item_text(&mut self, seq_path: &[Seg], text: &str) {
+        let mut target = seq_path.to_vec();
+        target.push(Seg::Index(self.seq_len(seq_path)));
+        let value = self.coerce_text(&target, text);
+        self.append_item(seq_path, value);
     }
 
     /// Move the selected row one place earlier among its siblings — a sequence
@@ -536,35 +640,22 @@ impl<B: Backend> Model<B> {
         }
     }
 
+    /// The value the document currently holds at `path` (the whole tree for the
+    /// empty path), or `None` when the path doesn't resolve — for a frontend
+    /// reading a row's value without reaching for the backend.
+    pub fn value_at(&self, path: &[Seg]) -> Option<&Value> {
+        tree::value_at(&self.value, path)
+    }
+
     /// The mapping keys at `path`, in document order (empty for a non-mapping).
     fn map_keys(&self, path: &[Seg]) -> Vec<String> {
-        match self.value_at_or_root(path) {
-            Value::Map(entries) => entries
-                .iter()
-                .filter_map(|(k, _)| match k {
-                    Value::Str(s) => Some(s.clone()),
-                    _ => None,
-                })
-                .collect(),
-            _ => Vec::new(),
-        }
+        tree::map_keys(&self.value, path).unwrap_or_default()
     }
 
-    /// The length of the sequence at `path` (0 for a non-sequence).
-    fn seq_len(&self, path: &[Seg]) -> usize {
-        match self.value_at_or_root(path) {
-            Value::Seq(items) => items.len(),
-            _ => 0,
-        }
-    }
-
-    /// The value at `path`, or the whole tree for the empty (root) path.
-    fn value_at_or_root(&self, path: &[Seg]) -> Value {
-        if path.is_empty() {
-            self.value.clone()
-        } else {
-            self.value_at(path).unwrap_or(Value::Null)
-        }
+    /// The length of the sequence at `path` (0 for a non-sequence) — the index an
+    /// append will land at.
+    pub fn seq_len(&self, path: &[Seg]) -> usize {
+        tree::seq_len(&self.value, path).unwrap_or(0)
     }
 
     /// `x`: delete the selected mapping entry or sequence item.
@@ -647,24 +738,6 @@ impl<B: Backend> Model<B> {
         self.select_path(anchor);
         self.dirty = true;
         self.status = msg.to_string();
-    }
-
-    /// Resolve the live `Value` at a path (for seeding the edit buffer).
-    fn value_at(&self, path: &[Seg]) -> Option<Value> {
-        let mut cur = &self.value;
-        for seg in path {
-            cur = match (seg, cur) {
-                (Seg::Key(k), Value::Map(entries)) => {
-                    &entries
-                        .iter()
-                        .find(|(mk, _)| matches!(mk, Value::Str(s) if s == k))?
-                        .1
-                }
-                (Seg::Index(i), Value::Seq(items)) => items.get(*i)?,
-                _ => return None,
-            };
-        }
-        Some(cur.clone())
     }
 }
 
@@ -1111,6 +1184,214 @@ timeout = 30.5
         // coerced to an integer the way the shape-guessing heuristic would.
         let out = model.source_snapshot();
         assert!(out.contains("code = \"123\""), "kept as string:\n{out}");
+    }
+
+    /// The point of a default-collapsed set: the *opening* frame is already
+    /// folded, without a toggle pass that walks the selection across the document.
+    #[test]
+    fn containers_can_arrive_collapsed() {
+        let backend = FigBackend::open(SAMPLE.as_bytes(), Format::Toml).expect("open");
+        let model = Model::with_collapsed(
+            backend,
+            Vec::new(),
+            Vec::new(),
+            vec![
+                vec![Seg::Key("server".into())],
+                // Naming a scalar is inert, not an error — a caller collapses the
+                // keys it means to without first sorting containers from scalars.
+                vec![Seg::Key("title".into())],
+            ],
+        )
+        .expect("model");
+
+        let server = model
+            .rows
+            .iter()
+            .find(|r| r.path == [Seg::Key("server".into())])
+            .expect("server row");
+        assert!(!server.expanded, "collapsed before the first frame");
+        assert!(
+            !model.rows.iter().any(|r| r.path.len() > 1),
+            "no descendant rows: {:?}",
+            model.rows.iter().map(|r| &r.label).collect::<Vec<_>>()
+        );
+        // The inert scalar path didn't cost `title` its row.
+        assert!(
+            model
+                .rows
+                .iter()
+                .any(|r| r.path == [Seg::Key("title".into())])
+        );
+        assert_eq!(model.selected, 0, "selection untouched");
+    }
+
+    /// Unlike `activate`, folding by path is not a selection move — that is the
+    /// whole reason a caller reaches for it.
+    #[test]
+    fn set_collapsed_folds_by_path_without_moving_the_selection() {
+        let mut model = sample_model();
+        select(&mut model, &[Seg::Key("title".into())]);
+
+        model.set_collapsed(&[Seg::Key("server".into())], true);
+        assert!(model.is_collapsed(&[Seg::Key("server".into())]));
+        assert!(
+            !model.rows.iter().any(|r| r.path.len() > 1),
+            "children hidden"
+        );
+        assert_eq!(
+            model.rows[model.selected].path,
+            [Seg::Key("title".into())],
+            "selection stayed on title"
+        );
+
+        model.set_collapsed(&[Seg::Key("server".into())], false);
+        assert!(!model.is_collapsed(&[Seg::Key("server".into())]));
+        assert!(
+            model
+                .rows
+                .iter()
+                .any(|r| r.path == [Seg::Key("server".into()), Seg::Key("host".into())])
+        );
+        assert_eq!(model.rows[model.selected].path, [Seg::Key("title".into())]);
+    }
+
+    /// The one case where the selection *must* move: it was inside the fold.
+    #[test]
+    fn set_collapsed_reanchors_a_selection_it_swallowed() {
+        let mut model = sample_model();
+        select(
+            &mut model,
+            &[Seg::Key("server".into()), Seg::Key("host".into())],
+        );
+        model.set_collapsed(&[Seg::Key("server".into())], true);
+        assert_eq!(
+            model.rows[model.selected].path,
+            [Seg::Key("server".into())],
+            "landed on the container that swallowed it"
+        );
+    }
+
+    /// The insert/append counterparts of the type-directed scalar edit: without
+    /// them a caller shape-guesses, and `2026` lands in a `str` list as an integer.
+    #[test]
+    fn insert_and_append_are_type_directed_by_the_schema() {
+        use crate::schema::FieldRule;
+        use fig_schema::{FieldType, PathPat, Presentation};
+        let src = "tags = [\"alpha\"]\n\n[meta]\nk = \"v\"\n";
+        let backend = FigBackend::open(src.as_bytes(), Format::Toml).expect("open");
+        let mut model = Model::new(backend).expect("model");
+        model.set_schema(crate::schema::Schema::new(vec![
+            // The *items* of `tags` are strings — the list itself is a seq.
+            FieldRule {
+                at: PathPat::each_item_of("tags"),
+                ty: Some(FieldType::Str),
+                constraint: None,
+                present: Presentation::default(),
+            },
+            FieldRule {
+                at: PathPat::key("year"),
+                ty: Some(FieldType::Str),
+                constraint: None,
+                present: Presentation::default(),
+            },
+            FieldRule {
+                at: PathPat(vec![
+                    fig_schema::SegPat::Key("meta".into()),
+                    fig_schema::SegPat::Key("code".into()),
+                ]),
+                ty: Some(FieldType::Str),
+                constraint: None,
+                present: Presentation::default(),
+            },
+        ]));
+
+        model.append_item_text(&[Seg::Key("tags".into())], "2026");
+        model.insert_key_text(&[], "year", "2026");
+        // The nested case flower-ffi and Diaryx both shape-guessed.
+        model.insert_key_text(&[Seg::Key("meta".into())], "code", "2026");
+
+        let out = model.source_snapshot();
+        assert!(
+            !out.contains("2026,") && !out.contains("[2026]") && !out.contains("= 2026"),
+            "no bare integers survived the schema:\n{out}"
+        );
+        assert_eq!(
+            model.value_at(&[Seg::Key("tags".into()), Seg::Index(1)]),
+            Some(&Value::Str("2026".into())),
+            "list item took the each-item type:\n{out}"
+        );
+        assert_eq!(
+            model.value_at(&[Seg::Key("year".into())]),
+            Some(&Value::Str("2026".into()))
+        );
+        assert_eq!(
+            model.value_at(&[Seg::Key("meta".into()), Seg::Key("code".into())]),
+            Some(&Value::Str("2026".into()))
+        );
+    }
+
+    /// With no rule to consult they fall back to the same shape-guessing the raw
+    /// `insert_key`/`append_item` callers do today, so a standalone config is
+    /// unaffected.
+    #[test]
+    fn insert_and_append_text_shape_guess_without_a_schema() {
+        let mut model = sample_model();
+        model.append_item_text(&[Seg::Key("server".into()), Seg::Key("tags".into())], "42");
+        model.insert_key_text(&[], "count", "7");
+        assert_eq!(
+            model.value_at(&[
+                Seg::Key("server".into()),
+                Seg::Key("tags".into()),
+                Seg::Index(2)
+            ]),
+            Some(&Value::Int(42))
+        );
+        assert_eq!(
+            model.value_at(&[Seg::Key("count".into())]),
+            Some(&Value::Int(7))
+        );
+    }
+
+    /// The walkers a backend needs, over a plain `Value` — no `Model` in reach.
+    #[test]
+    fn tree_walkers_resolve_paths_and_reject_mismatches() {
+        let model = sample_model();
+        let root = model.value_at(&[]).expect("root");
+
+        assert_eq!(
+            tree::value_at(root, &[Seg::Key("server".into()), Seg::Key("port".into())]),
+            Some(&Value::Int(8080))
+        );
+        assert_eq!(
+            tree::seq_len(root, &[Seg::Key("server".into()), Seg::Key("tags".into())]),
+            Some(2)
+        );
+        // Not a sequence, versus not there at all — both `None`, and neither is a
+        // length of zero a caller could mistake for an empty list.
+        assert_eq!(tree::seq_len(root, &[Seg::Key("title".into())]), None);
+        assert_eq!(tree::seq_len(root, &[Seg::Key("absent".into())]), None);
+        assert_eq!(
+            tree::map_keys(root, &[Seg::Key("server".into())]),
+            Some(vec![
+                "host".to_string(),
+                "port".to_string(),
+                "tags".to_string(),
+                "limits".to_string()
+            ])
+        );
+        assert_eq!(tree::map_keys(root, &[Seg::Key("title".into())]), None);
+        // A key step into a sequence resolves to nothing rather than guessing.
+        assert_eq!(
+            tree::value_at(
+                root,
+                &[
+                    Seg::Key("server".into()),
+                    Seg::Key("tags".into()),
+                    Seg::Key("0".into())
+                ]
+            ),
+            None
+        );
     }
 
     #[test]

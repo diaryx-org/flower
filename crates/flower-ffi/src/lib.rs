@@ -237,18 +237,18 @@ impl FlowerDoc {
 
     // ── editing ───────────────────────────────────────────────────────────────
 
-    /// Commit `text` as the new value of the scalar row at `index`, inferring the
-    /// type by literal shape (`true`/`42`/`3.14`/`null`/text) and splicing it
-    /// losslessly through fig's editor. A no-op on a container row. The status
-    /// reflects success or the backend's rejection.
+    /// Commit `text` as the new value of the scalar row at `index`, splicing it
+    /// losslessly through fig's editor. The type is the one the schema declares for
+    /// that path, or — with no schema, the standalone-config case — a guess from
+    /// the literal's shape (`true`/`42`/`3.14`/`null`/text). A no-op on a container
+    /// row. The status reflects success or the backend's rejection.
     pub fn set_value(&self, index: u32, text: String) -> DocView {
         let mut m = self.lock();
         select_index(&mut m, index);
         if let Some(row) = m.rows.get(m.selected) {
             if row.is_scalar() {
                 let path = row.path.clone();
-                let value = flower_core::tree::parse_scalar(&text);
-                m.set_value_at(&path, value);
+                m.set_scalar_text(&path, &text);
             } else {
                 m.set_status("can only edit scalar values");
             }
@@ -266,33 +266,29 @@ impl FlowerDoc {
 
     // ── insert & reorder ──────────────────────────────────────────────────────
 
-    /// Insert `key = text` into the **mapping** at `index`, inferring the value
-    /// type by literal shape. A no-op with a status hint when the row isn't a
-    /// mapping; the backend rejects a duplicate key.
+    /// Insert `key = text` into the **mapping** at `index`, typing the value by the
+    /// schema's rule for the new entry and otherwise by literal shape. A no-op with
+    /// a status hint when the row isn't a mapping; the backend rejects a duplicate
+    /// key.
     pub fn insert_key(&self, index: u32, key: String, text: String) -> DocView {
         let mut m = self.lock();
         select_index(&mut m, index);
         match m.rows.get(m.selected).map(|r| (r.vkind, r.path.clone())) {
-            Some((VKind::Map, path)) => {
-                let value = flower_core::tree::parse_scalar(&text);
-                m.insert_key(&path, &key, value);
-            }
+            Some((VKind::Map, path)) => m.insert_key_text(&path, &key, &text),
             Some(_) => m.set_status("select a mapping to add a key"),
             None => {}
         }
         view_of(&m)
     }
 
-    /// Append `text` to the **sequence** at `index`, inferring the value type by
-    /// literal shape. A no-op with a status hint when the row isn't a sequence.
+    /// Append `text` to the **sequence** at `index`, typing the value by the
+    /// schema's rule for the sequence's *items* and otherwise by literal shape. A
+    /// no-op with a status hint when the row isn't a sequence.
     pub fn append_item(&self, index: u32, text: String) -> DocView {
         let mut m = self.lock();
         select_index(&mut m, index);
         match m.rows.get(m.selected).map(|r| (r.vkind, r.path.clone())) {
-            Some((VKind::Seq, path)) => {
-                let value = flower_core::tree::parse_scalar(&text);
-                m.append_item(&path, value);
-            }
+            Some((VKind::Seq, path)) => m.append_item_text(&path, &text),
             Some(_) => m.set_status("select a sequence to add an item"),
             None => {}
         }
@@ -316,14 +312,13 @@ impl FlowerDoc {
     }
 
     /// Insert `key = text` at the **document root** (a top-level mapping entry),
-    /// inferring the value type by literal shape. The root-level counterpart to
-    /// [`insert_key`](Self::insert_key) — there is no root row to target by index.
-    /// A no-op with a status hint when the root isn't a mapping.
+    /// typed the same way [`insert_key`](Self::insert_key) types one. The
+    /// root-level counterpart — there is no root row to target by index. A no-op
+    /// with a status hint when the root isn't a mapping.
     pub fn insert_root_key(&self, key: String, text: String) -> DocView {
         let mut m = self.lock();
         if m.root_kind() == "map" {
-            let value = flower_core::tree::parse_scalar(&text);
-            m.insert_key(&[], &key, value);
+            m.insert_key_text(&[], &key, &text);
         } else {
             m.set_status("the document root is not a mapping");
         }
@@ -336,8 +331,7 @@ impl FlowerDoc {
     pub fn append_root_item(&self, text: String) -> DocView {
         let mut m = self.lock();
         if m.root_kind() == "seq" {
-            let value = flower_core::tree::parse_scalar(&text);
-            m.append_item(&[], value);
+            m.append_item_text(&[], &text);
         } else {
             m.set_status("the document root is not a sequence");
         }

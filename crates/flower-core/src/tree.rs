@@ -196,12 +196,26 @@ pub fn build_rows(
                 if hidden_top_level.contains(&key) {
                     continue;
                 }
-                push_node(&key, v, vec![Seg::Key(key.clone())], 0, collapsed, &mut rows);
+                push_node(
+                    &key,
+                    v,
+                    vec![Seg::Key(key.clone())],
+                    0,
+                    collapsed,
+                    &mut rows,
+                );
             }
         }
         Value::Seq(items) => {
             for (i, v) in items.iter().enumerate() {
-                push_node(&format!("[{i}]"), v, vec![Seg::Index(i)], 0, collapsed, &mut rows);
+                push_node(
+                    &format!("[{i}]"),
+                    v,
+                    vec![Seg::Index(i)],
+                    0,
+                    collapsed,
+                    &mut rows,
+                );
             }
         }
         // A scalar (or empty/null) document is a single row.

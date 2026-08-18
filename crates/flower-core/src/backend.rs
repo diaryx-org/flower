@@ -195,11 +195,7 @@ impl Backend for FigBackend {
                 .editor
                 .append_value(&tree::to_fig(&seq_path), value)
                 .map_err(err),
-            EditOp::MoveItem {
-                seq_path,
-                from,
-                to,
-            } => self
+            EditOp::MoveItem { seq_path, from, to } => self
                 .editor
                 .move_item(&tree::to_fig(&seq_path), from, to)
                 .map_err(err),

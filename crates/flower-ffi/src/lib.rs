@@ -160,11 +160,16 @@ impl FlowerDoc {
         hidden_keys: Vec<String>,
     ) -> Result<Arc<Self>, FlowerError> {
         let format = parse_format(&format)?;
-        let backend = FigBackend::open(source.as_bytes(), format)
-            .map_err(|e| FlowerError::Open { message: e.to_string() })?;
-        let model = Model::with_hidden(backend, hidden_keys)
-            .map_err(|e| FlowerError::Open { message: e.to_string() })?;
-        Ok(Arc::new(FlowerDoc { inner: Mutex::new(Inner(model)) }))
+        let backend =
+            FigBackend::open(source.as_bytes(), format).map_err(|e| FlowerError::Open {
+                message: e.to_string(),
+            })?;
+        let model = Model::with_hidden(backend, hidden_keys).map_err(|e| FlowerError::Open {
+            message: e.to_string(),
+        })?;
+        Ok(Arc::new(FlowerDoc {
+            inner: Mutex::new(Inner(model)),
+        }))
     }
 
     /// Resolve the current document to a renderable frame — the first paint.
@@ -575,7 +580,10 @@ tags = [\"alpha\", \"beta\"]
         let v = d.append_item(i, "gamma".to_string());
         assert!(v.dirty);
         assert!(d.source().contains("gamma"));
-        assert!(v.rows.iter().any(|r| r.id == "server.tags.2"), "new item visible");
+        assert!(
+            v.rows.iter().any(|r| r.id == "server.tags.2"),
+            "new item visible"
+        );
     }
 
     #[test]

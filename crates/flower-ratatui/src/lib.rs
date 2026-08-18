@@ -74,7 +74,9 @@ fn draw_tree<B: Backend>(f: &mut Frame, model: &Model<B>, area: Rect) {
                 Span::styled(marker, Style::default().fg(Color::DarkGray)),
                 Span::styled(
                     row.label.clone(),
-                    Style::default().fg(Color::Blue).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(Color::Blue)
+                        .add_modifier(Modifier::BOLD),
                 ),
             ];
 
@@ -111,7 +113,10 @@ fn draw_tree<B: Backend>(f: &mut Frame, model: &Model<B>, area: Rect) {
 fn draw_footer<B: Backend>(f: &mut Frame, model: &Model<B>, area: Rect) {
     let line = match &model.mode {
         Mode::Editing { buffer } => Line::from(vec![
-            Span::styled(" edit ", Style::default().bg(Color::Yellow).fg(Color::Black)),
+            Span::styled(
+                " edit ",
+                Style::default().bg(Color::Yellow).fg(Color::Black),
+            ),
             Span::raw(" "),
             Span::raw(buffer.clone()),
             Span::styled("▏", Style::default().fg(Color::Yellow)),

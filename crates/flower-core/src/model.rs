@@ -13,8 +13,8 @@ use fig::Value;
 
 use crate::backend::{Backend, EditOp};
 use crate::schema::{FieldRule, Schema};
-use fig_schema::{Issue, SegPat, Validation};
 use crate::tree::{self, Row, Seg};
+use fig_schema::{Issue, SegPat, Validation};
 
 /// Interaction mode: normal navigation, or editing a scalar's text.
 pub enum Mode {
@@ -852,7 +852,10 @@ timeout = 30.5
 
         let src = model.source_snapshot();
         assert!(src.contains("version = 2"), "value changed:\n{src}");
-        assert!(src.contains("# the server block"), "comment preserved:\n{src}");
+        assert!(
+            src.contains("# the server block"),
+            "comment preserved:\n{src}"
+        );
         assert!(
             src.contains("# flower sample config"),
             "header preserved:\n{src}"
@@ -872,7 +875,10 @@ timeout = 30.5
         type_value(&mut model, "example.com");
 
         let src = model.source_snapshot();
-        assert!(src.contains("host = \"example.com\""), "nested edit:\n{src}");
+        assert!(
+            src.contains("host = \"example.com\""),
+            "nested edit:\n{src}"
+        );
         assert!(src.contains("port = 8080"), "sibling untouched:\n{src}");
     }
 
@@ -896,7 +902,10 @@ timeout = 30.5
 
         let src = model.source_snapshot();
         assert!(src.contains("gamma"), "item appended:\n{src}");
-        assert!(src.contains("alpha") && src.contains("beta"), "siblings kept");
+        assert!(
+            src.contains("alpha") && src.contains("beta"),
+            "siblings kept"
+        );
         assert!(model.dirty);
     }
 
@@ -951,10 +960,25 @@ timeout = 30.5
             Model::with_hidden(backend, vec!["title".into(), "enabled".into()]).expect("model");
 
         // Hidden keys produce no rows…
-        assert!(!model.rows.iter().any(|r| r.path == [Seg::Key("title".into())]));
-        assert!(!model.rows.iter().any(|r| r.path == [Seg::Key("enabled".into())]));
+        assert!(
+            !model
+                .rows
+                .iter()
+                .any(|r| r.path == [Seg::Key("title".into())])
+        );
+        assert!(
+            !model
+                .rows
+                .iter()
+                .any(|r| r.path == [Seg::Key("enabled".into())])
+        );
         // …but a visible sibling is still there,
-        assert!(model.rows.iter().any(|r| r.path == [Seg::Key("version".into())]));
+        assert!(
+            model
+                .rows
+                .iter()
+                .any(|r| r.path == [Seg::Key("version".into())])
+        );
         // …and the hidden keys remain in the document bytes.
         assert!(model.source_snapshot().contains("title = \"flower\""));
         assert!(model.source_snapshot().contains("enabled = true"));
@@ -981,7 +1005,10 @@ timeout = 30.5
         let title = src.find("title").unwrap();
         let version = src.find("version").unwrap();
         let enabled = src.find("enabled").unwrap();
-        assert!(title < version && title < enabled, "title stayed put:\n{src}");
+        assert!(
+            title < version && title < enabled,
+            "title stayed put:\n{src}"
+        );
         assert!(enabled < version, "enabled moved above version:\n{src}");
     }
 
@@ -1007,7 +1034,10 @@ timeout = 30.5
         );
         assert!(!src.contains("version = 1"), "old key gone");
         // Selection re-anchored onto the renamed entry.
-        assert_eq!(model.rows[model.selected].path, [Seg::Key("revision".into())]);
+        assert_eq!(
+            model.rows[model.selected].path,
+            [Seg::Key("revision".into())]
+        );
     }
 
     #[test]
@@ -1046,7 +1076,11 @@ timeout = 30.5
         select(&mut model, &[Seg::Key("audience".into()), Seg::Index(0)]);
         model.begin_edit();
         type_value(&mut model, "familly");
-        assert!(model.status.contains("rejected"), "status: {}", model.status);
+        assert!(
+            model.status.contains("rejected"),
+            "status: {}",
+            model.status
+        );
         assert!(
             model.source_snapshot().contains("public"),
             "document unchanged:\n{}",
@@ -1127,9 +1161,8 @@ timeout = 30.5
     fn a_derived_field_is_visible_but_declines_edits() {
         let src = "title = \"note\"\nupdated = \"2026-07-01\"\ncreated = \"2026-06-01\"\n";
         let backend = FigBackend::open(src.as_bytes(), Format::Toml).expect("open");
-        let mut model =
-            Model::with_managed(backend, vec!["title".into()], vec!["updated".into()])
-                .expect("model");
+        let mut model = Model::with_managed(backend, vec!["title".into()], vec!["updated".into()])
+            .expect("model");
 
         // Hidden means no row; derived means a row that is marked.
         let labels: Vec<&str> = model.rows.iter().map(|r| r.label.as_str()).collect();
@@ -1146,7 +1179,10 @@ timeout = 30.5
         model.delete_selected();
         assert!(model.status.contains("maintained by the workspace"));
         let out = model.source_snapshot();
-        assert!(out.contains("updated = \"2026-07-01\""), "unchanged:\n{out}");
+        assert!(
+            out.contains("updated = \"2026-07-01\""),
+            "unchanged:\n{out}"
+        );
 
         // A neighbouring ordinary field still edits normally.
         model.set_scalar_text(&[Seg::Key("created".into())], "2026-06-15");

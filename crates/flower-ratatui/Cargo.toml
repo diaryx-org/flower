@@ -3,6 +3,10 @@ name = "flower-ratatui"
 edition.workspace = true
 version.workspace = true
 description = "A ratatui widget that renders and drives flower-core's config tree."
+# Not on crates.io: a ratatui widget pinned to one ratatui minor, whose only
+# consumer is `flower-tui` in this workspace. Publishing it would be a second
+# version number to keep in step for no reader outside the repo.
+publish = false
 
 [dependencies]
 flower-core.workspace = true

@@ -162,3 +162,26 @@ app-specific bridge lives in provui, not here — flower doesn't depend on prov.
 - **The rest of the Apple slices**: cross-compile `fig` via Zig for macOS-x64,
   iOS, and the simulator so `scripts/build-xcframework.sh` produces a full
   `FlowerFFI.xcframework`.
+
+## Development
+
+CI is a program, not a YAML file: `cargo xtask ci` runs every job the workflow
+runs, in the same order, and `cargo xtask <job>` runs one.
+
+| Job | What it runs |
+|---|---|
+| `fmt` | `cargo fmt --all --check` |
+| `clippy` | `cargo clippy --workspace --all-targets -- -D warnings` |
+| `test` | `cargo test --workspace` |
+| `package-isolation` | each crate built alone, so workspace feature unification can't hide a crate that fails on its own |
+| `msrv` | a build on `workspace.package.rust-version` (1.88) |
+
+The Swift half needs macOS and Xcode, so it is run by hand:
+`scripts/check-swift.sh` type-checks `FlowerUI` against the generated binding,
+`scripts/test-swift.sh` runs its tests, and `scripts/build-xcframework.sh`
+produces the distributable framework.
+
+`flower-core` is the only crate on crates.io; `flower-ratatui`, `flower-tui`, and
+`flower-ffi` are `publish = false` and move with the same version number. See
+[docs/releasing.md](docs/releasing.md) for how a release is cut and
+[docs/CHANGELOG.md](docs/CHANGELOG.md) for what has changed.

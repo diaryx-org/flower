@@ -1,0 +1,58 @@
+name: Publish
+# Publish the workspace's publishable crates to crates.io on a version tag. One
+# `cargo xtask release <spec> --push` cuts the tag that fires this.
+#
+# As in ci.yml, this file holds no knowledge of the workspace: which crates go
+# up, in what order, and which are already there is `cargo xtask publish`, which
+# derives all three from the manifests. Today that is `flower-core` alone —
+# `flower-ratatui`, `flower-tui`, and `flower-ffi` are `publish = false`. A crate
+# that drops that line is published by the next tag with no edit here.
+#
+# That command is idempotent by design: before publishing a crate it asks
+# crates.io whether that exact version already exists and skips cleanly if so.
+# So the workflow is safe to re-run (workflow_dispatch, or a re-pushed tag), and
+# a partial release is finished by simply running it again: the published crates
+# are skipped, the missing ones go up.
+#
+# Zig, as in CI: `cargo publish` runs a verification build, and flower's `fig`
+# dependency is Zig-backed (its build.rs runs `zig build`), so the pinned
+# toolchain must be on PATH. Version mirrors ci.yml.
+#
+# Auth is the `CARGO_REGISTRY_TOKEN` secret, as in fig, twig, moid, and prov. It
+# must carry `publish-new` — flower has never published, so its first release
+# creates the crate — and `publish-update` for every release after. Rotating is a
+# repo-settings edit (`gh secret set CARGO_REGISTRY_TOKEN`) and nothing here
+# changes.
+on:
+  push: { tags: [v*.*.*] }
+  workflow_dispatch: null
+permissions:
+  contents: read
+jobs:
+  crates-io:
+    name: Publish to crates.io
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v7
+    - uses: dtolnay/rust-toolchain@stable
+    - uses: mlugg/setup-zig@v2
+      with: { version: "0.16.0" }
+    - uses: Swatinem/rust-cache@v2
+
+    # On a tag, the tag must name the version being published — refuse a
+    # mismatch rather than publish a surprise. (workflow_dispatch has no tag, so
+    # the guard is skipped there.)
+    - name: Check the tag against the workspace version
+      if: github.ref_type == 'tag'
+      run: |
+        version=$(cargo run -q -p xtask -- version)
+        echo "Workspace version: $version"
+        if [ "${GITHUB_REF_NAME#v}" != "$version" ]; then
+          echo "::error::tag ${GITHUB_REF_NAME} does not match workspace version ${version}"
+          exit 1
+        fi
+
+    - name: Publish every crate crates.io is missing, in dependency order
+      env:
+        CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+      run: cargo xtask publish

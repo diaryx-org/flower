@@ -1,10 +1,23 @@
 [workspace]
 resolver = "3"
-members = ["crates/*"]
+# Listed rather than globbed: `xtask` is flower's CI as a program, and both the
+# CI matrix and the publish order are derived from this line by reading each
+# member's manifest. A glob would leave those two with nothing to read.
+members = [
+  "crates/flower-core",
+  "crates/flower-ratatui",
+  "crates/flower-tui",
+  "crates/flower-ffi",
+  "xtask",
+]
 
 [workspace.package]
 edition = "2024"
 version = "0.1.0"
+# Minimum supported Rust version, enforced by the `msrv` CI job (which reads this
+# very value). Edition 2024 needs 1.85, but `flower-core` uses an `if let … && let …`
+# let-chain in a stable position, stabilized in 1.88 — so 1.88 is the true floor.
+rust-version = "1.88"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/diaryx-org/flower"
 readme = "README.md"

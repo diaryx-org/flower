@@ -27,6 +27,21 @@
 //! so comments, key order, and formatting the user didn't touch stay byte-for-
 //! byte identical.
 //!
+//! ## Two projections, one document
+//!
+//! The tree is not the only shape core offers. [`FlowerDoc::show_pages`] switches
+//! to the **page** projection — one container at a time, with small all-scalar
+//! groups inlined, pushed and popped like a settings menu — and returns a
+//! [`PagesView`]: the page you are on, the page it came out of, and the page the
+//! cursor would open, so a two-pane host needs one crossing per frame there too.
+//!
+//! The page methods address nodes by the dotted-path `id` a [`RowView`] already
+//! carries rather than by index, because a page item need not be a visible row at
+//! all — its ancestors may be folded away in the tree — and because a page host
+//! holds three panes' worth of ids at once. Both projections are the same
+//! document and the same path-addressed edits; switching carries the cursor
+//! across, so they are two ways of looking at one position.
+//!
 //! ## Threading
 //!
 //! A UniFFI object is handed to Swift as a reference-counted handle whose methods
@@ -35,8 +50,9 @@
 
 use std::sync::{Arc, Mutex};
 
-use fig::Format;
-use flower_core::{FigBackend, Model, Seg, VKind};
+use fig::{Format, Value};
+use flower_core::page::{self, Page, PageItem};
+use flower_core::{FigBackend, ItemKind, Model, Seg, VKind, ViewMode};
 
 uniffi::setup_scaffolding!();
 
@@ -101,6 +117,96 @@ pub struct DocView {
     pub root_kind: String,
     /// How many top-level keys are hidden (managed by an embedder). Lets a
     /// frontend show a "N managed fields" affordance.
+    pub hidden_count: u32,
+}
+
+// ── the page projection ──────────────────────────────────────────────────────
+
+/// One line of a page — the projection of `flower_core::PageItem`.
+///
+/// Where a [`RowView`] is a line of the whole document indented by `depth`, this
+/// is a line of *one container's* listing: no depth, because everything on a page
+/// is one level of the same thing, and an [`inset`](Self::inset) of 1 only for the
+/// members of a group inlined into it.
+#[derive(uniffi::Record, Clone)]
+pub struct PageItemView {
+    /// The item's dotted fig path — the same identity a [`RowView`] carries, so
+    /// the two projections name a node the same way and every page method takes
+    /// this string.
+    pub id: String,
+    /// The mapping key, or `[i]` for a sequence item.
+    pub label: String,
+    /// A readable stand-in for a sequence item's index — the value of whichever
+    /// field best names it. Shown *beside* the label, never instead of it: the
+    /// index is what the path addresses and what a reorder moves.
+    pub title: Option<String>,
+    /// The value kind as a renderer class id — the same vocabulary
+    /// [`RowView::kind`] uses.
+    pub kind: String,
+    /// What activating this row does: `"scalar"` (edit in place), `"drill"` (open
+    /// a page of its own), or `"group"` (the header of a container inlined into
+    /// this page — its members are the rows below it at `inset` 1).
+    pub role: String,
+    /// A one-line rendering of the value (the scalar text, or `{n}` / `[n]`). For
+    /// a scalar this is also the seed text an inline editor opens with.
+    pub preview: String,
+    /// A container's whole contents in flow form (`{branches: [master]}`), when
+    /// they are short enough to be worth showing instead of counting. A renderer
+    /// prefers this over `count` whenever the row has room for it — `1 field ›`
+    /// is strictly less than the document says when the field is right there.
+    pub summary: Option<String>,
+    /// How many children a container holds; 0 for a scalar.
+    pub count: u32,
+    /// 0 for a direct child of the page's focus; 1 for a member of a group inlined
+    /// into it. Never more.
+    pub inset: u32,
+    /// Whether this is a mapping entry (its key can be renamed).
+    pub can_rename: bool,
+}
+
+/// A step of a page's breadcrumb: the container it names, and the id to open it.
+#[derive(uniffi::Record, Clone)]
+pub struct CrumbView {
+    pub id: String,
+    pub label: String,
+}
+
+/// One page, ready to render as a pane.
+#[derive(uniffi::Record, Clone)]
+pub struct PageView {
+    /// The dotted path of the container being listed; `""` is the document root.
+    pub focus: String,
+    /// The trail from the root down to [`focus`](Self::focus), each step openable
+    /// by its `id`. **Empty at the root**, whose name is the frontend's to choose
+    /// — flower-core has none for it (the TUI calls it `‹document›`).
+    pub crumbs: Vec<CrumbView>,
+    pub items: Vec<PageItemView>,
+    /// The selected item, or `None` for a pane that doesn't hold the cursor — a
+    /// preview, or the parent pane when what it marks is the page you opened.
+    pub selected: Option<u32>,
+}
+
+/// A whole rendered frame of the page view: the pane you are on, the pane it came
+/// out of, and the one it would open — plus the same document chrome a
+/// [`DocView`] carries, so a page-view host needs nothing else.
+#[derive(uniffi::Record)]
+pub struct PagesView {
+    /// The page currently being listed, with the cursor on it.
+    pub page: PageView,
+    /// The page one level out — what a two-pane layout draws on the left, with
+    /// the row you came out of marked. `None` at the root, which has no parent.
+    pub parent: Option<PageView>,
+    /// The page the selection *would* open, so a two-pane layout at the root has
+    /// something to put on the right before anything has been opened. `None` when
+    /// the selection is not a drill row.
+    pub peek: Option<PageView>,
+    /// Whether a two-pane layout is worth drawing at all: false for a document
+    /// whose root has nothing to drill into, where the second pane would cost half
+    /// the width and show nothing.
+    pub two_pane: bool,
+    pub dirty: bool,
+    pub status: String,
+    pub root_kind: String,
     pub hidden_count: u32,
 }
 
@@ -354,6 +460,169 @@ impl FlowerDoc {
         }
         view_of(&m)
     }
+
+    // ── the page projection ───────────────────────────────────────────────────
+    //
+    // The page methods drive the other projection: one container at a time, with
+    // small all-scalar groups inlined, pushed and popped. They address nodes by
+    // the same dotted-path `id` a `RowView` carries — not by index — because a
+    // page item need not be a visible row at all (its ancestors may be folded in
+    // the tree), and because a page host has three panes' worth of ids in hand.
+    //
+    // Each one puts the model in the page view first. The model keeps both
+    // projections live, but *which is active* decides which selection an edit
+    // reads, so a page method that quietly operated in tree mode would edit
+    // whatever the tree cursor happened to be on.
+
+    /// Switch to the page view and resolve it to a renderable frame.
+    ///
+    /// The switch carries the cursor across: the node selected in the tree is the
+    /// node selected on the page you land on, so the two views are two ways of
+    /// looking at one position rather than two places.
+    pub fn show_pages(&self) -> PagesView {
+        let mut m = self.lock();
+        m.set_view(ViewMode::Pages);
+        pages_of(&m)
+    }
+
+    /// Switch back to the tree view, carrying the cursor the same way.
+    pub fn show_tree(&self) -> DocView {
+        let mut m = self.lock();
+        m.set_view(ViewMode::Tree);
+        view_of(&m)
+    }
+
+    /// The page frame as it stands, without switching projection — for a host that
+    /// keeps both surfaces rendered and needs to refresh the one an edit was not
+    /// made from.
+    pub fn pages(&self) -> PagesView {
+        pages_of(&self.lock())
+    }
+
+    /// Put the cursor on the item `id` names, pointing the page view at whichever
+    /// page *lists* it. A tap on a row.
+    ///
+    /// `""` is the document root, which selects nothing and lists the root page.
+    pub fn page_select(&self, id: String) -> PagesView {
+        let mut m = self.lock();
+        m.set_view(ViewMode::Pages);
+        if let Some(path) = path_for_id(&m, &id) {
+            m.focus_on(&path);
+        }
+        pages_of(&m)
+    }
+
+    /// Open what `id` names as a page — a tap on a drill row, on a row in the
+    /// pane you came out of, or on a breadcrumb. `""` opens the document root.
+    ///
+    /// A scalar or a group header has no page of its own, so this only selects it
+    /// (a group's members are already listed under it; a scalar is edited in
+    /// place through [`page_set_value`](Self::page_set_value)).
+    pub fn page_open(&self, id: String) -> PagesView {
+        let mut m = self.lock();
+        m.set_view(ViewMode::Pages);
+        if let Some(path) = path_for_id(&m, &id) {
+            m.focus_on(&path);
+            if m.page_item().is_some_and(PageItem::is_drill) {
+                m.page_enter();
+            }
+        }
+        pages_of(&m)
+    }
+
+    /// Pop back to the parent page, restoring the cursor to the container you came
+    /// out of.
+    pub fn page_back(&self) -> PagesView {
+        let mut m = self.lock();
+        m.set_view(ViewMode::Pages);
+        m.page_back();
+        pages_of(&m)
+    }
+
+    /// Move the cursor one item up the current page (`↑`).
+    pub fn page_move_up(&self) -> PagesView {
+        let mut m = self.lock();
+        m.set_view(ViewMode::Pages);
+        m.page_move_up();
+        pages_of(&m)
+    }
+
+    /// Move the cursor one item down the current page (`↓`).
+    pub fn page_move_down(&self) -> PagesView {
+        let mut m = self.lock();
+        m.set_view(ViewMode::Pages);
+        m.page_move_down();
+        pages_of(&m)
+    }
+
+    // ── editing from a page ───────────────────────────────────────────────────
+
+    /// Commit `text` as the new value of the scalar `id` names, spliced losslessly
+    /// through fig — the page-view peer of [`set_value`](Self::set_value).
+    pub fn page_set_value(&self, id: String, text: String) -> PagesView {
+        let mut m = self.lock();
+        m.set_view(ViewMode::Pages);
+        match path_for_id(&m, &id) {
+            Some(path) if m.value_at(&path).is_some_and(|v| !page::is_container(v)) => {
+                m.focus_on(&path);
+                m.set_scalar_text(&path, &text);
+            }
+            Some(_) => m.set_status("can only edit scalar values"),
+            None => {}
+        }
+        pages_of(&m)
+    }
+
+    /// Delete the mapping entry or sequence item `id` names.
+    pub fn page_delete(&self, id: String) -> PagesView {
+        let mut m = self.lock();
+        m.set_view(ViewMode::Pages);
+        if let Some(path) = path_for_id(&m, &id) {
+            m.focus_on(&path);
+            m.delete_selected();
+        }
+        pages_of(&m)
+    }
+
+    /// Rename the mapping entry `id` names, keeping its value. A no-op with a
+    /// status hint on a sequence item, which has an index, not a key.
+    pub fn page_rename(&self, id: String, new_key: String) -> PagesView {
+        let mut m = self.lock();
+        m.set_view(ViewMode::Pages);
+        if let Some(path) = path_for_id(&m, &id) {
+            m.rename_key(&path, &new_key);
+        }
+        pages_of(&m)
+    }
+
+    /// Add a child to the container `id` names: `key = text` for a mapping, an
+    /// appended `text` for a sequence. `""` is the document root.
+    ///
+    /// One method for both because a page names its own container by id — adding
+    /// "to this page" and adding "to that row" are the same call with a different
+    /// id, which is not true of the tree, where the root has no row.
+    pub fn page_add_child(&self, id: String, key: String, text: String) -> PagesView {
+        let mut m = self.lock();
+        m.set_view(ViewMode::Pages);
+        if let Some(path) = path_for_id(&m, &id) {
+            match m.value_at(&path) {
+                Some(Value::Map(_)) => m.insert_key_text(&path, &key, &text),
+                Some(Value::Seq(_)) => m.append_item_text(&path, &text),
+                _ => m.set_status("can only add to a mapping or a sequence"),
+            }
+        }
+        pages_of(&m)
+    }
+
+    /// Move the item `id` names one place earlier among its siblings.
+    pub fn page_move_item_up(&self, id: String) -> PagesView {
+        self.reorder_from_page(&id, -1)
+    }
+
+    /// Move the item `id` names one place later among its siblings.
+    pub fn page_move_item_down(&self, id: String) -> PagesView {
+        self.reorder_from_page(&id, 1)
+    }
 }
 
 impl FlowerDoc {
@@ -362,10 +631,37 @@ impl FlowerDoc {
     fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
         self.inner.lock().unwrap_or_else(|p| p.into_inner())
     }
+
+    /// The shared body of the two page reorders: put the cursor on `id`, then
+    /// shift it among its siblings. Reordering is a selection-based operation in
+    /// core (it is "move *this* one", not "move the thing at this path to that
+    /// path"), so the page methods select first and let core do the rest.
+    fn reorder_from_page(&self, id: &str, delta: i32) -> PagesView {
+        let mut m = self.lock();
+        m.set_view(ViewMode::Pages);
+        if let Some(path) = path_for_id(&m, id) {
+            m.focus_on(&path);
+            if delta < 0 {
+                m.move_selected_up();
+            } else {
+                m.move_selected_down();
+            }
+        }
+        pages_of(&m)
+    }
 }
 
-/// Clamp `index` to the row list and set it as the selection.
+/// Clamp `index` to the row list and set it as the selection — and put the model
+/// in the tree view, which is the projection an index means anything in.
+///
+/// The switch is not bookkeeping. Core resolves a selection-based op (delete,
+/// reorder) against whichever projection is *active*, so an index-taking method
+/// called while the model was left in the page view would edit whatever the page
+/// cursor was on. Every index-taking method establishes its selection here, so
+/// this is the one place that has to say so — the page methods say the same thing
+/// the other way round.
 fn select_index(model: &mut Model<FigBackend>, index: u32) {
+    model.set_view(ViewMode::Tree);
     if model.rows.is_empty() {
         model.selected = 0;
         return;
@@ -447,6 +743,108 @@ fn path_id(path: &[Seg]) -> String {
         }
     }
     s
+}
+
+/// Snapshot the model's page state as a [`PagesView`] — the page projection's
+/// peer of [`view_of`], and the only place `flower_core::Page` crosses into the
+/// view shape.
+///
+/// Which pane holds the cursor is decided here rather than in Swift, because it
+/// follows from the model: the page you are on always has it; the pane you came
+/// out of marks the row you opened, which is a trace and not a selection; a peek
+/// is a preview of something not yet opened, so it has none at all.
+fn pages_of(model: &Model<FigBackend>) -> PagesView {
+    let page = page_view_of(model.page(), Some(model.page_selected()));
+    let parent = (!model.focus().is_empty()).then(|| {
+        let parent = model.parent_page();
+        page_view_of(parent, parent.position_of(model.focus()))
+    });
+    let peek = model.peek_page().map(|p| page_view_of(&p, None));
+
+    PagesView {
+        page,
+        parent,
+        peek,
+        two_pane: !model.pages_would_degenerate(),
+        dirty: model.dirty,
+        status: model.status.clone(),
+        root_kind: model.root_kind().to_string(),
+        hidden_count: model.hidden_present() as u32,
+    }
+}
+
+fn page_view_of(page: &Page, selected: Option<usize>) -> PageView {
+    PageView {
+        focus: path_id(&page.focus),
+        crumbs: crumbs_of(page),
+        items: page.items.iter().map(item_view_of).collect(),
+        selected: selected.map(|i| i as u32),
+    }
+}
+
+/// The trail from the root down to a page's focus, each step openable by id.
+///
+/// The last step takes the page's own title when it has one, so a sequence item
+/// reads as what it is rather than as `[2]` — the same substitution
+/// `Page::breadcrumb` makes, and the same name the row carried on the page you
+/// opened it from.
+fn crumbs_of(page: &Page) -> Vec<CrumbView> {
+    let last = page.focus.len().saturating_sub(1);
+    page.focus
+        .iter()
+        .enumerate()
+        .map(|(i, seg)| CrumbView {
+            id: path_id(&page.focus[..=i]),
+            label: match (i == last, &page.title) {
+                (true, Some(title)) => title.clone(),
+                _ => page::seg_label(seg),
+            },
+        })
+        .collect()
+}
+
+fn item_view_of(item: &PageItem) -> PageItemView {
+    let (role, count) = match item.kind {
+        ItemKind::Scalar => ("scalar", 0),
+        ItemKind::Drill { count } => ("drill", count),
+        ItemKind::GroupHeader { count } => ("group", count),
+    };
+    PageItemView {
+        id: path_id(&item.path),
+        label: item.label.clone(),
+        title: item.title.clone(),
+        kind: kind_name(item.vkind).to_string(),
+        role: role.to_string(),
+        preview: item.preview.clone(),
+        summary: item.summary.clone(),
+        count: count as u32,
+        inset: item.inset as u32,
+        can_rename: matches!(item.path.last(), Some(Seg::Key(_))),
+    }
+}
+
+/// The fig path a page-view `id` names.
+///
+/// Resolved by *looking it up* among the pages the model has live rather than by
+/// parsing the dotted string back into segments: `tags.0` is a sequence index and
+/// `limits.0` could be a key spelled `0`, and a key may contain a dot — a printed
+/// path is a display form, not a parseable one. Every id a frontend can hold came
+/// from one of these panes, so the lookup is total for anything it can send. The
+/// empty id is the document root, which no item names.
+fn path_for_id(model: &Model<FigBackend>, id: &str) -> Option<Vec<Seg>> {
+    if id.is_empty() {
+        return Some(Vec::new());
+    }
+    let on = |page: &Page| {
+        page.items
+            .iter()
+            .find(|i| path_id(&i.path) == id)
+            .map(|i| i.path.clone())
+    };
+    on(model.page())
+        .or_else(|| on(model.parent_page()))
+        .or_else(|| on(model.root_page()))
+        .or_else(|| model.peek_page().as_ref().and_then(on))
 }
 
 #[cfg(test)]
@@ -621,5 +1019,261 @@ tags = [\"alpha\", \"beta\"]
         d.delete(i);
         assert!(!d.source().contains("enabled = true"));
         assert!(d.source().contains("title = \"flower\""));
+    }
+
+    // ── the page projection ───────────────────────────────────────────────────
+
+    /// Deep enough to have somewhere to drill: a nested mapping, a small group
+    /// that inlines, and a sequence of mappings the titles have to name.
+    const DEEP: &str = "\
+name: flower
+server:
+  host: localhost
+  port: 8080
+  limits:
+    max_connections: 100
+    timeout: 30
+jobs:
+  - name: build
+    runs_on: macos
+  - name: test
+    runs_on: linux
+";
+
+    fn deep() -> Arc<FlowerDoc> {
+        FlowerDoc::new(DEEP.to_string(), "yaml".to_string(), Vec::new()).unwrap()
+    }
+
+    fn ids(page: &PageView) -> Vec<&str> {
+        page.items.iter().map(|i| i.id.as_str()).collect()
+    }
+
+    fn item<'p>(page: &'p PageView, id: &str) -> &'p PageItemView {
+        page.items.iter().find(|i| i.id == id).unwrap()
+    }
+
+    #[test]
+    fn the_root_page_lists_one_level() {
+        let v = deep().show_pages();
+        assert_eq!(ids(&v.page), ["name", "server", "jobs"]);
+        assert_eq!(item(&v.page, "name").role, "scalar");
+        assert_eq!(item(&v.page, "server").role, "drill");
+        assert_eq!(item(&v.page, "jobs").count, 2);
+        assert!(v.page.crumbs.is_empty(), "the root has no trail");
+        assert!(v.parent.is_none(), "and no page it came out of");
+        assert!(v.two_pane, "there is something to drill into");
+    }
+
+    #[test]
+    fn a_flat_document_asks_for_one_pane() {
+        let d =
+            FlowerDoc::new("a = 1\nb = 2\n".to_string(), "toml".to_string(), Vec::new()).unwrap();
+        assert!(!d.show_pages().two_pane);
+    }
+
+    #[test]
+    fn opening_a_drill_pushes_a_page_and_back_pops_it() {
+        let d = deep();
+        d.show_pages();
+        let v = d.page_open("server".to_string());
+        assert_eq!(v.page.focus, "server");
+        assert_eq!(
+            v.page
+                .crumbs
+                .iter()
+                .map(|c| c.label.as_str())
+                .collect::<Vec<_>>(),
+            ["server"]
+        );
+        // The left pane is the page it was opened from, marking the row it came
+        // out of — a trace, not a second cursor.
+        let parent = v.parent.expect("a pushed page has a parent pane");
+        assert_eq!(parent.focus, "");
+        assert_eq!(parent.selected, Some(1));
+
+        let v = d.page_back();
+        assert_eq!(v.page.focus, "");
+        assert_eq!(v.page.selected, Some(1), "the cursor returns to `server`");
+    }
+
+    #[test]
+    fn a_small_group_is_inlined_with_its_members_under_it() {
+        let d = deep();
+        d.show_pages();
+        let v = d.page_open("server".to_string());
+        assert_eq!(
+            ids(&v.page),
+            [
+                "server.host",
+                "server.port",
+                "server.limits",
+                "server.limits.max_connections",
+                "server.limits.timeout",
+            ]
+        );
+        assert_eq!(item(&v.page, "server.limits").role, "group");
+        assert_eq!(item(&v.page, "server.limits.timeout").inset, 1);
+        // A group header opens no page of its own — its members are already here.
+        let v = d.page_open("server.limits".to_string());
+        assert_eq!(v.page.focus, "server", "still on the page listing it");
+    }
+
+    #[test]
+    fn sequence_items_are_named_by_what_is_in_them() {
+        let d = deep();
+        d.show_pages();
+        let v = d.page_open("jobs".to_string());
+        let first = item(&v.page, "jobs.0");
+        assert_eq!(first.label, "[0]", "the index is what the path addresses");
+        assert_eq!(first.title.as_deref(), Some("build"));
+        assert_eq!(item(&v.page, "jobs.1").title.as_deref(), Some("test"));
+    }
+
+    #[test]
+    fn a_small_container_shows_its_contents_rather_than_a_count() {
+        let d = FlowerDoc::new(
+            "[on.push]\nbranches = [\"master\"]\n".to_string(),
+            "toml".to_string(),
+            Vec::new(),
+        )
+        .unwrap();
+        let v = d.show_pages();
+        assert_eq!(
+            item(&v.page, "on").summary.as_deref(),
+            Some("{push: {branches: [master]}}")
+        );
+    }
+
+    #[test]
+    fn editing_from_a_page_is_lossless() {
+        let d = deep();
+        d.show_pages();
+        d.page_open("server".to_string());
+        let v = d.page_set_value("server.port".to_string(), "9090".to_string());
+        assert!(v.dirty);
+        assert!(d.source().contains("port: 9090"));
+        assert!(d.source().contains("host: localhost"), "sibling untouched");
+    }
+
+    #[test]
+    fn editing_a_container_from_a_page_is_a_hinted_noop() {
+        let d = deep();
+        let v = d.show_pages();
+        assert!(!v.dirty);
+        let v = d.page_set_value("server".to_string(), "nope".to_string());
+        assert!(!v.dirty);
+        assert!(v.status.contains("scalar"));
+    }
+
+    #[test]
+    fn a_page_adds_to_the_container_it_is_listing() {
+        let d = deep();
+        d.show_pages();
+        let v = d.page_open("server".to_string());
+        assert_eq!(v.page.focus, "server");
+        // The page names its own container, so "add to this page" is the same
+        // call as "add to that row".
+        let v = d.page_add_child(
+            v.page.focus.clone(),
+            "scheme".to_string(),
+            "https".to_string(),
+        );
+        assert!(v.page.items.iter().any(|i| i.id == "server.scheme"));
+        assert!(d.source().contains("scheme"));
+    }
+
+    #[test]
+    fn a_page_appends_to_a_sequence_it_names() {
+        let d = deep();
+        d.show_pages();
+        let v = d.page_add_child("jobs".to_string(), String::new(), "third".to_string());
+        assert!(v.dirty);
+        assert!(d.source().contains("third"));
+    }
+
+    #[test]
+    fn deleting_and_reordering_from_a_page_address_the_row_tapped() {
+        let d = deep();
+        d.show_pages();
+        d.page_open("jobs".to_string());
+        d.page_move_item_up("jobs.1".to_string());
+        let src = d.source();
+        assert!(src.find("test").unwrap() < src.find("build").unwrap());
+
+        let v = d.page_delete("jobs.0".to_string());
+        assert!(!d.source().contains("test"));
+        assert!(v.page.items.iter().any(|i| i.id == "jobs.0"), "one left");
+    }
+
+    #[test]
+    fn renaming_from_a_page_keeps_the_value() {
+        let d = deep();
+        d.show_pages();
+        d.page_open("server".to_string());
+        let v = d.page_rename("server.host".to_string(), "hostname".to_string());
+        assert!(v.page.items.iter().any(|i| i.id == "server.hostname"));
+        assert!(d.source().contains("localhost"));
+    }
+
+    #[test]
+    fn switching_projections_carries_the_cursor_both_ways() {
+        let d = deep();
+        let i = row_index(&d.view(), "server.limits.timeout");
+        d.select(i);
+        // The tree cursor lands on the page that *lists* that key — the group is
+        // inlined into `server`, so that is `server`, not `server.limits`.
+        let v = d.show_pages();
+        assert_eq!(v.page.focus, "server");
+        assert_eq!(
+            ids(&v.page)[v.page.selected.unwrap() as usize],
+            "server.limits.timeout"
+        );
+
+        let v = d.show_tree();
+        assert_eq!(v.rows[v.selected as usize].id, "server.limits.timeout");
+    }
+
+    #[test]
+    fn the_root_page_hides_the_keys_the_tree_hides() {
+        let d = FlowerDoc::new(
+            DEEP.to_string(),
+            "yaml".to_string(),
+            vec!["name".to_string()],
+        )
+        .unwrap();
+        let v = d.show_pages();
+        assert_eq!(ids(&v.page), ["server", "jobs"]);
+        assert_eq!(v.hidden_count, 1);
+        assert!(d.source().contains("name: flower"), "still in the file");
+    }
+
+    #[test]
+    fn the_selection_previews_the_page_it_would_open() {
+        let d = deep();
+        d.show_pages();
+        let v = d.page_select("server".to_string());
+        let peek = v.peek.expect("a drill row previews its page");
+        assert_eq!(peek.focus, "server");
+        assert_eq!(peek.selected, None, "a preview holds no cursor");
+        // A scalar has no page to preview.
+        assert!(d.page_select("name".to_string()).peek.is_none());
+    }
+
+    #[test]
+    fn an_index_op_after_a_page_op_still_means_a_row() {
+        let d = deep();
+        // Leave the model in the page view, deep in the document…
+        d.show_pages();
+        d.page_open("server".to_string());
+        d.page_select("server.port".to_string());
+        // …then delete by row index. The index names a *row*, so it must resolve
+        // against the tree, not against whatever the page cursor was on.
+        let i = row_index(&d.view(), "name");
+        d.delete(i);
+        assert!(!d.source().contains("name: flower"));
+        assert!(
+            d.source().contains("port: 8080"),
+            "the page cursor was not the target"
+        );
     }
 }

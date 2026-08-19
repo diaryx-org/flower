@@ -1,0 +1,161 @@
+import XCTest
+@testable import FlowerUI
+import FlowerFFI
+
+/// Exercises the page projection through `FlowerModel` — the surface `FlowerPages`
+/// renders — against the real flower-core over the FFI.
+final class FlowerPageTests: XCTestCase {
+    /// Deep enough to have somewhere to drill: a nested mapping, a small group
+    /// that inlines, and a sequence of mappings the titles have to name.
+    let sample = """
+    name: flower
+    server:
+      host: localhost
+      port: 8080
+      limits:
+        max_connections: 100
+        timeout: 30
+    jobs:
+      - name: build
+        runs_on: macos
+      - name: test
+        runs_on: linux
+    """
+
+    func makeModel() throws -> FlowerModel {
+        let model = try FlowerModel(source: sample, format: "yaml")
+        model.showPages()
+        return model
+    }
+
+    private func ids(_ page: PageView) -> [String] { page.items.map(\.id) }
+
+    func testTheRootPageListsOneLevel() throws {
+        let model = try makeModel()
+        XCTAssertEqual(ids(model.page), ["name", "server", "jobs"])
+        XCTAssertTrue(model.pages.twoPane, "there is something to drill into")
+        XCTAssertNil(model.pages.parent, "the root came out of nothing")
+        XCTAssertTrue(model.page.crumbs.isEmpty)
+        XCTAssertFalse(model.canPageBack)
+    }
+
+    func testAFlatDocumentAsksForOnePane() throws {
+        let model = try FlowerModel(source: "a = 1\nb = 2\n", format: "toml")
+        model.showPages()
+        XCTAssertFalse(model.pages.twoPane)
+    }
+
+    func testOpeningADrillPushesAPageAndBackPopsIt() throws {
+        let model = try makeModel()
+        model.pageOpen(id: "server")
+        XCTAssertEqual(model.page.focus, "server")
+        XCTAssertEqual(model.page.crumbs.map(\.label), ["server"])
+        XCTAssertEqual(model.pages.parent?.focus, "", "the left pane is the root")
+        XCTAssertTrue(model.canPageBack)
+
+        model.pageBack()
+        XCTAssertEqual(model.page.focus, "")
+        XCTAssertEqual(model.selectedItem?.id, "server", "the cursor returns to it")
+    }
+
+    func testASmallGroupIsInlinedWithItsMembersUnderIt() throws {
+        let model = try makeModel()
+        model.pageOpen(id: "server")
+        XCTAssertEqual(ids(model.page), [
+            "server.host", "server.port", "server.limits",
+            "server.limits.max_connections", "server.limits.timeout",
+        ])
+        let group = model.page.items.first { $0.id == "server.limits" }
+        XCTAssertEqual(group?.role, "group")
+        XCTAssertEqual(model.page.items.last?.inset, 1)
+
+        // A group header opens no page of its own — its members are already here.
+        model.pageOpen(id: "server.limits")
+        XCTAssertEqual(model.page.focus, "server")
+    }
+
+    func testSequenceItemsAreNamedByWhatIsInThem() throws {
+        let model = try makeModel()
+        model.pageOpen(id: "jobs")
+        let first = model.page.items.first { $0.id == "jobs.0" }
+        XCTAssertEqual(first?.label, "[0]", "the index is what the path addresses")
+        XCTAssertEqual(first?.title, "build")
+    }
+
+    func testEditingFromAPageIsLosslessAndRoutesByProjection() throws {
+        let model = try makeModel()
+        model.pageOpen(id: "server")
+        guard let port = model.page.items.first(where: { $0.id == "server.port" }) else {
+            return XCTFail("no port row")
+        }
+        model.beginEdit(port)
+        XCTAssertEqual(model.editBuffer, "8080")
+        XCTAssertEqual(model.editingId, "server.port")
+        model.editBuffer = "9090"
+        model.commitEdit()
+
+        XCTAssertTrue(model.isDirty)
+        XCTAssertTrue(model.source().contains("port: 9090"))
+        XCTAssertTrue(model.source().contains("host: localhost"), "sibling untouched")
+    }
+
+    func testTheBoolRowCommitsImmediately() throws {
+        let model = try FlowerModel(source: "server:\n  tls: false\n  port: 8080\n", format: "yaml")
+        model.showPages()
+        model.pageOpen(id: "server")
+        guard let tls = model.page.items.first(where: { $0.id == "server.tls" }) else {
+            return XCTFail("no tls row")
+        }
+        model.setBool(tls, true)
+        XCTAssertTrue(model.source().contains("tls: true"))
+    }
+
+    func testAddingToThePageOpensTheNewFieldForEditing() throws {
+        let model = try makeModel()
+        model.pageOpen(id: "server")
+        model.pageAddChild(id: model.page.focus)
+        XCTAssertTrue(model.page.items.contains { $0.id == "server.new_key" })
+        XCTAssertEqual(model.editingId, "server.new_key", "the new field opens for editing")
+    }
+
+    func testDeletingAndReorderingAddressTheRowTapped() throws {
+        let model = try makeModel()
+        model.pageOpen(id: "jobs")
+        guard let second = model.page.items.first(where: { $0.id == "jobs.1" }) else {
+            return XCTFail("no second job")
+        }
+        model.moveItemUp(second)
+        let src = model.source()
+        XCTAssertLessThan(src.range(of: "test")!.lowerBound, src.range(of: "build")!.lowerBound)
+
+        guard let first = model.page.items.first(where: { $0.id == "jobs.0" }) else {
+            return XCTFail("no first job")
+        }
+        model.delete(first)
+        XCTAssertFalse(model.source().contains("test"))
+    }
+
+    func testSwitchingSurfacesCarriesTheCursorAndKeepsBothFramesLive() throws {
+        let model = try makeModel()
+        model.pageOpen(id: "server")
+        XCTAssertEqual(model.projection, .pages)
+
+        // The tree frame is refreshed by page commands, not left behind.
+        XCTAssertTrue(model.state.rows.contains { $0.id == "server.port" })
+
+        model.showTree()
+        XCTAssertEqual(model.projection, .tree)
+        // The cursor is the *selected item*, not the container the page listed:
+        // opening `server` put it on the first row of that page.
+        XCTAssertEqual(model.selectedRow?.id, "server.host", "the cursor came with it")
+
+        // …and back, onto the page that lists whatever the tree was on.
+        guard let timeout = model.state.rows.first(where: { $0.id == "server.limits.timeout" }) else {
+            return XCTFail("no timeout row")
+        }
+        model.select(timeout)
+        model.showPages()
+        XCTAssertEqual(model.page.focus, "server", "the group is inlined into `server`")
+        XCTAssertEqual(model.selectedItem?.id, "server.limits.timeout")
+    }
+}

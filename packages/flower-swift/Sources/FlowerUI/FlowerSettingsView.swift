@@ -119,6 +119,10 @@ public struct FlowerEditor: View {
             .frame(maxWidth: 640, alignment: .leading)
             .frame(maxWidth: .infinity)
         }
+        // This surface drives the tree projection; `FlowerPages` claims the other
+        // one the same way. A host can swap between them freely, and whichever is
+        // on screen is the one an inline commit belongs to.
+        .onAppear { model.showTree() }
     }
 }
 

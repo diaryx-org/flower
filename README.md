@@ -93,7 +93,7 @@ fig (Zig) → fig-sys (FFI, libfig.a) → fig crate (Editor/Document/Value)
 | widget | [`crates/flower-ratatui`](crates/flower-ratatui) | a `draw(frame, &Model, header)` ratatui widget. |
 | binding | [`crates/flower-ffi`](crates/flower-ffi) | the **UniFFI C-ABI binding** — wraps the filesystem-free `Model` so a native Apple app can drive it. The native-Apple peer of the ratatui widget. |
 | app | [`crates/flower-tui`](crates/flower-tui) | the terminal app (binary `flower`) — file I/O + event loop. |
-| Swift SDK | [`packages/flower-swift`](packages/flower-swift) | the Swift Package — `FlowerUI`, a SwiftUI structural tree editor, over the UniFFI `flower-ffi` binding. |
+| Swift SDK | [`packages/flower-swift`](packages/flower-swift) | the Swift Package — `FlowerUI`, the SwiftUI editor surfaces (`FlowerEditor`, the settings list; `FlowerPages`, the page view) over the UniFFI `flower-ffi` binding. |
 | Swift app | [`apps/flower-editor`](apps/flower-editor) | the cross-platform (macOS + iOS) SwiftUI example, consuming `packages/flower-swift`. |
 
 The Swift frontend keeps the same contract as the TUI: **core owns the model**
@@ -101,6 +101,14 @@ The Swift frontend keeps the same contract as the TUI: **core owns the model**
 visible rows and forwards navigation / edit intents by row index. Every call
 across the FFI returns a `DocView` — the flat visible-row list plus selection,
 dirty, and status — one crossing that both mutates and repaints.
+
+Both projections cross it. `showPages()` switches to the page view and returns a
+`PagesView` — the page you are on, the page it came out of, and the page the
+cursor would open, so a two-pane host also repaints from one crossing. The page
+methods address nodes by the dotted path a row already carries rather than by
+index, because a page item need not be a visible *row* at all (its ancestors may
+be folded away in the tree). Switching carries the cursor, so the two surfaces
+are two ways of looking at one position.
 
 ```sh
 cargo run -- path/to/config.toml          # the TUI
@@ -177,10 +185,12 @@ app-specific bridge lives in provui, not here — flower doesn't depend on prov.
   also supersedes the page view's structural guesses — inline-vs-drill, and which
   field titles a sequence item — with declared group titles, ordering, and an
   "advanced" rank. The same renderer, curated.
-- **The page view across the FFI**: `DocView` still ships the flat tree rows, so
-  the Swift frontend has the tree and not the pages. Panes map onto
-  `NavigationSplitView` / `NavigationStack` directly, which is the idiomatic
-  shape there and gets size-class responsiveness from the OS.
+- **The page view as a `NavigationStack`**: `FlowerPages` draws its own panes and
+  breadcrumb off the `PagesView` frame, which is one shape on both platforms.
+  Handing the trail to `NavigationSplitView` / `NavigationStack` instead would buy
+  the OS's size-class responsiveness, the system back gesture, and the push
+  animation — at the cost of mirroring the focus into a `NavigationPath`, which is
+  a second place the navigation state can be wrong.
 - **Native frontend affordances** (`FlowerUI`): today it edits scalars in one
   inline text field. Next: type-aware widgets (bool toggle, number stepper, enum
   picker), keyboard navigation, insert/reorder, and comment display — the same

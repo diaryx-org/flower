@@ -260,26 +260,35 @@ fn page_line(item: &PageItem, width: u16) -> Line<'static> {
         // worth the noise on every group — the members it would lead to are
         // already on screen, which is the whole point of inlining them.
         ItemKind::GroupHeader { .. } => {
-            let title = format!("{}── {} ", " ".repeat(indent), item.label);
-            let rule = (width as usize).saturating_sub(title.chars().count() + 1);
+            let name = match &item.title {
+                Some(title) => format!("{} · {title}", item.label),
+                None => item.label.clone(),
+            };
+            let head = format!("{}── {name} ", " ".repeat(indent));
+            let rule = (width as usize).saturating_sub(head.chars().count() + 1);
             Line::from(vec![
-                Span::styled(title, dim()),
+                Span::styled(head, dim()),
                 Span::styled("─".repeat(rule), dim()),
             ])
         }
         ItemKind::Drill { count } => {
-            let noun = if item.vkind == VKind::Seq {
-                "items"
-            } else {
-                "fields"
+            let noun = match (item.vkind == VKind::Seq, *count) {
+                (true, 1) => "item",
+                (true, _) => "items",
+                (false, 1) => "field",
+                (false, _) => "fields",
             };
-            let trailing = format!("{count} {noun} ›");
-            row_line(indent, &item.label, key_style(), &trailing, dim(), width)
+            row_line(
+                indent,
+                name_spans(item),
+                &format!("{count} {noun} ›"),
+                dim(),
+                width,
+            )
         }
         ItemKind::Scalar => row_line(
             indent,
-            &item.label,
-            key_style(),
+            name_spans(item),
             &item.preview,
             value_style(item.vkind),
             width,
@@ -287,21 +296,37 @@ fn page_line(item: &PageItem, width: u16) -> Line<'static> {
     }
 }
 
-/// `indent + label … trailing`, with `trailing` flushed to `width` and truncated
-/// before the label is ever squeezed — a name you can't read costs more than a
+/// What names an item on the left of its row.
+///
+/// A titled sequence item keeps its index *and* gains the title: the index is
+/// what the path addresses and what a reorder moves, so dropping it would leave
+/// nothing to reconcile the row with the document — but it is dimmed, because on
+/// a list of twenty steps the title is what you are reading and the index is what
+/// you check afterwards.
+fn name_spans(item: &PageItem) -> Vec<Span<'static>> {
+    match &item.title {
+        Some(title) => vec![
+            Span::styled(format!("{} ", item.label), dim()),
+            Span::styled(title.clone(), key_style()),
+        ],
+        None => vec![Span::styled(item.label.clone(), key_style())],
+    }
+}
+
+/// `indent + name … trailing`, with `trailing` flushed to `width` and truncated
+/// before the name is ever squeezed — a name you can't read costs more than a
 /// value you can't finish.
 fn row_line(
     indent: usize,
-    label: &str,
-    label_style: Style,
+    name: Vec<Span<'static>>,
     trailing: &str,
     trailing_style: Style,
     width: u16,
 ) -> Line<'static> {
     const GUTTER: usize = 1; // kept clear on the right so a value never touches the edge
     let width = width as usize;
-    let label_w = label.chars().count();
-    let room = width.saturating_sub(indent + label_w + GUTTER + 1);
+    let name_w: usize = name.iter().map(|s| s.content.chars().count()).sum();
+    let room = width.saturating_sub(indent + name_w + GUTTER + 1);
 
     let trailing: String = if trailing.chars().count() <= room {
         trailing.to_string()
@@ -312,15 +337,14 @@ fn row_line(
     };
 
     let pad = width
-        .saturating_sub(indent + label_w + trailing.chars().count() + GUTTER)
+        .saturating_sub(indent + name_w + trailing.chars().count() + GUTTER)
         .max(1);
 
-    Line::from(vec![
-        Span::raw(" ".repeat(indent)),
-        Span::styled(label.to_string(), label_style),
-        Span::raw(" ".repeat(pad)),
-        Span::styled(trailing, trailing_style),
-    ])
+    let mut spans = vec![Span::raw(" ".repeat(indent))];
+    spans.extend(name);
+    spans.push(Span::raw(" ".repeat(pad)));
+    spans.push(Span::styled(trailing, trailing_style));
+    Line::from(spans)
 }
 
 fn render_list(f: &mut Frame, items: Vec<ListItem>, selected: Option<usize>, area: Rect) {
@@ -482,5 +506,32 @@ timeout = 30.5
         assert!(out.contains("key"), "{out}");
         assert!(out.contains('…'), "{out}");
         assert!(out.lines().all(|l| l.chars().count() <= 40), "{out}");
+    }
+
+    #[test]
+    fn a_sequence_of_mappings_is_listed_by_title_not_by_index() {
+        let src = br#"{"steps": [
+            {"uses": "actions/checkout@v7"},
+            {"uses": "mlugg/setup-zig@v2", "with": {"version": "0.16.0"}},
+            {"run": "cargo xtask ci"}
+        ]}"#;
+        let backend = FigBackend::open(src, fig::Format::Json).expect("open");
+        let mut model = Model::new(backend).expect("model");
+        model.set_view(ViewMode::Pages);
+        model.focus_on(&[Seg::Key("steps".into())]);
+        model.page_enter();
+
+        let out = render(&model, 76, 10);
+        assert!(out.contains("actions/checkout@v7"), "{out}");
+        assert!(out.contains("cargo xtask ci"), "{out}");
+        // The index stays alongside the title — it is what a reorder moves.
+        assert!(out.contains("[0]"), "{out}");
+        // Uniform: every item is a drill row, none expanded inline.
+        assert!(!out.contains("──"), "{out}");
+        // And the count reads as English.
+        assert!(
+            out.contains("1 field ›") && !out.contains("1 fields"),
+            "{out}"
+        );
     }
 }

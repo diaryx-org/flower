@@ -148,6 +148,15 @@ pub(crate) fn key_to_string(k: &Value) -> String {
 }
 
 /// A compact one-line preview of a value.
+///
+/// One line means one line: a multi-line string (a YAML block scalar, a shell
+/// script in a `run:` key) is cut at its first line break with an ellipsis. A
+/// renderer that took the whole thing would draw a row several lines tall and
+/// throw the rest of the list out of alignment — and every caller of this asks
+/// for a value it can put on one row.
+///
+/// [`edit_seed`] is the deliberate exception: it hands back the *whole* string,
+/// so what you edit is never the abbreviation you were shown.
 pub fn preview(v: &Value) -> String {
     match v {
         Value::Null => "null".to_string(),
@@ -155,10 +164,18 @@ pub fn preview(v: &Value) -> String {
         Value::Int(i) => i.to_string(),
         Value::Uint(u) => u.to_string(),
         Value::Float(f) => f.to_string(),
-        Value::Str(s) => s.clone(),
-        Value::Extended { text, .. } => text.clone(),
+        Value::Str(s) => first_line(s),
+        Value::Extended { text, .. } => first_line(text),
         Value::Map(entries) => format!("{{{}}}", entries.len()),
         Value::Seq(items) => format!("[{}]", items.len()),
+    }
+}
+
+/// `s` up to its first line break, marked with an ellipsis when there was more.
+fn first_line(s: &str) -> String {
+    match s.split_once('\n') {
+        Some((head, _)) => format!("{} …", head.trim_end()),
+        None => s.to_string(),
     }
 }
 

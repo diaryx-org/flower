@@ -117,7 +117,11 @@ a distributable `FlowerFFI.xcframework`.
     take — honoring a collapsed-set.
   - `page.rs` — the other projection: one container's children as a `Page`, with
     a small all-scalar container inlined into its parent's page as a titled group
-    rather than given one of its own. Same paths, so the same edits.
+    rather than given one of its own. Same paths, so the same edits. A sequence's
+    items render alike (a list where some rows are expanded and others collapsed
+    reads as a fault), and are titled by whichever of their fields best names
+    them — `title_keys` scores coverage, distinctness, and convention, so a
+    workflow's steps list as `actions/checkout@v7` rather than as `[0]`.
   - `model.rs` — `Model`: owns the `fig::Editor` (source of truth), the derived
     `Value`/rows, selection, and the edit ops. Constructed from bytes; the
     embedder owns the file.
@@ -167,8 +171,9 @@ app-specific bridge lives in provui, not here — flower doesn't depend on prov.
   `leading_comment`/`set_trailing_comment`/…).
 - **Schema layer**: the big one — fig has none, so a "what keys/values are valid
   here" layer is ours to add; unlocks completion, typed widgets, validation. It
-  also supersedes the page view's structural inline-vs-drill guess with declared
-  group titles, ordering, and an "advanced" rank — the same renderer, curated.
+  also supersedes the page view's structural guesses — inline-vs-drill, and which
+  field titles a sequence item — with declared group titles, ordering, and an
+  "advanced" rank. The same renderer, curated.
 - **The page view across the FFI**: `DocView` still ships the flat tree rows, so
   the Swift frontend has the tree and not the pages. Panes map onto
   `NavigationSplitView` / `NavigationStack` directly, which is the idiomatic

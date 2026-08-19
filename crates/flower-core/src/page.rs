@@ -36,7 +36,7 @@
 //! own path, so it stays selectable, deletable, and openable as a page like any
 //! other container.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use fig::Value;
 pub use fig_schema::Seg;
@@ -83,6 +83,13 @@ pub struct PageItem {
     /// 0 for a direct child of the page's focus; 1 for a member of a group inlined
     /// into it. Never more — see the module docs.
     pub inset: usize,
+    /// A readable stand-in for a sequence item's index — the value of whichever
+    /// of its fields best names it ([`title_keys`]). `None` for a mapping entry,
+    /// whose key already names it, and for an item nothing distinguishes.
+    ///
+    /// It never replaces [`label`](Self::label): the index is what the path is
+    /// addressed by and what a reorder moves, so a frontend shows both.
+    pub title: Option<String>,
 }
 
 impl PageItem {
@@ -105,6 +112,10 @@ pub struct Page {
     /// The container being listed. Empty is the document root.
     pub focus: Vec<Seg>,
     pub items: Vec<PageItem>,
+    /// What this page's own container is called, when it is a sequence item and
+    /// its index is not worth reading — the same title its row carried on the
+    /// page you opened it from, so the breadcrumb agrees with what you clicked.
+    pub title: Option<String>,
 }
 
 impl Page {
@@ -133,11 +144,11 @@ impl Page {
         if self.focus.is_empty() {
             return root_label.to_string();
         }
-        self.focus
-            .iter()
-            .map(seg_label)
-            .collect::<Vec<_>>()
-            .join(" › ")
+        let mut parts: Vec<String> = self.focus.iter().map(seg_label).collect();
+        if let (Some(title), Some(last)) = (&self.title, parts.last_mut()) {
+            *last = title.clone();
+        }
+        parts.join(" › ")
     }
 }
 
@@ -180,6 +191,95 @@ pub fn inlines(v: &Value) -> bool {
     n > 0 && n <= INLINE_MAX && !children.into_iter().any(is_container)
 }
 
+/// Keys that conventionally name the thing they sit in, best first.
+///
+/// A small list on purpose. It is a tie-breaker over the structural evidence
+/// below, not the mechanism: config files that call it something else are the
+/// common case, and a list long enough to cover them would start guessing wrong.
+const NAME_KEYS: [&str; 5] = ["name", "title", "id", "label", "key"];
+
+/// Rank the keys of a sequence's items by how well each one *names* an item,
+/// best first.
+///
+/// A sequence of mappings is the one place a config has no names to show: the
+/// items are addressed by index, and `[0]`, `[1]`, `[2]` tell you nothing about
+/// which step, service, or rule you are looking at. The information is there —
+/// it is just in a field rather than in a key — so this works out which field.
+///
+/// Three signals, in one score:
+///
+/// - **coverage** — how many items have this key at all, with a scalar value.
+/// - **distinctness** — how many of those values differ. A key that reads the
+///   same on every item cannot tell them apart, however faithfully it is filled
+///   in, so this is weighted hardest.
+/// - **convention** — whether it is one of [`NAME_KEYS`].
+///
+/// A *ranking* rather than a single answer, because items in the same sequence
+/// need not have the same keys: a GitHub Actions step is named by `uses` or by
+/// `run` depending on which kind of step it is, and each item takes the best
+/// key it actually has ([`title_of`]).
+pub fn title_keys(items: &[Value]) -> Vec<String> {
+    let mut order: Vec<String> = Vec::new();
+    let mut stats: HashMap<String, (usize, HashSet<String>)> = HashMap::new();
+    let mut mappings = 0usize;
+
+    for item in items {
+        let Value::Map(entries) = item else { continue };
+        mappings += 1;
+        for (k, v) in entries {
+            if is_container(v) {
+                continue;
+            }
+            let key = key_to_string(k);
+            let seen = stats.entry(key.clone()).or_insert_with(|| {
+                order.push(key);
+                (0, HashSet::new())
+            });
+            seen.0 += 1;
+            seen.1.insert(preview(v));
+        }
+    }
+    if mappings == 0 {
+        return Vec::new();
+    }
+
+    let mut ranked: Vec<(f64, usize, usize, &String)> = order
+        .iter()
+        .enumerate()
+        .map(|(doc_order, key)| {
+            let (present, values) = &stats[key];
+            let coverage = *present as f64 / mappings as f64;
+            let distinctness = values.len() as f64 / *present as f64;
+            let convention = NAME_KEYS.iter().position(|n| n.eq_ignore_ascii_case(key));
+            let score =
+                coverage + 1.5 * distinctness + if convention.is_some() { 2.0 } else { 0.0 };
+            (score, convention.unwrap_or(NAME_KEYS.len()), doc_order, key)
+        })
+        .collect();
+    // Best score first; ties settled by convention, then by the order the
+    // document itself puts the keys in — both stable, so a page does not
+    // reshuffle its titles when an unrelated field is edited.
+    ranked.sort_by(|a, b| {
+        b.0.total_cmp(&a.0)
+            .then_with(|| a.1.cmp(&b.1))
+            .then_with(|| a.2.cmp(&b.2))
+    });
+    ranked.into_iter().map(|(_, _, _, k)| k.clone()).collect()
+}
+
+/// The title `item` takes from a ranking: the value of the best-ranked key it
+/// actually has. `None` for a non-mapping, or one with none of the keys.
+pub fn title_of(ranking: &[String], item: &Value) -> Option<String> {
+    let Value::Map(entries) = item else {
+        return None;
+    };
+    ranking.iter().find_map(|want| {
+        entries
+            .iter()
+            .find_map(|(k, v)| (!is_container(v) && key_to_string(k) == *want).then(|| preview(v)))
+    })
+}
+
 /// Build the page listing the container at `focus`.
 ///
 /// `hidden_top_level` is the same root-scoped hiding [`tree::build_rows`] honors
@@ -194,20 +294,41 @@ pub fn build_page(root: &Value, focus: &[Seg], hidden_top_level: &HashSet<String
     let mut page = Page {
         focus: focus.to_vec(),
         items: Vec::new(),
+        title: page_title(root, focus),
     };
     let Some(node) = value_at(root, focus) else {
         return page;
     };
     let at_root = focus.is_empty();
 
+    // A sequence's items render alike, whatever their individual sizes.
+    //
+    // Applying the inline test per item would expand whichever entries happen to
+    // be small and collapse the rest — a list where some rows are three lines and
+    // others are one, which reads as a rendering fault rather than as a list. It
+    // also destroys the one comparison a list is for: entry against entry. So a
+    // sequence inlines every mapping item or none, and "none" is the answer as
+    // soon as one item is too big or too nested to inline.
+    //
+    // A mapping's children are under no such rule: they have distinct names, so
+    // a mix of inlined groups and drill rows reads as what it is.
+    let (uniform, ranking) = match node {
+        Value::Seq(items) => (
+            Some(items.iter().all(|i| !is_container(i) || inlines(i))),
+            title_keys(items),
+        ),
+        _ => (None, Vec::new()),
+    };
+
     for (label, path, child) in children_of(node, focus) {
         if at_root && hidden_top_level.contains(&label) {
             continue;
         }
+        let title = title_of(&ranking, child);
         if !is_container(child) {
             page.items
-                .push(item(label, path, child, ItemKind::Scalar, 0));
-        } else if inlines(child) {
+                .push(item(label, path, child, ItemKind::Scalar, 0, title));
+        } else if uniform.unwrap_or(true) && inlines(child) {
             let count = child_count(child);
             page.items.push(item(
                 label,
@@ -215,21 +336,47 @@ pub fn build_page(root: &Value, focus: &[Seg], hidden_top_level: &HashSet<String
                 child,
                 ItemKind::GroupHeader { count },
                 0,
+                title,
             ));
             for (sub_label, sub_path, sub) in children_of(child, &path) {
                 page.items
-                    .push(item(sub_label, sub_path, sub, ItemKind::Scalar, 1));
+                    .push(item(sub_label, sub_path, sub, ItemKind::Scalar, 1, None));
             }
         } else {
             let count = child_count(child);
-            page.items
-                .push(item(label, path, child, ItemKind::Drill { count }, 0));
+            page.items.push(item(
+                label,
+                path,
+                child,
+                ItemKind::Drill { count },
+                0,
+                title,
+            ));
         }
     }
     page
 }
 
-fn item(label: String, path: Vec<Seg>, v: &Value, kind: ItemKind, inset: usize) -> PageItem {
+/// The title of the container `focus` names, when it is a sequence item — the
+/// same one its row carried on the page it was opened from.
+fn page_title(root: &Value, focus: &[Seg]) -> Option<String> {
+    let Some(Seg::Index(i)) = focus.last() else {
+        return None;
+    };
+    let Value::Seq(items) = value_at(root, &focus[..focus.len() - 1])? else {
+        return None;
+    };
+    title_of(&title_keys(items), items.get(*i)?)
+}
+
+fn item(
+    label: String,
+    path: Vec<Seg>,
+    v: &Value,
+    kind: ItemKind,
+    inset: usize,
+    title: Option<String>,
+) -> PageItem {
     PageItem {
         path,
         label,
@@ -237,6 +384,7 @@ fn item(label: String, path: Vec<Seg>, v: &Value, kind: ItemKind, inset: usize) 
         preview: preview(v),
         kind,
         inset,
+        title,
     }
 }
 
@@ -473,5 +621,143 @@ timeout = 30.5
         let flat = value_of("{\"a\": 1, \"b\": 2}", Format::Json);
         assert!(!page_of(&flat, &[]).has_drills());
         assert!(page_of(&sample(), &[]).has_drills());
+    }
+
+    // ── titles for sequence items ─────────────────────────────────────────
+
+    /// A workflow's steps: the case with no single naming key. Different kinds of
+    /// step are named by different fields, and one field (`if`) reads the same on
+    /// the items that have it.
+    const STEPS: &str = r#"{"steps": [
+        {"uses": "actions/checkout@v7"},
+        {"uses": "dtolnay/rust-toolchain@stable", "if": "always"},
+        {"uses": "Swatinem/rust-cache@v2", "if": "always", "with": {"key": "a"}},
+        {"run": "cargo xtask ci", "shell": "bash"}
+    ]}"#;
+
+    fn titles(page: &Page) -> Vec<Option<String>> {
+        page.items.iter().map(|i| i.title.clone()).collect()
+    }
+
+    #[test]
+    fn a_sequence_item_is_titled_by_the_field_that_distinguishes_it() {
+        let root = value_of(STEPS, Format::Json);
+        let page = page_of(&root, &[key("steps")]);
+        assert_eq!(
+            titles(&page),
+            vec![
+                Some("actions/checkout@v7".into()),
+                Some("dtolnay/rust-toolchain@stable".into()),
+                Some("Swatinem/rust-cache@v2".into()),
+                // No `uses` at all — falls to the next-best key it does have.
+                Some("cargo xtask ci".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_key_that_reads_the_same_on_every_item_loses_to_one_that_does_not() {
+        let root = value_of(STEPS, Format::Json);
+        let Value::Map(entries) = &root else {
+            unreachable!()
+        };
+        let Value::Seq(items) = &entries[0].1 else {
+            unreachable!()
+        };
+        let ranking = title_keys(items);
+        // `if` is on two items and says "always" on both, so it names neither.
+        let uses = ranking.iter().position(|k| k == "uses").expect("uses");
+        let cond = ranking.iter().position(|k| k == "if").expect("if");
+        assert!(uses < cond, "{ranking:?}");
+        // `with` is a container: never a title.
+        assert!(!ranking.iter().any(|k| k == "with"), "{ranking:?}");
+    }
+
+    #[test]
+    fn a_conventional_name_key_outranks_a_merely_distinct_one() {
+        let root = value_of(
+            r#"{"env": [
+                {"name": "HOME", "value": "/root"},
+                {"name": "PATH", "value": "/bin"}
+            ]}"#,
+            Format::Json,
+        );
+        let page = page_of(&root, &[key("env")]);
+        // Both items are small and all-scalar, so they inline — and the title
+        // lands on the group header, which is the row standing in for the item.
+        // `value` is exactly as distinct and as well covered as `name`; `name`
+        // wins because it is what a config author means by a name.
+        assert_eq!(
+            page.items
+                .iter()
+                .filter(|i| i.inset == 0)
+                .map(|i| i.title.clone())
+                .collect::<Vec<_>>(),
+            vec![Some("HOME".into()), Some("PATH".into())]
+        );
+    }
+
+    #[test]
+    fn a_mapping_entry_is_never_titled() {
+        let root = sample();
+        assert!(page_of(&root, &[]).items.iter().all(|i| i.title.is_none()));
+        // Nor is a sequence of scalars: the value is already the whole row.
+        let tags = page_of(&root, &[key("server"), key("tags")]);
+        assert!(tags.items.iter().all(|i| i.title.is_none()));
+    }
+
+    #[test]
+    fn a_sequence_renders_its_items_uniformly() {
+        let root = value_of(STEPS, Format::Json);
+        let page = page_of(&root, &[key("steps")]);
+        // The third step nests a `with` mapping, so it cannot inline — and none of
+        // the others do either, however small. A list reads as a list.
+        assert!(
+            page.items
+                .iter()
+                .all(|i| matches!(i.kind, ItemKind::Drill { .. })),
+            "{:?}",
+            shape(&page)
+        );
+
+        // Take the nesting away and every item inlines, again as a group.
+        let flat = value_of(
+            r#"{"steps": [{"run": "a"}, {"run": "b", "shell": "sh"}]}"#,
+            Format::Json,
+        );
+        let page = page_of(&flat, &[key("steps")]);
+        assert_eq!(
+            shape(&page),
+            vec![
+                ("[0]".into(), 0, "group"),
+                ("run".into(), 1, "scalar"),
+                ("[1]".into(), 0, "group"),
+                ("run".into(), 1, "scalar"),
+                ("shell".into(), 1, "scalar"),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_titled_item_carries_its_title_into_its_own_breadcrumb() {
+        let root = value_of(STEPS, Format::Json);
+        let page = page_of(&root, &[key("steps"), Seg::Index(3)]);
+        assert_eq!(page.title.as_deref(), Some("cargo xtask ci"));
+        assert_eq!(page.breadcrumb("‹document›"), "steps › cargo xtask ci");
+        // Its own children are mapping entries, so none of them is titled.
+        assert!(page.items.iter().all(|i| i.title.is_none()));
+    }
+
+    #[test]
+    fn a_multi_line_value_is_cut_to_its_first_line() {
+        let root = value_of(
+            "{\"steps\": [{\"run\": \"set -e\\ncargo test\\n\"}]}",
+            Format::Json,
+        );
+        let page = page_of(&root, &[key("steps")]);
+        // A YAML block scalar would otherwise draw a row several lines tall and
+        // throw every row below it out of alignment.
+        assert_eq!(page.items[0].title.as_deref(), Some("set -e …"));
+        assert!(!page.items[0].preview.contains('\n'));
     }
 }

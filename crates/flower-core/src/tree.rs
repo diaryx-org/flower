@@ -95,7 +95,7 @@ pub enum VKind {
 }
 
 impl VKind {
-    fn of(v: &Value) -> Self {
+    pub(crate) fn of(v: &Value) -> Self {
         match v {
             Value::Null => VKind::Null,
             Value::Bool(_) => VKind::Bool,
@@ -137,7 +137,7 @@ impl Row {
 }
 
 /// Render a mapping key `Value` as a display string.
-fn key_to_string(k: &Value) -> String {
+pub(crate) fn key_to_string(k: &Value) -> String {
     match k {
         Value::Str(s) => s.clone(),
         Value::Int(i) => i.to_string(),

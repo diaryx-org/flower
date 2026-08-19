@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
 
-use flower_core::{FigBackend, Mode, Model};
+use flower_core::{FigBackend, Mode, Model, ViewMode};
 
 fn main() -> Result<()> {
     let path = match std::env::args_os().nth(1) {
@@ -70,18 +70,37 @@ fn run(
 }
 
 /// Returns `true` when the app should quit.
+///
+/// The keys that operate on a *node* — edit, delete, save, quit — are the same in
+/// both views, because the model resolves them against whichever selection is
+/// active. Only the movement keys differ, and only in what they mean: in the tree
+/// `h`/`l` fold, in the page view they pop and push a page.
 fn handle_normal(model: &mut Model<FigBackend>, code: KeyCode, path: &Path) -> bool {
     match code {
         KeyCode::Char('q') => return true,
-        KeyCode::Char('j') | KeyCode::Down => model.move_down(),
-        KeyCode::Char('k') | KeyCode::Up => model.move_up(),
-        KeyCode::Char('l') | KeyCode::Right => model.expand_or_enter(),
-        KeyCode::Char('h') | KeyCode::Left => model.collapse_or_leave(),
-        KeyCode::Enter | KeyCode::Char(' ') => model.activate(),
+        KeyCode::Char('v') => model.toggle_view(),
         KeyCode::Char('e') => model.begin_edit(),
         KeyCode::Char('x') => model.delete_selected(),
         KeyCode::Char('s') => save(model, path),
-        _ => {}
+        _ => match model.view() {
+            ViewMode::Tree => match code {
+                KeyCode::Char('j') | KeyCode::Down => model.move_down(),
+                KeyCode::Char('k') | KeyCode::Up => model.move_up(),
+                KeyCode::Char('l') | KeyCode::Right => model.expand_or_enter(),
+                KeyCode::Char('h') | KeyCode::Left => model.collapse_or_leave(),
+                KeyCode::Enter | KeyCode::Char(' ') => model.activate(),
+                _ => {}
+            },
+            ViewMode::Pages => match code {
+                KeyCode::Char('j') | KeyCode::Down => model.page_move_down(),
+                KeyCode::Char('k') | KeyCode::Up => model.page_move_up(),
+                KeyCode::Char('l') | KeyCode::Right | KeyCode::Enter | KeyCode::Char(' ') => {
+                    model.page_enter()
+                }
+                KeyCode::Char('h') | KeyCode::Left | KeyCode::Esc => model.page_back(),
+                _ => {}
+            },
+        },
     }
     false
 }

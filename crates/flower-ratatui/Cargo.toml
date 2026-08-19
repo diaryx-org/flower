@@ -11,3 +11,8 @@ publish = false
 [dependencies]
 flower-core.workspace = true
 ratatui.workspace = true
+
+[dev-dependencies]
+# `TestBackend` renders a frame into a buffer, so the page layout is checked
+# by what it actually draws rather than by the model it draws from.
+fig.workspace = true

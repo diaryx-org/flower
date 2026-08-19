@@ -6,20 +6,44 @@
 //! filesystem, and no terminal — the backend owns the document; the embedder
 //! owns file I/O and rendering.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use anyhow::Result;
 use fig::Value;
 
 use crate::backend::{Backend, EditOp};
+use crate::page::{self, Page, PageItem};
 use crate::schema::{FieldRule, Schema};
 use crate::tree::{self, Row, Seg};
 use fig_schema::{Issue, SegPat, Validation};
 
+/// Which projection the frontend is navigating: the whole-document
+/// [`tree`](crate::tree), or one [`page`](crate::page) at a time.
+///
+/// The document is unaffected — both are views over the same `Value`, and every
+/// edit is path-addressed, so switching mid-session changes what you can see and
+/// nothing about what you can do.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ViewMode {
+    /// Every visible node at once, indented by depth. Best when the whole
+    /// document fits on a screen and you want to read it as a document.
+    #[default]
+    Tree,
+    /// One container at a time, pushed and popped. Best when it doesn't.
+    Pages,
+}
+
 /// Interaction mode: normal navigation, or editing a scalar's text.
 pub enum Mode {
     Normal,
-    Editing { buffer: String },
+    Editing {
+        buffer: String,
+        /// The scalar being edited. Held here rather than re-read from the
+        /// selection on commit, so an edit belongs to a *node* and not to
+        /// whichever list the cursor happens to be in — the two projections
+        /// index differently, and a commit must not care which one opened it.
+        path: Vec<Seg>,
+    },
 }
 
 pub struct Model<B> {
@@ -53,6 +77,29 @@ pub struct Model<B> {
     pub mode: Mode,
     pub status: String,
     pub dirty: bool,
+
+    // ── page view ─────────────────────────────────────────────────────────
+    /// Which projection is being navigated. Both are kept live: the model has no
+    /// idea how much width the frontend has, and rebuilding the unused one costs
+    /// a walk of a tree that was just rebuilt anyway.
+    view: ViewMode,
+    /// The container the page view is currently listing. Empty is the root.
+    focus: Vec<Seg>,
+    /// The page at [`focus`](Self::focus).
+    page: Page,
+    /// The root's page — the stable left-hand list of categories, which stays put
+    /// however deep `focus` goes.
+    root_page: Page,
+    /// The selected item on [`page`](Self::page).
+    page_selected: usize,
+    /// Where the cursor was on each page we have left, so popping back restores
+    /// it rather than dumping you at the top.
+    ///
+    /// Only a fallback: coming back normally re-finds the child you drilled into,
+    /// which survives edits that shift indices. This is what answers when that
+    /// child is *gone* — you opened a key and deleted it — and the cursor would
+    /// otherwise have nothing to return to.
+    page_memory: HashMap<Vec<Seg>, usize>,
 }
 
 impl<B: Backend> Model<B> {
@@ -115,6 +162,12 @@ impl<B: Backend> Model<B> {
             mode: Mode::Normal,
             status: "opened".to_string(),
             dirty: false,
+            view: ViewMode::default(),
+            focus: Vec::new(),
+            page: Page::default(),
+            root_page: Page::default(),
+            page_selected: 0,
+            page_memory: HashMap::new(),
         };
         model.reload()?;
         Ok(model)
@@ -250,6 +303,7 @@ impl<B: Backend> Model<B> {
             .to_value()
             .map_err(|e| anyhow::anyhow!("reading value tree: {e}"))?;
         self.rebuild_rows();
+        self.rebuild_pages();
         Ok(())
     }
 
@@ -260,16 +314,70 @@ impl<B: Backend> Model<B> {
         }
     }
 
+    /// Re-derive the focused page and the root page from `value`.
+    ///
+    /// Runs on every reload, whichever view is active: see
+    /// [`view`](Self::view) for why both projections are kept live.
+    fn rebuild_pages(&mut self) {
+        self.reanchor_focus();
+        self.root_page = page::build_page(&self.value, &[], &self.hidden);
+        self.page = if self.focus.is_empty() {
+            self.root_page.clone()
+        } else {
+            page::build_page(&self.value, &self.focus, &self.hidden)
+        };
+        if self.page_selected >= self.page.items.len() {
+            self.page_selected = self.page.items.len().saturating_sub(1);
+        }
+    }
+
+    /// Walk `focus` back to the nearest ancestor that is still a container.
+    ///
+    /// The focus is the one piece of page state the document can invalidate from
+    /// underneath: delete the key you are standing inside, or replace it with a
+    /// scalar, and the page has nothing to list. Popping to the nearest surviving
+    /// ancestor is what a settings menu does when a section disappears — you end
+    /// up one level out, rather than on a blank page or back at the root.
+    fn reanchor_focus(&mut self) {
+        while !self.focus.is_empty()
+            && !tree::value_at(&self.value, &self.focus).is_some_and(page::is_container)
+        {
+            self.focus.pop();
+        }
+    }
+
     fn selected_row(&self) -> Option<&Row> {
         self.rows.get(self.selected)
     }
 
+    /// The path of whatever is selected in the **active** view.
+    ///
+    /// The seam that lets one set of edit operations serve both projections: an
+    /// edit is a path plus a value, and which list the user picked that path from
+    /// is not something [`commit`](Self::commit) should have to know.
+    pub fn selected_path(&self) -> Option<Vec<Seg>> {
+        match self.view {
+            ViewMode::Tree => self.selected_row().map(|r| r.path.clone()),
+            ViewMode::Pages => self.page_item().map(|i| i.path.clone()),
+        }
+    }
+
     /// Re-anchor selection onto `path` after a rebuild, or clamp if it's gone.
+    ///
+    /// Re-anchors *both* projections, because an edit made from either one moves
+    /// the node in both, and the view the user is not currently looking at is the
+    /// one they will switch to expecting their cursor to still be somewhere sane.
     fn select_path(&mut self, path: &[Seg]) {
         if let Some(i) = self.rows.iter().position(|r| r.path == path) {
             self.selected = i;
         } else if self.selected >= self.rows.len() {
             self.selected = self.rows.len().saturating_sub(1);
+        }
+        // A path off the current page (an edit by path elsewhere in the document,
+        // or the anchor of a delete that was the page's own container) leaves the
+        // page cursor where it was, clamped by `rebuild_pages`.
+        if let Some(i) = self.page.position_of(path) {
+            self.page_selected = i;
         }
     }
 
@@ -327,6 +435,190 @@ impl<B: Backend> Model<B> {
                 return;
             }
         }
+    }
+
+    // ── page view ─────────────────────────────────────────────────────────
+
+    /// Which projection is active.
+    pub fn view(&self) -> ViewMode {
+        self.view
+    }
+
+    /// Switch projection, carrying the cursor across so the node you were on in
+    /// one view is the node you are on in the other.
+    ///
+    /// Without that, switching would be a jump cut: you fold down to one key in
+    /// the tree, switch to pages, and land at the top of the root page with no
+    /// idea where your key went. Carrying the selection makes the two views two
+    /// ways of looking at one position, which is the only reading under which
+    /// having both is worth it.
+    pub fn set_view(&mut self, view: ViewMode) {
+        if view == self.view {
+            return;
+        }
+        let was = self.selected_path();
+        self.view = view;
+        if let Some(path) = was {
+            match view {
+                ViewMode::Pages => self.focus_on(&path),
+                // The tree may have the node folded away inside a shut ancestor;
+                // open the lineage so there is a row to land on.
+                ViewMode::Tree => {
+                    for i in 0..path.len() {
+                        self.collapsed.remove(&path[..i]);
+                    }
+                    self.rebuild_rows();
+                    self.select_path(&path);
+                }
+            }
+        }
+    }
+
+    /// Toggle between the tree and the page view.
+    pub fn toggle_view(&mut self) {
+        self.set_view(match self.view {
+            ViewMode::Tree => ViewMode::Pages,
+            ViewMode::Pages => ViewMode::Tree,
+        });
+    }
+
+    /// The page currently being listed.
+    pub fn page(&self) -> &Page {
+        &self.page
+    }
+
+    /// The root's page — the stable category list a two-pane frontend draws on
+    /// the left, unchanged however deep [`focus`](Self::focus) goes.
+    pub fn root_page(&self) -> &Page {
+        &self.root_page
+    }
+
+    /// The container the page view is listing. Empty is the document root.
+    pub fn focus(&self) -> &[Seg] {
+        &self.focus
+    }
+
+    /// The index of the selected item on [`page`](Self::page).
+    pub fn page_selected(&self) -> usize {
+        self.page_selected
+    }
+
+    /// The selected page item, if the page has any.
+    pub fn page_item(&self) -> Option<&PageItem> {
+        self.page.items.get(self.page_selected)
+    }
+
+    /// Whether a two-pane layout would waste one pane on this document.
+    ///
+    /// A document whose root has nothing to drill into — a flat list of keys, a
+    /// sequence of scalars — has no navigation to put in a sidebar, and splitting
+    /// the width for it would cost half the room and buy nothing. A frontend
+    /// checks this to fall back to a single full-width pane.
+    pub fn pages_would_degenerate(&self) -> bool {
+        !self.root_page.has_drills()
+    }
+
+    /// Point the page view at whichever page *lists* `path`, with the cursor on
+    /// it — the by-path counterpart to drilling, and how a view switch carries
+    /// the selection across.
+    ///
+    /// It searches from the root outward rather than from `path` inward, because
+    /// more than one page can contain a node and the outermost is the right one:
+    /// an inlined group's member is listed on the grandparent's page (that is what
+    /// inlining means), and also on the group's own page, which is a place page
+    /// navigation would never have left you. A path that doesn't resolve is inert.
+    pub fn focus_on(&mut self, path: &[Seg]) {
+        if tree::value_at(&self.value, path).is_none() {
+            return;
+        }
+        let mut focus: Vec<Seg> = Vec::new();
+        while focus.len() < path.len()
+            && page::build_page(&self.value, &focus, &self.hidden)
+                .position_of(path)
+                .is_none()
+        {
+            focus.push(path[focus.len()].clone());
+        }
+        self.focus = focus;
+        self.rebuild_pages();
+        self.page_selected = self.page.position_of(path).unwrap_or(0);
+    }
+
+    /// The page the selected item *would* open.
+    ///
+    /// A two-pane frontend showing the root's categories on the left has nothing
+    /// to put on the right until you have drilled into something — and an empty
+    /// half-screen is a poor advertisement for splitting the width. Previewing
+    /// the selected category's page fills it with the thing you are about to open
+    /// anyway, which is what a settings sidebar does. `None` for a scalar, which
+    /// has no page.
+    pub fn peek_page(&self) -> Option<Page> {
+        let item = self.page_item()?;
+        if !item.is_drill() {
+            return None;
+        }
+        Some(page::build_page(&self.value, &item.path, &self.hidden))
+    }
+
+    /// `j` in the page view.
+    pub fn page_move_down(&mut self) {
+        if self.page_selected + 1 < self.page.items.len() {
+            self.page_selected += 1;
+        }
+    }
+
+    /// `k` in the page view.
+    pub fn page_move_up(&mut self) {
+        self.page_selected = self.page_selected.saturating_sub(1);
+    }
+
+    /// `l`/`Enter` in the page view: open the selected container as a page, or
+    /// begin editing the selected scalar.
+    ///
+    /// A group header opens too. Its members are already on screen, so opening it
+    /// shows nothing new — but it is the door to operating on the group as a
+    /// container (append, insert, reorder) rather than on the members, and a
+    /// container that is visible but cannot be entered is a worse surprise than a
+    /// page that repeats what you could already see.
+    pub fn page_enter(&mut self) {
+        let Some(item) = self.page_item() else {
+            return;
+        };
+        if item.is_scalar() {
+            self.begin_edit();
+            return;
+        }
+        let target = item.path.clone();
+        self.page_memory
+            .insert(self.focus.clone(), self.page_selected);
+        self.focus = target;
+        self.page_selected = 0;
+        self.rebuild_pages();
+    }
+
+    /// `h`/`Esc` in the page view: pop back to the parent page, restoring the
+    /// cursor to the container you came out of.
+    pub fn page_back(&mut self) {
+        if self.focus.is_empty() {
+            self.status = "already at the top".to_string();
+            return;
+        }
+        let child = std::mem::take(&mut self.focus);
+        self.focus = child[..child.len() - 1].to_vec();
+        self.rebuild_pages();
+        // Prefer re-finding the child: an index it holds is correct after edits
+        // that shifted the page, which a remembered index would not be. The
+        // memory answers only when the child is gone — see `page_memory`.
+        self.page_selected = self
+            .page
+            .position_of(&child)
+            .or_else(|| {
+                self.page_memory
+                    .get(&self.focus)
+                    .copied()
+                    .filter(|i| *i < self.page.items.len())
+            })
+            .unwrap_or(0);
     }
 
     /// Whether the container at `path` is collapsed. Answers for a node with no
@@ -391,28 +683,28 @@ impl<B: Backend> Model<B> {
     // ── editing ───────────────────────────────────────────────────────────────
 
     pub fn begin_edit(&mut self) {
-        let Some(row) = self.selected_row() else {
+        let Some(path) = self.selected_path() else {
             return;
         };
-        if !row.is_scalar() {
+        let Some(value) = self.value_at(&path) else {
+            return;
+        };
+        if page::is_container(value) {
             self.status = "can only edit scalar values".to_string();
             return;
         }
-        let seed = self
-            .value_at(&row.path)
-            .map(tree::edit_seed)
-            .unwrap_or_default();
-        self.mode = Mode::Editing { buffer: seed };
+        let seed = tree::edit_seed(value);
+        self.mode = Mode::Editing { buffer: seed, path };
     }
 
     pub fn edit_push(&mut self, c: char) {
-        if let Mode::Editing { buffer } = &mut self.mode {
+        if let Mode::Editing { buffer, .. } = &mut self.mode {
             buffer.push(c);
         }
     }
 
     pub fn edit_backspace(&mut self) {
-        if let Mode::Editing { buffer } = &mut self.mode {
+        if let Mode::Editing { buffer, .. } = &mut self.mode {
             buffer.pop();
         }
     }
@@ -423,16 +715,13 @@ impl<B: Backend> Model<B> {
     }
 
     pub fn edit_commit(&mut self) {
-        let Mode::Editing { buffer } = &mut self.mode else {
+        let Mode::Editing { buffer, path } = &mut self.mode else {
             return;
         };
         let buffer = std::mem::take(buffer);
+        let path = std::mem::take(path);
         self.mode = Mode::Normal;
 
-        let Some(row) = self.selected_row() else {
-            return;
-        };
-        let path = row.path.clone();
         let value = self.coerce_text(&path, &buffer);
         self.commit(
             EditOp::ReplaceValue {
@@ -586,10 +875,9 @@ impl<B: Backend> Model<B> {
     /// [`move_selected_down`](Self::move_selected_down): shift the selected row by
     /// `delta` positions within its parent container.
     fn reorder_selected(&mut self, delta: isize) {
-        let Some(row) = self.selected_row() else {
+        let Some(path) = self.selected_path() else {
             return;
         };
-        let path = row.path.clone();
         let Some(last) = path.last().cloned() else {
             self.status = "cannot move the document root".to_string();
             return;
@@ -660,10 +948,9 @@ impl<B: Backend> Model<B> {
 
     /// `x`: delete the selected mapping entry or sequence item.
     pub fn delete_selected(&mut self) {
-        let Some(row) = self.selected_row() else {
+        let Some(path) = self.selected_path() else {
             return;
         };
-        let path = row.path.clone();
         let (op, anchor) = match path.last() {
             Some(Seg::Index(i)) => {
                 let seq_path = path[..path.len() - 1].to_vec();
@@ -833,7 +1120,7 @@ timeout = 30.5
     }
 
     fn type_value(model: &mut Model<FigBackend>, text: &str) {
-        if let Mode::Editing { buffer } = &mut model.mode {
+        if let Mode::Editing { buffer, .. } = &mut model.mode {
             buffer.clear();
         }
         for c in text.chars() {
@@ -1444,5 +1731,175 @@ timeout = 30.5
             "collapsed children hidden"
         );
         assert_eq!(model.rows[model.selected].path, [Seg::Key("server".into())]);
+    }
+
+    // ── the page projection ───────────────────────────────────────────────
+
+    fn key(k: &str) -> Seg {
+        Seg::Key(k.to_string())
+    }
+
+    /// A model in the page view, cursor on the root page.
+    fn paged_model() -> Model<FigBackend> {
+        let mut model = sample_model();
+        model.set_view(ViewMode::Pages);
+        model
+    }
+
+    fn page_labels(model: &Model<FigBackend>) -> Vec<String> {
+        model.page().items.iter().map(|i| i.label.clone()).collect()
+    }
+
+    fn selected_label(model: &Model<FigBackend>) -> String {
+        model.page_item().expect("a selected item").label.clone()
+    }
+
+    #[test]
+    fn drilling_opens_a_page_and_backing_out_returns_the_cursor_to_it() {
+        let mut model = paged_model();
+        assert!(model.focus().is_empty());
+
+        // Down to `server`, then in.
+        for _ in 0..3 {
+            model.page_move_down();
+        }
+        assert_eq!(selected_label(&model), "server");
+        model.page_enter();
+
+        assert_eq!(model.focus(), &[key("server")]);
+        assert_eq!(selected_label(&model), "host");
+
+        model.page_back();
+        assert!(model.focus().is_empty());
+        assert_eq!(selected_label(&model), "server");
+    }
+
+    #[test]
+    fn depth_costs_a_page_not_a_column() {
+        let mut model = paged_model();
+        // Two levels down, and the page is still four items of one rank plus the
+        // members of the groups inlined into it — never an indentation ladder.
+        model.focus_on(&[key("server"), key("limits")]);
+        assert_eq!(model.focus(), &[key("server")]);
+        assert!(model.page().items.iter().all(|i| i.inset <= 1));
+        assert_eq!(selected_label(&model), "limits");
+
+        // A group header opens as a page of its own even though its members were
+        // already visible.
+        model.page_enter();
+        assert_eq!(model.focus(), &[key("server"), key("limits")]);
+        assert_eq!(page_labels(&model), vec!["max_connections", "timeout"]);
+    }
+
+    #[test]
+    fn an_edit_made_from_a_page_is_lossless() {
+        let mut model = paged_model();
+        // An inlined member, two ranks below the page's focus — the case where the
+        // page's layout and the document's shape disagree most.
+        model.focus_on(&[key("server"), key("limits"), key("timeout")]);
+        assert_eq!(model.focus(), &[key("server")]);
+        assert_eq!(selected_label(&model), "timeout");
+
+        model.begin_edit();
+        type_value(&mut model, "45.5");
+
+        let src = model.source_snapshot();
+        assert_eq!(src, SAMPLE.replace("timeout = 30.5", "timeout = 45.5"));
+        assert!(model.dirty);
+        // The cursor stayed on the field that was edited, in both projections.
+        assert_eq!(selected_label(&model), "timeout");
+        assert_eq!(
+            model.rows[model.selected].path,
+            vec![key("server"), key("limits"), key("timeout")]
+        );
+    }
+
+    #[test]
+    fn losing_the_container_you_are_standing_in_pops_you_out() {
+        let backend = FigBackend::open(br#"{"a": {"b": {"c": 1}}}"#, Format::Json).expect("open");
+        let mut model = Model::new(backend).expect("model");
+        model.set_view(ViewMode::Pages);
+        model.focus_on(&[key("a"), key("b")]);
+        model.page_enter();
+        assert_eq!(model.focus(), &[key("a"), key("b")]);
+
+        // Replace the container the page is listing with a scalar: the focus now
+        // names something that cannot be listed at all.
+        model.set_value_at(&[key("a"), key("b")], Value::Int(1));
+
+        assert_eq!(model.focus(), &[key("a")]);
+        assert_eq!(page_labels(&model), vec!["b"]);
+    }
+
+    #[test]
+    fn switching_views_carries_the_selection_both_ways() {
+        let mut model = sample_model();
+        select(&mut model, &[key("server"), key("limits"), key("timeout")]);
+
+        model.set_view(ViewMode::Pages);
+        // The page that *lists* an inlined member is its grandparent's.
+        assert_eq!(model.focus(), &[key("server")]);
+        assert_eq!(selected_label(&model), "timeout");
+
+        // Move within the page, and the tree lands where the page left off.
+        model.page_move_up();
+        assert_eq!(selected_label(&model), "max_connections");
+        model.set_view(ViewMode::Tree);
+        assert_eq!(
+            model.rows[model.selected].path,
+            vec![key("server"), key("limits"), key("max_connections")]
+        );
+    }
+
+    #[test]
+    fn switching_to_the_tree_opens_the_lineage_of_a_folded_selection() {
+        let mut model = sample_model();
+        model.set_collapsed(&[key("server")], true);
+        model.set_view(ViewMode::Pages);
+        model.focus_on(&[key("server"), key("host")]);
+
+        model.set_view(ViewMode::Tree);
+        // `server` was shut, so `host` had no row to land on until it was opened.
+        assert!(!model.is_collapsed(&[key("server")]));
+        assert_eq!(
+            model.rows[model.selected].path,
+            vec![key("server"), key("host")]
+        );
+    }
+
+    #[test]
+    fn a_flat_document_would_waste_a_second_pane() {
+        let flat = FigBackend::open(
+            b"a = 1
+b = 2
+",
+            Format::Toml,
+        )
+        .expect("open");
+        let flat = Model::new(flat).expect("model");
+        assert!(flat.pages_would_degenerate());
+        assert!(!sample_model().pages_would_degenerate());
+    }
+
+    #[test]
+    fn the_root_page_previews_what_the_cursor_would_open() {
+        let mut model = paged_model();
+        assert_eq!(selected_label(&model), "title");
+        assert!(model.peek_page().is_none(), "a scalar has no page");
+
+        for _ in 0..3 {
+            model.page_move_down();
+        }
+        let peek = model.peek_page().expect("server's page");
+        assert_eq!(peek.focus, vec![key("server")]);
+        assert_eq!(peek.breadcrumb("‹document›"), "server");
+    }
+
+    #[test]
+    fn backing_out_past_the_root_is_inert() {
+        let mut model = paged_model();
+        model.page_back();
+        assert!(model.focus().is_empty());
+        assert_eq!(model.page_selected(), 0);
     }
 }

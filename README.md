@@ -22,6 +22,10 @@ Early prototype. Working today:
   indented, type-colored tree.
 - Navigate structurally: move between siblings, into children, out to parents;
   expand/collapse containers.
+- Read it as a **settings menu** instead (`v`): one container per page, small
+  all-scalar groups inlined, two panes when there's width and depth to use them
+  and one when there isn't. Depth costs a page rather than a column, so a deeply
+  nested document stays as legible as a shallow one.
 - Edit a scalar in place (typed: `true`/`42`/`3.14`/`null`/text) — committed via
   `fig::Editor::replace_value`, so the splice is lossless and validated.
 - Delete a mapping entry or sequence item.
@@ -31,16 +35,21 @@ Deliberately not here yet — see the roadmap.
 
 ## Keys
 
-| Key | Action |
-|-----|--------|
-| `j` / `k` (or ↓/↑) | next / previous row |
-| `l` (or →) | expand container, or step into first child |
-| `h` (or ←) | collapse container, or step out to parent |
-| `Enter` / `Space` | toggle a container / edit a scalar |
-| `e` | edit the selected scalar |
-| `x` | delete the selected entry or item |
-| `s` | save to disk |
-| `q` | quit |
+| Key | Tree view | Page view |
+|-----|-----------|-----------|
+| `j` / `k` (or ↓/↑) | next / previous row | next / previous item |
+| `l` (or →) | expand container, or step into first child | open the container as a page |
+| `h` (or ←) | collapse container, or step out to parent | back to the parent page |
+| `Enter` / `Space` | toggle a container / edit a scalar | open a container / edit a scalar |
+| `v` | switch to the page view | switch to the tree |
+| `e` | edit the selected scalar | ← same |
+| `x` | delete the selected entry or item | ← same |
+| `s` | save to disk | ← same |
+| `q` | quit | ← same |
+
+`v` carries the cursor across, so the node you were on in one view is the node
+you land on in the other. The keys that operate on a *node* mean the same thing
+in both views — an edit is a path and a value, and neither view owns it.
 
 In edit mode: type to change the value, `Enter` to commit, `Esc` to cancel.
 
@@ -106,6 +115,9 @@ a distributable `FlowerFFI.xcframework`.
   - `tree.rs` — flattens a `fig::Value` into navigable `Row`s, each carrying its
     `fig` path (a `Vec<Seg>` of `Key`/`Index`) — exactly what `fig::Editor` ops
     take — honoring a collapsed-set.
+  - `page.rs` — the other projection: one container's children as a `Page`, with
+    a small all-scalar container inlined into its parent's page as a titled group
+    rather than given one of its own. Same paths, so the same edits.
   - `model.rs` — `Model`: owns the `fig::Editor` (source of truth), the derived
     `Value`/rows, selection, and the edit ops. Constructed from bytes; the
     embedder owns the file.
@@ -154,7 +166,13 @@ app-specific bridge lives in provui, not here — flower doesn't depend on prov.
 - **Comments**: show and edit leading/trailing comments (`fig::Editor` exposes
   `leading_comment`/`set_trailing_comment`/…).
 - **Schema layer**: the big one — fig has none, so a "what keys/values are valid
-  here" layer is ours to add; unlocks completion, typed widgets, validation.
+  here" layer is ours to add; unlocks completion, typed widgets, validation. It
+  also supersedes the page view's structural inline-vs-drill guess with declared
+  group titles, ordering, and an "advanced" rank — the same renderer, curated.
+- **The page view across the FFI**: `DocView` still ships the flat tree rows, so
+  the Swift frontend has the tree and not the pages. Panes map onto
+  `NavigationSplitView` / `NavigationStack` directly, which is the idiomatic
+  shape there and gets size-class responsiveness from the OS.
 - **Native frontend affordances** (`FlowerUI`): today it edits scalars in one
   inline text field. Next: type-aware widgets (bool toggle, number stepper, enum
   picker), keyboard navigation, insert/reorder, and comment display — the same

@@ -158,4 +158,94 @@ final class FlowerPageTests: XCTestCase {
         XCTAssertEqual(model.page.focus, "server", "the group is inlined into `server`")
         XCTAssertEqual(model.selectedItem?.id, "server.limits.timeout")
     }
+
+    // ── navigation state the two layouts read ─────────────────────────────────
+
+    /// Three drillable levels, so the trail has a step no live pane lists.
+    let nested = """
+    a:
+      b:
+        c:
+          one: 1
+          two: 2
+          more:
+            x: 1
+        other:
+          p: 1
+          q: 2
+      b2:
+        p: 1
+    """
+
+    func makeNested() throws -> FlowerModel {
+        let model = try FlowerModel(source: nested, format: "yaml")
+        model.showPages()
+        return model
+    }
+
+    func testTheTrailIsTheStacksPath() throws {
+        let model = try makeNested()
+        XCTAssertEqual(model.page.crumbs.map(\.id), [])
+        model.pageOpen(id: "a")
+        model.pageOpen(id: "a.b")
+        XCTAssertEqual(model.page.crumbs.map(\.id), ["a", "a.b"])
+    }
+
+    func testAMiddleBreadcrumbOpensThePageItNames() throws {
+        let model = try makeNested()
+        model.pageOpen(id: "a")
+        model.pageOpen(id: "a.b")
+        model.pageOpen(id: "a.b.c")
+        // `a.b` is on no live pane — this page lists c's fields, the pane beside
+        // it lists b's, the root lists `a` — so it resolves as a step of the trail.
+        model.pageOpen(id: "a.b")
+        XCTAssertEqual(model.page.focus, "a.b")
+    }
+
+    func testLastMoveNamesTheDirectionOfTravel() throws {
+        let model = try makeNested()
+        model.pageOpen(id: "a")
+        XCTAssertEqual(model.lastMove, .push)
+        model.pageOpen(id: "a.b")
+        XCTAssertEqual(model.lastMove, .push)
+        model.pageBack()
+        XCTAssertEqual(model.lastMove, .pop)
+
+        // Several levels at once has no direction to animate along.
+        model.pageOpen(id: "a.b")
+        model.pageOpen(id: "a.b.c")
+        model.pageOpen(id: "")
+        XCTAssertEqual(model.lastMove, .jump)
+    }
+
+    func testAnEditDoesNotCountAsAMove() throws {
+        let model = try makeNested()
+        model.pageOpen(id: "a")
+        model.pageOpen(id: "a.b")
+        model.pageOpen(id: "a.b.c")
+        XCTAssertEqual(model.lastMove, .push)
+        guard let one = model.page.items.first(where: { $0.id == "a.b.c.one" }) else {
+            return XCTFail("no `one` row")
+        }
+        model.beginEdit(one)
+        model.editBuffer = "42"
+        model.commitEdit()
+        XCTAssertEqual(model.lastMove, .push, "the frame changed, the level did not")
+    }
+
+    func testPageAtRendersALevelWithoutNavigatingToIt() throws {
+        let model = try makeNested()
+        model.pageOpen(id: "a")
+        model.pageOpen(id: "a.b")
+        model.pageOpen(id: "a.b.c")
+
+        // Every screen a stack could ask for, including the levels behind us.
+        XCTAssertEqual(model.pageAt(id: "").items.first?.id, "a")
+        XCTAssertEqual(model.pageAt(id: "a").items.first?.id, "a.b")
+        XCTAssertEqual(model.pageAt(id: "a.b").items.first?.id, "a.b.c")
+        XCTAssertNil(model.pageAt(id: "a.b").selected, "an ancestor holds no cursor")
+        XCTAssertEqual(model.pageAt(id: "a.b.c").selected, 0, "the live page keeps its cursor")
+
+        XCTAssertEqual(model.page.focus, "a.b.c", "and rendering moved nothing")
+    }
 }

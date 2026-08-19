@@ -567,6 +567,20 @@ impl<B: Backend> Model<B> {
         self.page_selected = self.page.position_of(path).unwrap_or(0);
     }
 
+    /// The page listing the container at `path`, without going there.
+    ///
+    /// [`page`](Self::page) is where the user *is*; this is any other level, built
+    /// on demand and thrown away. A frontend whose navigation is a stack needs it:
+    /// the OS asks "what is the screen for this path element?" for levels the
+    /// model is not focused on, and answering by moving the focus would make
+    /// rendering a screen a navigation.
+    ///
+    /// Total, like [`build_page`](crate::page::build_page): a path that doesn't
+    /// resolve, or that names a scalar, yields an empty page.
+    pub fn page_at(&self, path: &[Seg]) -> Page {
+        page::build_page(&self.value, path, &self.hidden)
+    }
+
     /// The page the selected item *would* open.
     ///
     /// A two-pane frontend showing the root's categories on the left has nothing
@@ -580,7 +594,7 @@ impl<B: Backend> Model<B> {
         if !item.is_drill() {
             return None;
         }
-        Some(page::build_page(&self.value, &item.path, &self.hidden))
+        Some(self.page_at(&item.path))
     }
 
     /// `j` in the page view.

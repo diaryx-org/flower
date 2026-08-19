@@ -110,6 +110,19 @@ index, because a page item need not be a visible *row* at all (its ancestors may
 be folded away in the tree). Switching carries the cursor, so the two surfaces
 are two ways of looking at one position.
 
+`FlowerPages` draws that frame two ways. Wide, it is the same sliding pair of
+panes the TUI draws, moving along the trail in the direction you went. Narrow —
+a small window, a phone — one column pushed and popped *is* a `NavigationStack`,
+so it gets one, along with the OS's push animation, its back button, and the iOS
+swipe-back gesture. A stack asks for the screen at an arbitrary path element
+rather than being told, so `pageAt(id:)` builds a page without navigating to it;
+the stack's path is a mirror of the model's focus, re-derived whenever either
+side moves.
+
+The two-pane layout is deliberately *not* a `NavigationSplitView`, whose sidebar
+is fixed: it would put the root's list beside a page five levels away, which is
+the arrangement the sliding window replaced.
+
 ```sh
 cargo run -- path/to/config.toml          # the TUI
 apps/flower-editor/bootstrap.sh           # generate the Swift binding + Xcode project
@@ -185,12 +198,12 @@ app-specific bridge lives in provui, not here — flower doesn't depend on prov.
   also supersedes the page view's structural guesses — inline-vs-drill, and which
   field titles a sequence item — with declared group titles, ordering, and an
   "advanced" rank. The same renderer, curated.
-- **The page view as a `NavigationStack`**: `FlowerPages` draws its own panes and
-  breadcrumb off the `PagesView` frame, which is one shape on both platforms.
-  Handing the trail to `NavigationSplitView` / `NavigationStack` instead would buy
-  the OS's size-class responsiveness, the system back gesture, and the push
-  animation — at the cost of mirroring the focus into a `NavigationPath`, which is
-  a second place the navigation state can be wrong.
+- **Stable identity for a sequence item**: a path addresses one by index, so
+  reordering or deleting an earlier sibling silently re-points every id after it.
+  Core re-finds the *cursor* across an edit, but a breadcrumb and a navigation
+  stack hold ids, so a screen you pushed can come to name a different item. A
+  per-item identity (fig has none today) would fix both, and the tree's row ids
+  with it.
 - **Native frontend affordances** (`FlowerUI`): today it edits scalars in one
   inline text field. Next: type-aware widgets (bool toggle, number stepper, enum
   picker), keyboard navigation, insert/reorder, and comment display — the same

@@ -35,6 +35,21 @@ public enum FlowerProjection {
     case pages
 }
 
+/// Which way the last page navigation went, for a frontend that animates along
+/// it: a `push` went one level deeper, a `pop` came one level out, and a `jump`
+/// is everything else — a sibling opened from the pane beside you, a breadcrumb
+/// tapped several levels up, a cursor carried in from the tree.
+///
+/// It is decided where the move happens rather than by the view comparing frames,
+/// so the direction and the frame it describes arrive in the same update. A view
+/// that worked it out afterwards would animate each navigation the way the *last*
+/// one went.
+public enum PageMove {
+    case push
+    case pop
+    case jump
+}
+
 /// The observable owner of a document. Hold it with `@StateObject`; render its
 /// `state.rows` and call the command methods from taps, buttons, or keys.
 public final class FlowerModel: ObservableObject {
@@ -51,6 +66,9 @@ public final class FlowerModel: ObservableObject {
     /// it to `.tree` and `FlowerPages` to `.pages`; a commit reads it to know
     /// which of the two an inline edit belongs to.
     @Published public private(set) var projection: FlowerProjection = .tree
+
+    /// Which way the page view last moved — see ``PageMove``.
+    @Published public private(set) var lastMove: PageMove = .jump
 
     /// The row currently open for inline editing (its `id`), or `nil`. Drives which
     /// row swaps its value text for a text field.
@@ -281,6 +299,14 @@ public final class FlowerModel: ObservableObject {
         return pages.page.items[Int(i)]
     }
 
+    /// The page listing what `id` names, without navigating to it — `""` for the
+    /// document root.
+    ///
+    /// For a stack-shaped frontend, whose destination builder is asked to render
+    /// levels the model is not standing on. It carries a cursor only for the page
+    /// you are actually on.
+    public func pageAt(id: String) -> PageView { doc.pageAt(id: id) }
+
     /// Switch to the page view. The cursor carries across, so the node selected in
     /// the tree is the node selected on the page you land on.
     public func showPages() {
@@ -415,8 +441,23 @@ public final class FlowerModel: ObservableObject {
     }
 
     private func apply(_ view: PagesView) {
+        lastMove = move(from: pages.page, to: view.page)
         pages = view
         state = doc.view()
+    }
+
+    /// How the page view got from `old` to `new`, by depth: the trail is the
+    /// lineage, so one step longer is a push and one step shorter is a pop.
+    /// Everything else — including a move that keeps the depth, like opening a
+    /// sibling from the pane beside you — is a jump, which has no direction to
+    /// animate along.
+    private func move(from old: PageView, to new: PageView) -> PageMove {
+        guard old.focus != new.focus else { return lastMove }
+        switch new.crumbs.count - old.crumbs.count {
+        case 1: return .push
+        case -1: return .pop
+        default: return .jump
+        }
     }
 
     private func isDirectChild(_ r: RowView, of parent: RowView) -> Bool {

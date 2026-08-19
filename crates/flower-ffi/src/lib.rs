@@ -530,6 +530,32 @@ impl FlowerDoc {
         pages_of(&m)
     }
 
+    /// The page listing what `id` names, **without navigating to it** — `""` for
+    /// the document root.
+    ///
+    /// The read-only counterpart to [`page_open`](Self::page_open), for a frontend
+    /// whose navigation is a stack: the OS asks it to render the screen for a path
+    /// element that is not the one in front, and answering that by moving the
+    /// focus would make drawing a screen a navigation. It carries the cursor only
+    /// when `id` *is* the page you are on; an ancestor is a page you are not
+    /// standing on, and drawing a selection there would claim otherwise.
+    ///
+    /// Total: an id that names nothing, or names a scalar, yields an empty page,
+    /// so a destination builder always has something to render.
+    pub fn page_at(&self, id: String) -> PageView {
+        let m = self.lock();
+        let Some(path) = path_for_id(&m, &id) else {
+            return PageView {
+                focus: id,
+                crumbs: Vec::new(),
+                items: Vec::new(),
+                selected: None,
+            };
+        };
+        let selected = (path == m.focus()).then(|| m.page_selected());
+        page_view_of(&m.page_at(&path), selected)
+    }
+
     /// Pop back to the parent page, restoring the cursor to the container you came
     /// out of.
     pub fn page_back(&self) -> PagesView {
@@ -845,6 +871,22 @@ fn path_for_id(model: &Model<FigBackend>, id: &str) -> Option<Vec<Seg>> {
         .or_else(|| on(model.parent_page()))
         .or_else(|| on(model.root_page()))
         .or_else(|| model.peek_page().as_ref().and_then(on))
+        .or_else(|| ancestor_of_focus(model.focus(), id))
+}
+
+/// The step of the current lineage `id` names, if it names one.
+///
+/// The panes above hold the ids of *items* — things listed on a page — and a
+/// breadcrumb's middle steps are not among them: the page you are on lists its
+/// own children, the pane beside it lists its siblings, and the root lists the
+/// top of the trail, but nothing live lists the levels in between. They are
+/// prefixes of the focus by construction, which is also true of every element of
+/// a navigation stack's path, so that is where they resolve.
+fn ancestor_of_focus(focus: &[Seg], id: &str) -> Option<Vec<Seg>> {
+    (1..=focus.len())
+        .map(|n| &focus[..n])
+        .find(|prefix| path_id(prefix) == id)
+        .map(<[Seg]>::to_vec)
 }
 
 #[cfg(test)]
@@ -1275,5 +1317,78 @@ jobs:
             d.source().contains("port: 8080"),
             "the page cursor was not the target"
         );
+    }
+
+    /// Three drillable levels, so a breadcrumb has a step that is on no live pane.
+    const NESTED: &str = "\
+a:
+  b:
+    c:
+      one: 1
+      two: 2
+      more:
+        x: 1
+    other:
+      p: 1
+      q: 2
+  b2:
+    p: 1
+";
+
+    #[test]
+    fn a_middle_breadcrumb_opens_the_page_it_names() {
+        let d = FlowerDoc::new(NESTED.to_string(), "yaml".to_string(), Vec::new()).unwrap();
+        d.show_pages();
+        d.page_open("a".to_string());
+        d.page_open("a.b".to_string());
+        let v = d.page_open("a.b.c".to_string());
+        assert_eq!(v.page.focus, "a.b.c", "three levels down");
+        assert_eq!(
+            v.page
+                .crumbs
+                .iter()
+                .map(|c| c.id.as_str())
+                .collect::<Vec<_>>(),
+            ["a", "a.b", "a.b.c"]
+        );
+
+        // Tapping the middle crumb must go back up to it. That id is on no live
+        // pane — this page lists `c`'s fields, the parent lists `b`'s, and the
+        // root lists `a` — so it resolves as a prefix of the focus, which is what
+        // a crumb always is.
+        let v = d.page_open("a.b".to_string());
+        assert_eq!(v.page.focus, "a.b");
+    }
+
+    #[test]
+    fn page_at_renders_a_level_without_going_there() {
+        let d = FlowerDoc::new(NESTED.to_string(), "yaml".to_string(), Vec::new()).unwrap();
+        d.show_pages();
+        d.page_open("a".to_string());
+        d.page_open("a.b".to_string());
+        let v = d.page_open("a.b.c".to_string());
+        assert_eq!(v.page.focus, "a.b.c");
+
+        // Every level of the trail renders, including the ones no live pane holds.
+        for (id, first) in [("", "a"), ("a", "a.b"), ("a.b", "a.b.c")] {
+            let page = d.page_at(id.to_string());
+            assert_eq!(page.focus, id);
+            assert_eq!(page.items.first().map(|i| i.id.as_str()), Some(first));
+            assert_eq!(page.selected, None, "an ancestor holds no cursor");
+        }
+        // …and the focus is still where the user left it.
+        assert_eq!(d.pages().page.focus, "a.b.c");
+
+        // The page you *are* on keeps its cursor.
+        assert_eq!(d.page_at("a.b.c".to_string()).selected, Some(0));
+    }
+
+    #[test]
+    fn page_at_is_total_for_an_id_that_names_nothing() {
+        let d = deep();
+        d.show_pages();
+        let page = d.page_at("nope.not.here".to_string());
+        assert!(page.items.is_empty());
+        assert_eq!(page.selected, None);
     }
 }

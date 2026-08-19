@@ -95,7 +95,23 @@ mappings is titled by whichever field best names each item, so steps read as
 
 It draws two panes when the document has somewhere to drill and the window has
 room — consecutive levels of one lineage, so the left pane is always the page the
-right came out of — and one pane plus the breadcrumb when it doesn't.
+right came out of. A navigation slides them along the trail in the direction it
+went, which is the only thing that distinguishes "one level deeper" from "one
+level out" once the contents have changed; `.accessibilityReduceMotion` turns it
+off.
+
+Narrow — a small window, a phone — is one column, and one column pushed and
+popped *is* a `NavigationStack`, so it gets one: the OS's push animation, its
+back button, and on iOS the swipe-back gesture. The stack's path mirrors the
+model's focus and is re-derived whenever either side moves, because focus travels
+for reasons no tap caused (deleting the container you are inside pops it; a
+switch from the tree lands wherever the cursor was). A stack asks for the screen
+at an arbitrary path element rather than being told, so those come from
+`pageAt(id:)`, which builds a page without navigating to it.
+
+The two-pane layout is deliberately not a `NavigationSplitView`, whose sidebar is
+*fixed*: it would put the root's list beside a page five levels away, which is the
+arrangement the sliding window replaced.
 
 `FlowerModel` drives it with `showPages()` / `showTree()` (the cursor carries
 across), `pageOpen(id:)` / `pageBack()`, and the same editing verbs the tree uses,
@@ -122,6 +138,8 @@ for row in frame.rows {
 var pages = doc.showPages()               // PagesView — the other projection
 pages = doc.pageOpen(id: "jobs.test")     // push a page (also: pageBack())
 pages = doc.pageSetValue(id: "jobs.test.timeout_minutes", text: "45")
+
+let ancestor = doc.pageAt(id: "jobs")     // render a level without going there
 
 for item in pages.page.items {
     // item.role → "scalar" | "drill" | "group"; item.inset → 0 or 1 (a group

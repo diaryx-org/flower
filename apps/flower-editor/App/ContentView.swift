@@ -48,7 +48,9 @@ struct ContentView: View {
     private var header: some View {
         HStack(spacing: 10) {
             Image(systemName: "leaf.fill").foregroundStyle(.green)
-            Text("flower").font(.headline)
+            // Fixed, so a narrow window compresses the controls to its right
+            // rather than setting the wordmark one letter per line.
+            Text("flower").font(.headline).fixedSize()
             Picker("Document", selection: $sample) {
                 ForEach(Sample.allCases) { Text($0.rawValue).tag($0) }
             }

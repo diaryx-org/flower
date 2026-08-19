@@ -15,15 +15,38 @@
 //  and lossless either way. Which one to show is a question about the document
 //  (and the room), not about what the user is allowed to do.
 //
-//  ## Two panes, or one
+//  ## Two panes, or one — and two different navigations
 //
 //  When the document has somewhere to drill *and* there is width for it, the panes
 //  are consecutive levels of one lineage: the left is the page the right was
 //  opened from, at every depth — a window sliding along the trail rather than a
 //  fixed sidebar. At the root, where nothing has been opened yet, the right pane
 //  previews the page the cursor would open, so the split never starts half empty.
-//  Everything else — a narrow window, a flat document — is one pane and the
-//  breadcrumb, which is all a phone ever had room for.
+//  A navigation slides them along the trail in the direction it went, which is the
+//  only thing distinguishing "one level deeper" from "one level out" once the
+//  contents have changed.
+//
+//  Narrow — a small window, a phone — is one column, and one column pushed and
+//  popped *is* a `NavigationStack`. It gets the stack: the OS's push animation,
+//  its back button, and on iOS the swipe-back gesture, none of which a hand-rolled
+//  breadcrumb can offer. A stack's destination builder is a pull model, though —
+//  it asks for the screen at an arbitrary path element, including levels the model
+//  is not standing on — so those come from `pageAt(id:)`, which builds a page
+//  without navigating to it.
+//
+//  The two-pane layout keeps its own panes rather than a `NavigationSplitView`,
+//  whose sidebar is *fixed*: it would put the root's list next to a page five
+//  levels away, which is the arrangement the sliding window exists to replace.
+//
+//  ## One navigation state, not two
+//
+//  The stack's path is a mirror, and the model is the original. Focus moves for
+//  reasons no tap caused — deleting the container you are inside pops it, a
+//  switch from the tree lands wherever the cursor was, a breadcrumb jumps several
+//  levels at once — so the path is re-derived from the trail whenever it changes,
+//  and a path the *user* changed (a back swipe) is sent back the other way. Each
+//  direction checks it has something to say before saying it, which is what stops
+//  the two chasing each other.
 
 import SwiftUI
 import FlowerFFI
@@ -50,6 +73,12 @@ public struct FlowerPages: View {
     private let theme: FlowerTheme
     private let rootLabel: String
 
+    /// The narrow layout's stack, mirroring the trail. Ids, not pages: a stack
+    /// element must survive the document changing underneath it, and an id is the
+    /// one thing about a page that does.
+    @State private var path: [String] = []
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
     public init(model: FlowerModel, theme: FlowerTheme = .default, rootLabel: String = "Document") {
         self.model = model
         self.theme = theme
@@ -57,24 +86,100 @@ public struct FlowerPages: View {
     }
 
     public var body: some View {
-        VStack(spacing: 0) {
-            breadcrumb
-            Divider()
-            GeometryReader { geo in
-                if geo.size.width >= twoPaneMinWidth, model.pages.twoPane {
-                    HStack(spacing: 0) {
-                        PagePane(page: left, model: model, theme: theme,
-                                 rootLabel: rootLabel, role: .trail)
-                        Divider()
-                        rightPane
-                    }
-                } else {
-                    PagePane(page: model.pages.page, model: model, theme: theme,
-                             rootLabel: rootLabel, role: .cursor)
-                }
+        GeometryReader { geo in
+            if geo.size.width >= twoPaneMinWidth, model.pages.twoPane {
+                panes
+            } else {
+                stack
             }
         }
         .onAppear { model.showPages() }
+    }
+
+    // ── the wide layout: two panes sliding along the trail ────────────────────
+
+    private var panes: some View {
+        VStack(spacing: 0) {
+            breadcrumb
+            Divider()
+            HStack(spacing: 0) {
+                sliding(left, role: .trail)
+                Divider()
+                rightPane
+            }
+        }
+        // Scoped to the focus, so a navigation animates and an edit — which
+        // replaces the same frame in place — does not.
+        .animation(reduceMotion ? nil : .easeOut(duration: 0.22),
+                   value: model.pages.page.focus)
+    }
+
+    /// One pane of the sliding pair.
+    ///
+    /// Keyed by the page it is showing, so a navigation is an exit and an entrance
+    /// rather than a content swap, and stacked rather than laid out side by side:
+    /// mid-transition both pages exist, and in an `HStack` that would briefly make
+    /// four columns out of two.
+    private func sliding(_ page: PageView, role: PaneRole) -> some View {
+        ZStack {
+            PagePane(page: page, model: model, theme: theme,
+                     rootLabel: rootLabel, role: role)
+                .id(page.focus)
+                .transition(paneTransition)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .clipped()
+    }
+
+    /// Which way a pane's contents move. A push sends the outgoing page left and
+    /// brings the new one in from the right; a pop is the mirror of that. A jump
+    /// has no direction — it crosses the trail rather than stepping along it — so
+    /// it fades, which is the honest rendering of "somewhere else entirely".
+    private var paneTransition: AnyTransition {
+        switch model.lastMove {
+        case .push:
+            return .asymmetric(insertion: .move(edge: .trailing), removal: .move(edge: .leading))
+        case .pop:
+            return .asymmetric(insertion: .move(edge: .leading), removal: .move(edge: .trailing))
+        case .jump:
+            return .opacity
+        }
+    }
+
+    // ── the narrow layout: the OS's own stack ─────────────────────────────────
+
+    /// The trail as the stack sees it: one element per level below the root.
+    private var trail: [String] { model.pages.page.crumbs.map(\.id) }
+
+    private var stack: some View {
+        NavigationStack(path: $path) {
+            screen(id: "")
+                .navigationDestination(for: String.self) { screen(id: $0) }
+        }
+        .onAppear { path = trail }
+        // The model moved: mirror it. Guarded, because this also fires for the
+        // move the stack itself just made.
+        .onChange(of: trail) { moved in
+            if path != moved { path = moved }
+        }
+        // The stack moved — a back button, a swipe — so tell the model where the
+        // user actually is. Same guard, other direction.
+        .onChange(of: path) { popped in
+            guard popped != trail else { return }
+            model.pageOpen(id: popped.last ?? "")
+        }
+    }
+
+    /// One screen of the stack. The page you are standing on comes from the live
+    /// frame, with its cursor; every level behind it is built on demand and holds
+    /// no cursor, because you are not standing on it.
+    @ViewBuilder private func screen(id: String) -> some View {
+        let page = id == model.pages.page.focus ? model.pages.page : model.pageAt(id: id)
+        PagePane(page: page, model: model, theme: theme, rootLabel: rootLabel, role: .cursor)
+            .navigationTitle(id.isEmpty ? rootLabel : prettify(page.crumbs.last?.label ?? id))
+            #if os(iOS)
+            .navigationBarTitleDisplayMode(.inline)
+            #endif
     }
 
     /// The left pane: the page the current one was opened from, or — at the root,
@@ -88,11 +193,9 @@ public struct FlowerPages: View {
     /// honest: there is nothing to show until you pick a section.
     @ViewBuilder private var rightPane: some View {
         if model.pages.parent != nil {
-            PagePane(page: model.pages.page, model: model, theme: theme,
-                     rootLabel: rootLabel, role: .cursor)
+            sliding(model.pages.page, role: .cursor)
         } else if let peek = model.pages.peek {
-            PagePane(page: peek, model: model, theme: theme,
-                     rootLabel: rootLabel, role: .preview)
+            sliding(peek, role: .preview)
         } else {
             VStack {
                 Spacer()

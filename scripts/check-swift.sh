@@ -11,6 +11,10 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 WORK="${TMPDIR:-/tmp}/flower-swift-check"
 SDK="$(xcrun --show-sdk-path)"
+# The floor Package.swift promises. Without it swiftc assumes the *host* OS, and
+# the check disagrees with the build: an API deprecated after our floor warns
+# here and not there, and one introduced after it compiles here and not there.
+TARGET="arm64-apple-macosx13.0"
 
 echo "▸ Building flower-ffi (host) + generating Swift binding…"
 cargo build -p flower-ffi --manifest-path "$ROOT/Cargo.toml" >/dev/null
@@ -28,13 +32,13 @@ echo "▸ Emitting FlowerFFI.swiftmodule…"
 swiftc -emit-module -module-name FlowerFFI \
   -emit-module-path "$WORK/FlowerFFI.swiftmodule" \
   "$WORK/gen/flower_ffi.swift" \
-  -sdk "$SDK" \
+  -sdk "$SDK" -target "$TARGET" \
   -I "$WORK/headers" -Xcc -fmodule-map-file="$WORK/headers/module.modulemap"
 
 echo "▸ Type-checking FlowerUI (macOS)…"
 swiftc -typecheck -module-name FlowerUI \
   "$ROOT"/packages/flower-swift/Sources/FlowerUI/*.swift \
-  -sdk "$SDK" \
+  -sdk "$SDK" -target "$TARGET" \
   -I "$WORK" \
   -I "$WORK/headers" -Xcc -fmodule-map-file="$WORK/headers/module.modulemap"
 echo "  ✓ macOS"

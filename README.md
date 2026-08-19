@@ -23,9 +23,12 @@ Early prototype. Working today:
 - Navigate structurally: move between siblings, into children, out to parents;
   expand/collapse containers.
 - Read it as a **settings menu** instead (`v`): one container per page, small
-  all-scalar groups inlined, two panes when there's width and depth to use them
-  and one when there isn't. Depth costs a page rather than a column, so a deeply
-  nested document stays as legible as a shallow one.
+  all-scalar groups inlined, and a container short enough to fit shown in flow
+  form (`push  {branches: [master]}`) rather than counted. Two panes when there's
+  width and depth to use them — consecutive levels of one lineage, so the left is
+  always the page the right came out of — and one when there isn't. Depth costs a
+  page rather than a column, so a deeply nested document stays as legible as a
+  shallow one.
 - Edit a scalar in place (typed: `true`/`42`/`3.14`/`null`/text) — committed via
   `fig::Editor::replace_value`, so the splice is lossless and validated.
 - Delete a mapping entry or sequence item.

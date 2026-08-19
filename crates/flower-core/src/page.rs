@@ -90,11 +90,32 @@ pub struct PageItem {
     /// It never replaces [`label`](Self::label): the index is what the path is
     /// addressed by and what a reorder moves, so a frontend shows both.
     pub title: Option<String>,
+    /// A container's entire contents in flow form (`{branches: [master]}`), when
+    /// they are short enough to be worth showing instead of counting.
+    ///
+    /// `1 field ›` is strictly less than the document says: the field is right
+    /// there and it fits. A count is what you fall back to when the contents
+    /// don't ([`SUMMARY_BUDGET`]), not the default way to describe a small
+    /// container. `None` for a scalar, whose value is already its own row.
+    pub summary: Option<String>,
 }
 
 impl PageItem {
     /// Whether activating this item opens a page (rather than editing a value).
+    ///
+    /// A group header does **not**, though it names a container: its members are
+    /// already on this page, so the page it would open shows exactly what you can
+    /// already see — the same two rows twice, once on each side of a split. A
+    /// container is worth a page when the page tells you something; this one
+    /// cannot. Its members are reached by moving onto them, and every op that
+    /// takes the group itself takes a path, which the header still carries.
     pub fn is_drill(&self) -> bool {
+        matches!(self.kind, ItemKind::Drill { .. })
+    }
+
+    /// Whether this item names a container at all — a drill row, or the header of
+    /// a group inlined into this page.
+    pub fn is_container(&self) -> bool {
         matches!(
             self.kind,
             ItemKind::Drill { .. } | ItemKind::GroupHeader { .. }
@@ -280,6 +301,41 @@ pub fn title_of(ranking: &[String], item: &Value) -> Option<String> {
     })
 }
 
+/// How long a container's flow-form summary may get before a count is the more
+/// useful thing to show.
+///
+/// Generous, because the renderer applies the real limit — whatever room the row
+/// actually has — and falls back to the count on its own. This only stops the
+/// projection building a 4KB string for a container nobody could render anyway.
+pub const SUMMARY_BUDGET: usize = 72;
+
+/// A container's whole contents on one line, in flow form, or `None` if they run
+/// past `budget`.
+///
+/// Flow form because that is how the formats themselves write a small container
+/// — `{branches: [master]}` is valid YAML, JSON, and (near enough) TOML — so it
+/// reads as the document rather than as a rendering of it.
+pub fn flow(v: &Value, budget: usize) -> Option<String> {
+    let rendered = match v {
+        Value::Map(entries) => {
+            let parts = entries
+                .iter()
+                .map(|(k, val)| Some(format!("{}: {}", key_to_string(k), flow(val, budget)?)))
+                .collect::<Option<Vec<_>>>()?;
+            format!("{{{}}}", parts.join(", "))
+        }
+        Value::Seq(items) => {
+            let parts = items
+                .iter()
+                .map(|i| flow(i, budget))
+                .collect::<Option<Vec<_>>>()?;
+            format!("[{}]", parts.join(", "))
+        }
+        scalar => preview(scalar),
+    };
+    (rendered.chars().count() <= budget).then_some(rendered)
+}
+
 /// Build the page listing the container at `focus`.
 ///
 /// `hidden_top_level` is the same root-scoped hiding [`tree::build_rows`] honors
@@ -385,6 +441,7 @@ fn item(
         kind,
         inset,
         title,
+        summary: is_container(v).then(|| flow(v, SUMMARY_BUDGET)).flatten(),
     }
 }
 
@@ -759,5 +816,67 @@ timeout = 30.5
         // throw every row below it out of alignment.
         assert_eq!(page.items[0].title.as_deref(), Some("set -e …"));
         assert!(!page.items[0].preview.contains('\n'));
+    }
+
+    // ── flow summaries ────────────────────────────────────────────────────
+
+    #[test]
+    fn a_container_that_fits_on_the_row_shows_its_contents_not_a_count() {
+        let root = value_of(
+            r#"{"on": {"push": {"branches": ["master"]}, "pull_request": null}}"#,
+            Format::Json,
+        );
+        let page = page_of(&root, &[key("on")]);
+        let push = &page.items[0];
+        // It has one field, and the field is right there: counting it to `1 field`
+        // would say strictly less than the document does in the same room.
+        assert!(matches!(push.kind, ItemKind::Drill { count: 1 }));
+        assert_eq!(push.summary.as_deref(), Some("{branches: [master]}"));
+    }
+
+    #[test]
+    fn a_container_too_long_to_summarise_falls_back_to_being_counted() {
+        let long = "x".repeat(SUMMARY_BUDGET);
+        let root = value_of(
+            &format!(r#"{{"outer": {{"a": {{"b": "{long}"}}}}}}"#),
+            Format::Json,
+        );
+        let page = page_of(&root, &[key("outer")]);
+        assert!(page.items[0].summary.is_none());
+        // The budget is a length limit, not a depth one — shorten the value and
+        // the same shape summarises fine.
+        let root = value_of(r#"{"outer": {"a": {"b": "x"}}}"#, Format::Json);
+        assert_eq!(
+            page_of(&root, &[key("outer")]).items[0].summary.as_deref(),
+            Some("{b: x}")
+        );
+    }
+
+    #[test]
+    fn a_scalar_is_never_summarised() {
+        let root = sample();
+        let page = page_of(&root, &[]);
+        assert!(
+            page.items
+                .iter()
+                .filter(|i| matches!(i.kind, ItemKind::Scalar))
+                .all(|i| i.summary.is_none())
+        );
+    }
+
+    #[test]
+    fn a_group_header_is_not_a_drill() {
+        let root = sample();
+        let page = page_of(&root, &[key("server")]);
+        let limits = page
+            .items
+            .iter()
+            .find(|i| i.label == "limits")
+            .expect("limits");
+        assert!(matches!(limits.kind, ItemKind::GroupHeader { .. }));
+        // It names a container, but opening it would show what is already here.
+        assert!(limits.is_container());
+        assert!(!limits.is_drill());
+        assert!(!page.has_drills());
     }
 }

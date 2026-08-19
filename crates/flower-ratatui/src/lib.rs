@@ -26,10 +26,8 @@ use flower_core::{Backend, ItemKind, Mode, Model, Page, PageItem, VKind, ViewMod
 /// column, which is all a narrow terminal or a phone ever had room for.
 const TWO_PANE_MIN_WIDTH: u16 = 64;
 
-/// What the sidebar takes when there are two panes.
-const SIDEBAR_PCT: u16 = 34;
-const SIDEBAR_MIN: u16 = 22;
-const SIDEBAR_MAX: u16 = 38;
+/// Kept clear on the right so a value never touches the pane's edge.
+const RIGHT_GUTTER: usize = 1;
 
 /// How the document root reads in a breadcrumb.
 const ROOT_LABEL: &str = "‹document›";
@@ -138,80 +136,54 @@ fn draw_pages<B: Backend>(f: &mut Frame, model: &Model<B>, area: Rect) {
         return;
     }
 
-    let sidebar = (area.width * SIDEBAR_PCT / 100).clamp(SIDEBAR_MIN, SIDEBAR_MAX);
-    let cols = Layout::horizontal([Constraint::Length(sidebar), Constraint::Min(0)]).split(area);
+    // Even halves. The two panes are consecutive levels of one lineage, not a
+    // fixed index and a variable detail, so neither has a claim on more room than
+    // the other — and the left is about to become the right.
+    let cols =
+        Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).split(area);
 
-    // Exactly one pane owns the cursor: the sidebar while you are still choosing a
-    // category, the detail pane once you have opened one. That is what makes `h`
-    // and `l` unambiguous without a focus-switch key.
-    let at_root = model.focus().is_empty();
-    let root = model.root_page();
-
-    // The sidebar keeps the branch you are inside marked even though the cursor
-    // has moved on to the detail pane — without it, a deep page loses all trace of
-    // which category it belongs to.
-    let lineage = (!at_root)
-        .then(|| model.focus().first().cloned())
-        .flatten()
-        .and_then(|seg| root.position_of(std::slice::from_ref(&seg)));
-
-    draw_page_pane(
-        f,
-        root,
-        if at_root {
-            Some(model.page_selected())
-        } else {
-            lineage
-        },
-        at_root,
-        ROOT_LABEL,
-        cols[0],
-    );
-
-    // At the root the detail pane previews what the cursor is about to open, so
-    // the split is never half empty.
-    let peeked = at_root.then(|| model.peek_page()).flatten();
-    match (at_root, peeked) {
-        (true, Some(peek)) => draw_page_pane(f, &peek, None, false, ROOT_LABEL, cols[1]),
-        (true, None) => draw_empty_detail(f, cols[1]),
-        (false, _) => draw_page_pane(
+    // Exactly one pane owns the cursor: the left while you are still choosing on
+    // the outer page, the right once you have opened something. That is what makes
+    // `h` and `l` unambiguous without a focus-switch key.
+    if model.focus().is_empty() {
+        draw_page_pane(
             f,
-            model.page(),
+            model.root_page(),
             Some(model.page_selected()),
             true,
-            ROOT_LABEL,
-            cols[1],
-        ),
+            cols[0],
+        );
+        // Nothing has been opened yet, so the right pane previews what the cursor
+        // would open. Without it the split would start half empty.
+        match model.peek_page() {
+            Some(peek) => draw_page_pane(f, &peek, None, false, cols[1]),
+            None => draw_empty_detail(f, cols[1]),
+        }
+        return;
     }
+
+    // A window sliding along the lineage: the left pane is the page the right one
+    // was opened from, at every depth. It keeps the row you came out of marked, so
+    // a deep page never loses the trace of what contains it.
+    let parent = model.parent_page();
+    let came_from = parent.position_of(model.focus());
+    draw_page_pane(f, parent, came_from, false, cols[0]);
+    draw_page_pane(f, model.page(), Some(model.page_selected()), true, cols[1]);
 }
 
 /// The narrow layout: just the page you are on, with the breadcrumb standing in
 /// for the sidebar you don't have room for.
 fn draw_single_pane<B: Backend>(f: &mut Frame, model: &Model<B>, area: Rect) {
-    draw_page_pane(
-        f,
-        model.page(),
-        Some(model.page_selected()),
-        true,
-        ROOT_LABEL,
-        area,
-    );
+    draw_page_pane(f, model.page(), Some(model.page_selected()), true, area);
 }
 
 /// One page: a breadcrumb line, then its items. `selected` is `None` for a pane
 /// that is only being previewed; `active` dims the breadcrumb of a pane that does
 /// not hold the cursor.
-fn draw_page_pane(
-    f: &mut Frame,
-    page: &Page,
-    selected: Option<usize>,
-    active: bool,
-    root_label: &str,
-    area: Rect,
-) {
+fn draw_page_pane(f: &mut Frame, page: &Page, selected: Option<usize>, active: bool, area: Rect) {
     let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
 
-    let crumb = page.breadcrumb(root_label);
+    let crumb = page.breadcrumb(ROOT_LABEL);
     let style = if active {
         Style::default()
             .fg(Color::White)
@@ -272,19 +244,26 @@ fn page_line(item: &PageItem, width: u16) -> Line<'static> {
             ])
         }
         ItemKind::Drill { count } => {
-            let noun = match (item.vkind == VKind::Seq, *count) {
-                (true, 1) => "item",
-                (true, _) => "items",
-                (false, 1) => "field",
-                (false, _) => "fields",
+            let name = name_spans(item);
+            // Show what is in it when what is in it fits: `1 field ›` is strictly
+            // less than the document says when the field is right there. The count
+            // is the fallback for a container too big to put on the row, which is
+            // the only case where counting beats showing.
+            let trailing = match &item.summary {
+                Some(flow) if flow.chars().count() + 2 <= room_for(indent, &name, width) => {
+                    format!("{flow} ›")
+                }
+                _ => {
+                    let noun = match (item.vkind == VKind::Seq, *count) {
+                        (true, 1) => "item",
+                        (true, _) => "items",
+                        (false, 1) => "field",
+                        (false, _) => "fields",
+                    };
+                    format!("{count} {noun} ›")
+                }
             };
-            row_line(
-                indent,
-                name_spans(item),
-                &format!("{count} {noun} ›"),
-                dim(),
-                width,
-            )
+            row_line(indent, name, &trailing, dim(), width)
         }
         ItemKind::Scalar => row_line(
             indent,
@@ -323,10 +302,9 @@ fn row_line(
     trailing_style: Style,
     width: u16,
 ) -> Line<'static> {
-    const GUTTER: usize = 1; // kept clear on the right so a value never touches the edge
     let width = width as usize;
     let name_w: usize = name.iter().map(|s| s.content.chars().count()).sum();
-    let room = width.saturating_sub(indent + name_w + GUTTER + 1);
+    let room = room_for(indent, &name, width as u16);
 
     let trailing: String = if trailing.chars().count() <= room {
         trailing.to_string()
@@ -337,7 +315,7 @@ fn row_line(
     };
 
     let pad = width
-        .saturating_sub(indent + name_w + trailing.chars().count() + GUTTER)
+        .saturating_sub(indent + name_w + trailing.chars().count() + RIGHT_GUTTER)
         .max(1);
 
     let mut spans = vec![Span::raw(" ".repeat(indent))];
@@ -345,6 +323,14 @@ fn row_line(
     spans.push(Span::raw(" ".repeat(pad)));
     spans.push(Span::styled(trailing, trailing_style));
     Line::from(spans)
+}
+
+/// How many columns are left for a row's trailing text once its name has taken
+/// what it needs — the name is never squeezed, because a name you can't read
+/// costs more than a value you can't finish.
+fn room_for(indent: usize, name: &[Span<'static>], width: u16) -> usize {
+    let name_w: usize = name.iter().map(|s| s.content.chars().count()).sum();
+    (width as usize).saturating_sub(indent + name_w + RIGHT_GUTTER + 1)
 }
 
 fn render_list(f: &mut Frame, items: Vec<ListItem>, selected: Option<usize>, area: Rect) {
@@ -533,5 +519,44 @@ timeout = 30.5
             out.contains("1 field ›") && !out.contains("1 fields"),
             "{out}"
         );
+    }
+
+    #[test]
+    fn the_left_pane_is_the_page_the_right_one_was_opened_from() {
+        let mut m = model();
+        m.focus_on(&[Seg::Key("server".into())]);
+        m.page_enter();
+        let out = render(&m, 100, 10);
+        // Left: the root page it came out of. Right: server's own page. Neither
+        // pane repeats the other.
+        assert!(out.contains("‹document›"), "{out}");
+        assert!(out.contains(" server"), "{out}");
+        assert_eq!(out.matches("localhost").count(), 1, "{out}");
+        // Even halves: the right pane's breadcrumb starts at the midpoint.
+        // Even halves: the right pane's breadcrumb sits one column into the
+        // second half. Counted in characters, not bytes — `‹document›` is wider
+        // in bytes than it is on screen.
+        let crumb = out.lines().nth(1).expect("breadcrumb row");
+        let col = crumb
+            .char_indices()
+            .position(|(i, _)| crumb[i..].starts_with("server"))
+            .expect("the right pane's breadcrumb");
+        assert_eq!(col, 51, "{crumb:?}");
+    }
+
+    #[test]
+    fn a_small_container_shows_its_contents_on_the_row() {
+        let backend = FigBackend::open(
+            br#"{"on": {"push": {"branches": ["master"]}, "jobs": {"a": {"b": {"c": 1}}}}}"#,
+            fig::Format::Json,
+        )
+        .expect("open");
+        let mut m = Model::new(backend).expect("model");
+        m.set_view(ViewMode::Pages);
+        m.focus_on(&[Seg::Key("on".into())]);
+        m.page_enter();
+        let out = render(&m, 100, 10);
+        assert!(out.contains("{branches: [master]} ›"), "{out}");
+        assert!(!out.contains("1 field ›"), "{out}");
     }
 }

@@ -87,9 +87,17 @@ pub struct Model<B> {
     focus: Vec<Seg>,
     /// The page at [`focus`](Self::focus).
     page: Page,
-    /// The root's page — the stable left-hand list of categories, which stays put
-    /// however deep `focus` goes.
+    /// The root's page. Kept for the "is there anything to navigate at all?"
+    /// question ([`pages_would_degenerate`](Self::pages_would_degenerate)), which
+    /// is about the document rather than about where you are in it.
     root_page: Page,
+    /// The page one level out from [`focus`](Self::focus) — the list you were
+    /// looking at when you opened the current one.
+    ///
+    /// A two-pane frontend shows this on the left, so the pair of panes is a
+    /// window sliding along the lineage rather than a fixed sidebar: the left is
+    /// always the page the right came out of, at every depth.
+    parent_page: Page,
     /// The selected item on [`page`](Self::page).
     page_selected: usize,
     /// Where the cursor was on each page we have left, so popping back restores
@@ -166,6 +174,7 @@ impl<B: Backend> Model<B> {
             focus: Vec::new(),
             page: Page::default(),
             root_page: Page::default(),
+            parent_page: Page::default(),
             page_selected: 0,
             page_memory: HashMap::new(),
         };
@@ -325,6 +334,15 @@ impl<B: Backend> Model<B> {
             self.root_page.clone()
         } else {
             page::build_page(&self.value, &self.focus, &self.hidden)
+        };
+        self.parent_page = if self.focus.is_empty() {
+            Page::default()
+        } else {
+            page::build_page(
+                &self.value,
+                &self.focus[..self.focus.len() - 1],
+                &self.hidden,
+            )
         };
         if self.page_selected >= self.page.items.len() {
             self.page_selected = self.page.items.len().saturating_sub(1);
@@ -487,10 +505,15 @@ impl<B: Backend> Model<B> {
         &self.page
     }
 
-    /// The root's page — the stable category list a two-pane frontend draws on
-    /// the left, unchanged however deep [`focus`](Self::focus) goes.
+    /// The root's page.
     pub fn root_page(&self) -> &Page {
         &self.root_page
+    }
+
+    /// The page one level out — what a two-pane frontend draws on the left. Empty
+    /// when [`focus`](Self::focus) is the root, which has no parent.
+    pub fn parent_page(&self) -> &Page {
+        &self.parent_page
     }
 
     /// The container the page view is listing. Empty is the document root.
@@ -586,6 +609,18 @@ impl<B: Backend> Model<B> {
         };
         if item.is_scalar() {
             self.begin_edit();
+            return;
+        }
+        // A group header opens nothing (see `PageItem::is_drill`), so `l` on one
+        // does the next most useful thing and steps onto its first member — the
+        // same "into its children" this key means everywhere else.
+        if !item.is_drill() {
+            if let Some(first) = self.page.items[self.page_selected + 1..]
+                .iter()
+                .position(|i| i.inset > 0)
+            {
+                self.page_selected += 1 + first;
+            }
             return;
         }
         let target = item.path.clone();
@@ -1784,11 +1819,30 @@ timeout = 30.5
         assert!(model.page().items.iter().all(|i| i.inset <= 1));
         assert_eq!(selected_label(&model), "limits");
 
-        // A group header opens as a page of its own even though its members were
-        // already visible.
+        // A group header opens nothing — its members are already here — so `l`
+        // steps onto the first of them instead.
         model.page_enter();
-        assert_eq!(model.focus(), &[key("server"), key("limits")]);
-        assert_eq!(page_labels(&model), vec!["max_connections", "timeout"]);
+        assert_eq!(model.focus(), &[key("server")]);
+        assert_eq!(selected_label(&model), "max_connections");
+    }
+
+    #[test]
+    fn a_group_header_never_opens_a_page_that_repeats_it() {
+        let mut model = paged_model();
+        model.focus_on(&[key("server")]);
+        model.page_enter();
+        for header in ["tags", "limits"] {
+            let at = model
+                .page()
+                .items
+                .iter()
+                .position(|i| i.label == header)
+                .expect("the group header");
+            assert!(!model.page().items[at].is_drill());
+            // Whatever the cursor does, the focused page never becomes the group's.
+            model.page_enter();
+            assert_eq!(model.focus(), &[key("server")]);
+        }
     }
 
     #[test]
@@ -1816,7 +1870,10 @@ timeout = 30.5
 
     #[test]
     fn losing_the_container_you_are_standing_in_pops_you_out() {
-        let backend = FigBackend::open(br#"{"a": {"b": {"c": 1}}}"#, Format::Json).expect("open");
+        // `b` nests a container, so it is a real drill rather than an inlined
+        // group — the only kind of row a page can be opened from.
+        let backend =
+            FigBackend::open(br#"{"a": {"b": {"c": {"d": 1}}}}"#, Format::Json).expect("open");
         let mut model = Model::new(backend).expect("model");
         model.set_view(ViewMode::Pages);
         model.focus_on(&[key("a"), key("b")]);
@@ -1901,5 +1958,29 @@ b = 2
         model.page_back();
         assert!(model.focus().is_empty());
         assert_eq!(model.page_selected(), 0);
+    }
+
+    #[test]
+    fn the_two_panes_are_consecutive_levels_of_one_lineage() {
+        let backend = FigBackend::open(
+            br#"{"jobs": {"plan": {"steps": {"a": 1, "b": {"c": 2}}}}}"#,
+            Format::Json,
+        )
+        .expect("open");
+        let mut model = Model::new(backend).expect("model");
+        model.set_view(ViewMode::Pages);
+
+        // At the root there is no parent to show on the left.
+        assert!(model.parent_page().is_empty());
+
+        model.page_enter(); // jobs
+        assert_eq!(model.parent_page().focus, Vec::<Seg>::new());
+        model.page_enter(); // jobs.plan
+        assert_eq!(model.parent_page().focus, vec![key("jobs")]);
+        model.page_enter(); // jobs.plan.steps
+        assert_eq!(model.parent_page().focus, vec![key("jobs"), key("plan")]);
+
+        // The left pane can always mark the row the right one was opened from.
+        assert!(model.parent_page().position_of(model.focus()).is_some());
     }
 }

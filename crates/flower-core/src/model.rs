@@ -67,6 +67,19 @@ pub struct Model<B> {
     /// those two alike leaves a user wondering where a field they can see in the
     /// file went, so a derived key keeps its row and declines edits instead.
     derived: HashSet<String>,
+    /// Top-level mapping keys the page projection lists *below* the rest — a
+    /// page's "advanced" section (see [`page::PageItem::demoted`]).
+    ///
+    /// The third answer to "who edits this field?", after `hidden` (something
+    /// else does, and its row would only clutter) and `derived` (nothing does).
+    /// A demoted key is edited here like any other; it is just not what the
+    /// reader came for. Relations, identity, a title the title bar owns: real
+    /// fields, worth showing, worth showing last.
+    ///
+    /// Holds the union with [`derived`](Self::derived), maintained by
+    /// [`set_demoted`](Self::set_demoted) — a key nothing can meaningfully edit
+    /// is the clearest case there is for sinking it below the ones you can.
+    demoted: HashSet<String>,
     /// The schema governing this document, if any — from the backend
     /// ([`Backend::schema`]) or injected by the embedder ([`Model::set_schema`]).
     /// Drives type-directed parsing and commit-time value validation; absent, the
@@ -164,6 +177,9 @@ impl<B: Backend> Model<B> {
             rows: Vec::new(),
             collapsed: collapsed.into_iter().collect(),
             hidden: hidden.into_iter().collect(),
+            // Every derived key starts demoted; `set_demoted` adds the
+            // embedder's own to that floor rather than replacing it.
+            demoted: derived.iter().cloned().collect(),
             derived: derived.into_iter().collect(),
             schema,
             selected: 0,
@@ -180,6 +196,31 @@ impl<B: Backend> Model<B> {
         };
         model.reload()?;
         Ok(model)
+    }
+
+    /// Name the top-level keys the page projection sinks below the rest.
+    ///
+    /// Out-of-band like [`set_schema`](Self::set_schema), and for the same
+    /// reason: it is presentation the *embedder* knows and the document does
+    /// not. A diaryx host knows `part_of` is drawn by the sidebar and `id` by
+    /// nothing at all; the fig-backed model reading the same frontmatter has no
+    /// way to tell either from a field somebody typed.
+    ///
+    /// Adds to the derived keys already demoted rather than replacing them, so a
+    /// caller names only what the constructor did not. Rebuilds the pages, so
+    /// the next [`page`](Self::page) already reflects it.
+    ///
+    /// Root keys, matched exactly. A path is demoted when its *first* segment is
+    /// one of these, so naming a container demotes everything under it.
+    pub fn set_demoted(&mut self, keys: Vec<String>) {
+        self.demoted.extend(keys);
+        self.rebuild_pages();
+    }
+
+    /// Whether the node at `path` sits under a demoted top-level key — the
+    /// page projection's own [`is_derived`](Self::is_derived).
+    pub fn is_demoted(&self, path: &[Seg]) -> bool {
+        matches!(path.first(), Some(Seg::Key(k)) if self.demoted.contains(k))
     }
 
     /// Inject a schema out-of-band — the embedder precedent, mirroring
@@ -329,11 +370,11 @@ impl<B: Backend> Model<B> {
     /// [`view`](Self::view) for why both projections are kept live.
     fn rebuild_pages(&mut self) {
         self.reanchor_focus();
-        self.root_page = page::build_page(&self.value, &[], &self.hidden);
+        self.root_page = page::build_page(&self.value, &[], &self.hidden, &self.demoted);
         self.page = if self.focus.is_empty() {
             self.root_page.clone()
         } else {
-            page::build_page(&self.value, &self.focus, &self.hidden)
+            page::build_page(&self.value, &self.focus, &self.hidden, &self.demoted)
         };
         self.parent_page = if self.focus.is_empty() {
             Page::default()
@@ -342,6 +383,7 @@ impl<B: Backend> Model<B> {
                 &self.value,
                 &self.focus[..self.focus.len() - 1],
                 &self.hidden,
+                &self.demoted,
             )
         };
         if self.page_selected >= self.page.items.len() {
@@ -556,7 +598,7 @@ impl<B: Backend> Model<B> {
         }
         let mut focus: Vec<Seg> = Vec::new();
         while focus.len() < path.len()
-            && page::build_page(&self.value, &focus, &self.hidden)
+            && page::build_page(&self.value, &focus, &self.hidden, &self.demoted)
                 .position_of(path)
                 .is_none()
         {
@@ -578,7 +620,7 @@ impl<B: Backend> Model<B> {
     /// Total, like [`build_page`](crate::page::build_page): a path that doesn't
     /// resolve, or that names a scalar, yields an empty page.
     pub fn page_at(&self, path: &[Seg]) -> Page {
-        page::build_page(&self.value, path, &self.hidden)
+        page::build_page(&self.value, path, &self.hidden, &self.demoted)
     }
 
     /// The page the selected item *would* open.

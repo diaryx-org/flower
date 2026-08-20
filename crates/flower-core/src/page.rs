@@ -35,6 +35,24 @@
 //! Inlining is a *presentation* default, never a cage: a group header keeps its
 //! own path, so it stays selectable, deletable, and openable as a page like any
 //! other container.
+//!
+//! ## Demotion
+//!
+//! Inlining decides how much room a field gets; **demotion** decides how far up
+//! it sits. A document can carry fields nobody came here to type in — a hash the
+//! workspace recomputes on every write, a relation the sidebar owns, an identity
+//! nothing hand-edits — and listing them among the fields that *are* typed in
+//! makes the reader scan past them every time.
+//!
+//! Hiding them is the wrong answer: a field you can see in the file and not in
+//! the editor reads as data loss. So an embedder names those top-level keys
+//! ([`Model::set_demoted`](crate::Model::set_demoted)) and they render below the
+//! rest, marked [`PageItem::demoted`] — present, editable by whatever owns them,
+//! and out of the way. [`Page::partitioned`] is the fold.
+//!
+//! Demotion is a property of the whole subtree, not of the row: open a demoted
+//! container and its page is demoted too ([`Page::demoted`]). A section that
+//! stopped being "advanced" one level in would be a section only at the root.
 
 use std::collections::{HashMap, HashSet};
 
@@ -90,6 +108,19 @@ pub struct PageItem {
     /// It never replaces [`label`](Self::label): the index is what the path is
     /// addressed by and what a reorder moves, so a frontend shows both.
     pub title: Option<String>,
+    /// Whether this item belongs *below* the fields a reader came here to edit
+    /// — a page's own "advanced" section, in the sense a settings menu means it.
+    ///
+    /// Set by the embedder's demoted-key set, and root-scoped exactly as
+    /// [`build_page`]'s hiding is: it is a property of the whole subtree under a
+    /// top-level key, so every item on a demoted container's page is demoted too
+    /// and the section cannot come apart when you drill into it.
+    ///
+    /// A demotion, not a hiding and not a lock: the item renders, carries its
+    /// path, and takes every op the others take. It says only that a reader
+    /// scanning for the field they meant to change should not have to read past
+    /// this one to find it.
+    pub demoted: bool,
     /// A container's entire contents in flow form (`{branches: [master]}`), when
     /// they are short enough to be worth showing instead of counting.
     ///
@@ -149,6 +180,13 @@ pub struct Page {
     /// its index is not worth reading — the same title its row carried on the
     /// page you opened it from, so the breadcrumb agrees with what you clicked.
     pub title: Option<String>,
+    /// Whether this whole page sits under a demoted top-level key.
+    ///
+    /// The page you reach by opening a demoted row. A frontend that folds its
+    /// demoted items behind an "advanced" disclosure reads this to keep the
+    /// framing once you are inside — the section a page came out of is still
+    /// true of the page.
+    pub demoted: bool,
 }
 
 impl Page {
@@ -169,6 +207,21 @@ impl Page {
     /// one. See [`Model::pages_would_degenerate`](crate::Model::pages_would_degenerate).
     pub fn has_drills(&self) -> bool {
         self.items.iter().any(PageItem::is_drill)
+    }
+
+    /// The page's items in two stable runs: the ones a reader came to edit, then
+    /// the demoted ones.
+    ///
+    /// [`items`](Self::items) stays in document order, because that order is the
+    /// document's and flower does not get to reshuffle it. This is the one
+    /// rearrangement a settings menu does want — the "advanced" fold — offered
+    /// here rather than left to each frontend so they all fold at the same seam.
+    ///
+    /// The partition is stable, and demotion is root-scoped, so a group header
+    /// and the members inlined under it always land in the same run, adjacent and
+    /// in order: the fold can never cut a group in half.
+    pub fn partitioned(&self) -> (Vec<&PageItem>, Vec<&PageItem>) {
+        self.items.iter().partition(|i| !i.demoted)
     }
 
     /// The page's title as a breadcrumb — `server › limits`, or `root_label` for
@@ -350,19 +403,39 @@ pub fn flow(v: &Value, budget: usize) -> Option<String> {
 
 /// Build the page listing the container at `focus`.
 ///
-/// `hidden_top_level` is the same root-scoped hiding [`tree::build_rows`] honors
-/// (an embedder's managed keys): applied only when `focus` is the root, so a
-/// nested key that happens to share a hidden name is untouched.
+/// Two root-scoped key sets shape the result, and they are root-scoped in the
+/// same sense but not in the same way:
+///
+/// - `hidden_top_level` is the hiding [`tree::build_rows`] honors (an embedder's
+///   managed keys), applied only when `focus` *is* the root — a hidden key
+///   produces no item, and a nested key that happens to share a hidden name is
+///   untouched.
+/// - `demoted_top_level` marks a key's whole **subtree**
+///   ([`PageItem::demoted`]), so it applies at every focus: the items of a
+///   demoted container's page are demoted, and so is the page
+///   ([`Page::demoted`]). That is what keeps an "advanced" section from coming
+///   apart the moment you open something inside it.
+///
+/// The asymmetry is deliberate. Hiding answers "does this row exist here?",
+/// which only the root can ask, since that is the level the embedder reserves
+/// keys at. Demotion answers "how prominent is this?", which stays true however
+/// deep you go.
 ///
 /// A `focus` that doesn't resolve, or that names a scalar, yields an empty page.
 /// The projection stays total so a frontend never has to guard it; the model
 /// keeps `focus` on a real container anyway
 /// ([`Model::reanchor_focus`](crate::Model)).
-pub fn build_page(root: &Value, focus: &[Seg], hidden_top_level: &HashSet<String>) -> Page {
+pub fn build_page(
+    root: &Value,
+    focus: &[Seg],
+    hidden_top_level: &HashSet<String>,
+    demoted_top_level: &HashSet<String>,
+) -> Page {
     let mut page = Page {
         focus: focus.to_vec(),
         items: Vec::new(),
         title: page_title(root, focus),
+        demoted: under_demoted_root(focus, demoted_top_level),
     };
     let Some(node) = value_at(root, focus) else {
         return page;
@@ -392,10 +465,22 @@ pub fn build_page(root: &Value, focus: &[Seg], hidden_top_level: &HashSet<String
         if at_root && hidden_top_level.contains(&label) {
             continue;
         }
+        // Every item on this page shares the page's root key when the focus is
+        // not the root, so off the root this is just `page.demoted` — one test
+        // that reads the same at both levels rather than two that agree by
+        // accident.
+        let demoted = under_demoted_root(&path, demoted_top_level);
         let title = title_of(&ranking, child);
         if !is_container(child) {
-            page.items
-                .push(item(label, path, child, ItemKind::Scalar, 0, title));
+            page.items.push(item(
+                label,
+                path,
+                child,
+                ItemKind::Scalar,
+                0,
+                title,
+                demoted,
+            ));
         } else if uniform.unwrap_or(true) && inlines(child) {
             let count = child_count(child);
             page.items.push(item(
@@ -405,10 +490,18 @@ pub fn build_page(root: &Value, focus: &[Seg], hidden_top_level: &HashSet<String
                 ItemKind::GroupHeader { count },
                 0,
                 title,
+                demoted,
             ));
             for (sub_label, sub_path, sub) in children_of(child, &path) {
-                page.items
-                    .push(item(sub_label, sub_path, sub, ItemKind::Scalar, 1, None));
+                page.items.push(item(
+                    sub_label,
+                    sub_path,
+                    sub,
+                    ItemKind::Scalar,
+                    1,
+                    None,
+                    demoted,
+                ));
             }
         } else {
             let count = child_count(child);
@@ -419,10 +512,23 @@ pub fn build_page(root: &Value, focus: &[Seg], hidden_top_level: &HashSet<String
                 ItemKind::Drill { count },
                 0,
                 title,
+                demoted,
             ));
         }
     }
     page
+}
+
+/// Whether `path` descends from a demoted top-level key.
+///
+/// The same root-scoped shape as
+/// [`Model::is_derived`](crate::Model::is_derived): only the first segment is
+/// consulted, and only when it is a key. A sequence at the root has no name to
+/// demote by, and a nested `id` under some other key is a user's own field that
+/// happens to share a managed key's spelling — neither is what the embedder
+/// named.
+fn under_demoted_root(path: &[Seg], demoted_top_level: &HashSet<String>) -> bool {
+    matches!(path.first(), Some(Seg::Key(k)) if demoted_top_level.contains(k))
 }
 
 /// The title of the container `focus` names, when it is a sequence item — the
@@ -444,6 +550,7 @@ fn item(
     kind: ItemKind,
     inset: usize,
     title: Option<String>,
+    demoted: bool,
 ) -> PageItem {
     PageItem {
         path,
@@ -453,6 +560,7 @@ fn item(
         kind,
         inset,
         title,
+        demoted,
         summary: is_container(v).then(|| flow(v, SUMMARY_BUDGET)).flatten(),
     }
 }
@@ -514,7 +622,12 @@ timeout = 30.5
     }
 
     fn page_of(root: &Value, focus: &[Seg]) -> Page {
-        build_page(root, focus, &HashSet::new())
+        build_page(root, focus, &HashSet::new(), &HashSet::new())
+    }
+
+    fn demoting(root: &Value, focus: &[Seg], demoted: &[&str]) -> Page {
+        let set: HashSet<String> = demoted.iter().map(|s| s.to_string()).collect();
+        build_page(root, focus, &HashSet::new(), &set)
     }
 
     fn key(k: &str) -> Seg {
@@ -646,7 +759,7 @@ timeout = 30.5
             Format::Json,
         );
         let hidden = HashSet::from(["id".to_string()]);
-        let rooted = build_page(&root, &[], &hidden);
+        let rooted = build_page(&root, &[], &hidden, &HashSet::new());
         assert_eq!(
             shape(&rooted),
             vec![
@@ -657,7 +770,7 @@ timeout = 30.5
         );
         // The nested `id` shares the name and is untouched — the group inlined
         // into the root page still carries it.
-        let inner = build_page(&root, &[key("inner")], &hidden);
+        let inner = build_page(&root, &[key("inner")], &hidden, &HashSet::new());
         assert_eq!(
             shape(&inner),
             vec![("id".into(), 0, "scalar"), ("keep".into(), 0, "scalar")]
@@ -890,6 +1003,115 @@ timeout = 30.5
         assert!(limits.is_container());
         assert!(!limits.is_drill());
         assert!(!page.has_drills());
+    }
+
+    #[test]
+    fn a_demoted_key_is_marked_but_still_listed_in_document_order() {
+        let root = sample();
+        let page = demoting(&root, &[], &["version"]);
+        // Demotion is not hiding: the row is still there, still where the
+        // document put it. Only `demoted` moved.
+        assert_eq!(
+            shape(&page)
+                .iter()
+                .map(|(l, _, _)| l.as_str())
+                .collect::<Vec<_>>(),
+            ["title", "version", "enabled", "server"]
+        );
+        let demoted: Vec<&str> = page
+            .items
+            .iter()
+            .filter(|i| i.demoted)
+            .map(|i| i.label.as_str())
+            .collect();
+        assert_eq!(demoted, ["version"]);
+    }
+
+    #[test]
+    fn partitioning_folds_the_demoted_run_to_the_end_and_keeps_both_orders() {
+        let root = sample();
+        let page = demoting(&root, &[], &["title", "server"]);
+        let (primary, advanced) = page.partitioned();
+        assert_eq!(
+            primary.iter().map(|i| i.label.as_str()).collect::<Vec<_>>(),
+            ["version", "enabled"]
+        );
+        assert_eq!(
+            advanced
+                .iter()
+                .map(|i| i.label.as_str())
+                .collect::<Vec<_>>(),
+            ["title", "server"]
+        );
+    }
+
+    #[test]
+    fn demotion_covers_the_whole_subtree_so_drilling_in_stays_demoted() {
+        let root = sample();
+        // The row on the root's page.
+        let at_root = demoting(&root, &[], &["server"]);
+        assert!(
+            at_root
+                .items
+                .iter()
+                .find(|i| i.label == "server")
+                .unwrap()
+                .demoted
+        );
+
+        // The page that row opens, and everything on it — including the members
+        // of a group inlined into it, which are two segments deeper still.
+        let inside = demoting(&root, &[key("server")], &["server"]);
+        assert!(inside.demoted);
+        assert!(inside.items.iter().all(|i| i.demoted));
+        assert!(inside.items.iter().any(|i| i.inset == 1));
+
+        let deeper = demoting(&root, &[key("server"), key("limits")], &["server"]);
+        assert!(deeper.demoted);
+        assert!(deeper.items.iter().all(|i| i.demoted));
+    }
+
+    #[test]
+    fn demotion_is_root_scoped_so_a_nested_key_of_the_same_name_is_untouched() {
+        // `host` is demoted at the root; the `host` *inside* `server` is a
+        // different field that happens to share a spelling.
+        let root = value_of(
+            r#"{"host": "managed", "server": {"host": "localhost", "port": 8080}}"#,
+            Format::Json,
+        );
+        let page = demoting(&root, &[], &["host"]);
+        assert!(
+            page.items
+                .iter()
+                .find(|i| i.label == "host")
+                .unwrap()
+                .demoted
+        );
+        assert!(
+            !page
+                .items
+                .iter()
+                .find(|i| i.label == "server")
+                .unwrap()
+                .demoted
+        );
+
+        let inside = demoting(&root, &[key("server")], &["host"]);
+        assert!(!inside.demoted);
+        assert!(inside.items.iter().all(|i| !i.demoted));
+    }
+
+    #[test]
+    fn a_group_header_and_its_inlined_members_never_land_on_opposite_sides() {
+        let root = sample();
+        let page = demoting(&root, &[key("server")], &["server"]);
+        let (primary, advanced) = page.partitioned();
+        // Both the header and the members inlined under it are in the same run,
+        // so the fold cannot cut the group in half.
+        assert!(primary.is_empty());
+        let labels: Vec<&str> = advanced.iter().map(|i| i.label.as_str()).collect();
+        let header = labels.iter().position(|l| *l == "limits").expect("limits");
+        assert_eq!(&labels[header..], ["limits", "max_connections", "timeout"]);
     }
 
     #[test]

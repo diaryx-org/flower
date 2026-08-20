@@ -636,7 +636,11 @@ impl<B: Backend> Model<B> {
         if !item.is_drill() {
             return None;
         }
-        Some(self.page_at(&item.path))
+        // The page it would *open*, which for a compressed row is the far end of
+        // the chain — previewing the single-row page in between would put the
+        // pane's whole purpose (showing what you are about to open) to work
+        // showing the name you are pointing at.
+        Some(self.page_at(&item.descend_to))
     }
 
     /// `j` in the page view.
@@ -679,7 +683,11 @@ impl<B: Backend> Model<B> {
             }
             return;
         }
-        let target = item.path.clone();
+        // `descend_to`, not `path`: a compressed row names a chain of containers
+        // that hold only each other, and opening it lands on the far end — the
+        // first page with more on it than the name you just tapped. They are the
+        // same path for every other row.
+        let target = item.descend_to.clone();
         self.page_memory
             .insert(self.focus.clone(), self.page_selected);
         self.focus = target;
@@ -2009,6 +2017,58 @@ b = 2
     }
 
     #[test]
+    fn opening_a_compressed_row_lands_past_the_pages_that_say_nothing() {
+        let backend = FigBackend::open(
+            br#"{"exports": {"journal": {"label": "x", "gate": {"f": 1}}}, "z": 1}"#,
+            Format::Json,
+        )
+        .expect("open");
+        let mut model = Model::new(backend).expect("model");
+        model.set_view(ViewMode::Pages);
+
+        model.page_enter();
+        // One step, two levels: the `exports` page held nothing but `journal`.
+        assert_eq!(model.focus(), &[key("exports"), key("journal")]);
+        assert_eq!(
+            model.page().breadcrumb("‹document›"),
+            "exports › journal",
+            "the trail still shows what was skipped"
+        );
+
+        // Backing out is granular, so the level the row compressed past is still
+        // a page you can stand on — and `journal` is still a row there, with
+        // every op that takes one.
+        model.page_back();
+        assert_eq!(model.focus(), &[key("exports")]);
+        assert_eq!(
+            model.page_item().map(|i| i.label.clone()),
+            Some("journal".into())
+        );
+        assert!(model.page_item().unwrap().can_rename());
+
+        model.page_back();
+        assert!(model.focus().is_empty());
+    }
+
+    #[test]
+    fn a_compressed_row_still_answers_ops_as_its_outermost_node() {
+        let backend = FigBackend::open(
+            br#"{"exports": {"journal": {"label": "x", "gate": {"f": 1}}}, "z": 1}"#,
+            Format::Json,
+        )
+        .expect("open");
+        let mut model = Model::new(backend).expect("model");
+        model.set_view(ViewMode::Pages);
+
+        // Deleting a row reading `exports › journal` takes the whole chain, so
+        // no empty `exports: {}` is left behind to delete separately.
+        model.delete_selected();
+        assert!(!model.source_snapshot().contains("exports"));
+        assert!(!model.source_snapshot().contains("journal"));
+        assert!(model.source_snapshot().contains('z'));
+    }
+
+    #[test]
     fn backing_out_past_the_root_is_inert() {
         let mut model = paged_model();
         model.page_back();
@@ -2018,8 +2078,10 @@ b = 2
 
     #[test]
     fn the_two_panes_are_consecutive_levels_of_one_lineage() {
+        // Every level here holds two things, so no row compresses and each
+        // `page_enter` moves exactly one level — which is what this is about.
         let backend = FigBackend::open(
-            br#"{"jobs": {"plan": {"steps": {"a": 1, "b": {"c": 2}}}}}"#,
+            br#"{"jobs": {"plan": {"steps": {"a": 1, "b": {"c": 2}}, "id": 3}, "name": "x"}}"#,
             Format::Json,
         )
         .expect("open");

@@ -36,6 +36,31 @@
 //! own path, so it stays selectable, deletable, and openable as a page like any
 //! other container.
 //!
+//! ## Compression
+//!
+//! Inlining handles a container too *small* to deserve a page. The opposite
+//! shape needs handling too: a container whose single child is a map, which
+//! cannot inline (it is not all scalars) and so earns a page — with one row on
+//! it, naming the thing you just tapped.
+//!
+//! The rule that rejects a page for a group header rejects this one for the same
+//! reason: a container is worth a page when the page tells you something, and a
+//! page listing one drill row does not. So such a row **compresses**: `exports`
+//! holding only `journal` renders as one row reading `exports › journal`, and
+//! opening it lands on `journal`'s page. The chain is followed as far as it goes
+//! ([`PageItem::descend_to`]), through sequence indices as well as keys.
+//!
+//! It is one row, but it is not a new kind of node. Its
+//! [`path`](PageItem::path) is still the outermost container, so every op takes
+//! it unchanged and none of them needed a special case — deleting a row that
+//! reads `exports › journal` removes the whole chain, which is what it says it
+//! is, and leaves no empty `exports` behind. Only opening reads `descend_to`.
+//!
+//! Backing out stays granular: [`Model::page_back`](crate::Model::page_back)
+//! pops one level, so the page a row compressed past is still somewhere you can
+//! stand, and the container it named is still a row there with every op that
+//! implies. Compression makes a page cheaper to reach, never unreachable.
+//!
 //! ## Demotion
 //!
 //! Inlining decides how much room a field gets; **demotion** decides how far up
@@ -108,6 +133,20 @@ pub struct PageItem {
     /// It never replaces [`label`](Self::label): the index is what the path is
     /// addressed by and what a reorder moves, so a frontend shows both.
     pub title: Option<String>,
+    /// Where opening this row lands, when the pages between here and there would
+    /// each list nothing but the next step down.
+    ///
+    /// Equal to [`path`](Self::path) for almost every row. It differs for a
+    /// **compressed** drill — `exports › journal`, one row standing for a chain
+    /// of containers that hold only each other — where it is the deepest of
+    /// them, the first one whose page has something to say.
+    ///
+    /// [`path`](Self::path) stays the outermost node, so every op still takes it
+    /// unchanged and none of them needed a special case: deleting the row
+    /// removes the whole chain (which is what deleting something called
+    /// `exports › journal` should do, and leaves no empty husk behind), and
+    /// renaming it renames `exports`. Only *opening* looks here.
+    pub descend_to: Vec<Seg>,
     /// Whether this item belongs *below* the fields a reader came here to edit
     /// — a page's own "advanced" section, in the sense a settings menu means it.
     ///
@@ -167,6 +206,25 @@ impl PageItem {
     /// op that actually refuses.
     pub fn can_rename(&self) -> bool {
         matches!(self.path.last(), Some(Seg::Key(_)))
+    }
+
+    /// Whether this row stands for a chain of containers rather than for one
+    /// ([`descend_to`](Self::descend_to)).
+    pub fn is_compressed(&self) -> bool {
+        self.descend_to.len() > self.path.len()
+    }
+
+    /// The names this row shows, outermost first — `["exports", "journal"]` for a
+    /// compressed drill, and just the label for every other row. A frontend joins
+    /// them with whatever separator its breadcrumb uses.
+    pub fn chain_labels(&self) -> Vec<String> {
+        std::iter::once(self.label.clone())
+            .chain(
+                self.descend_to[self.path.len().min(self.descend_to.len())..]
+                    .iter()
+                    .map(seg_label),
+            )
+            .collect()
     }
 }
 
@@ -504,19 +562,66 @@ pub fn build_page(
                 ));
             }
         } else {
-            let count = child_count(child);
-            page.items.push(item(
+            // A drill row stands for everything between here and the first page
+            // that has something to say: `exports` holding only `journal` is one
+            // row reading `exports › journal`, not two taps through a page whose
+            // whole content is a name you just tapped. The row is described by
+            // what it lands on — its count, its summary, its kind — while its
+            // path stays the outermost node, so every op still takes it
+            // unchanged.
+            let (descend_to, deep) = compress(&path, child);
+            let count = child_count(deep);
+            let mut row = item(
                 label,
                 path,
-                child,
+                deep,
                 ItemKind::Drill { count },
                 0,
                 title,
                 demoted,
-            ));
+            );
+            row.descend_to = descend_to;
+            page.items.push(row);
         }
     }
     page
+}
+
+/// The one child `v` holds, when `v` holds exactly one and that child would be a
+/// drill row on `v`'s own page.
+///
+/// The test for "opening this would show me a page with one row on it". A
+/// container with one child that *inlines* fails it: that page lists a group
+/// header and its members, which is several rows and a real answer to what is
+/// in there. So does a container with one scalar child, for the same reason.
+///
+/// A sequence is included. Its lone item is a drill by the uniformity rule
+/// (nothing to be uniform with, and it does not inline), and `audiences › [0]`
+/// is exactly as uninformative a page as the mapping case.
+fn lone_drill_child(v: &Value) -> Option<(Seg, &Value)> {
+    let (seg, child) = match v {
+        Value::Map(entries) if entries.len() == 1 => {
+            let (k, c) = entries.iter().next()?;
+            (Seg::Key(key_to_string(k)), c)
+        }
+        Value::Seq(items) if items.len() == 1 => (Seg::Index(0), items.first()?),
+        _ => return None,
+    };
+    (is_container(child) && !inlines(child)).then_some((seg, child))
+}
+
+/// Follow [`lone_drill_child`] as far as it goes, from the container at `base`.
+///
+/// Returns where opening `v` should land and what is actually there. Terminates
+/// because every step is strictly deeper into a finite document.
+fn compress<'v>(base: &[Seg], v: &'v Value) -> (Vec<Seg>, &'v Value) {
+    let mut descend_to = base.to_vec();
+    let mut deep = v;
+    while let Some((seg, next)) = lone_drill_child(deep) {
+        descend_to.push(seg);
+        deep = next;
+    }
+    (descend_to, deep)
 }
 
 /// Whether `path` descends from a demoted top-level key.
@@ -552,8 +657,10 @@ fn item(
     title: Option<String>,
     demoted: bool,
 ) -> PageItem {
+    let descend_to = path.clone();
     PageItem {
         path,
+        descend_to,
         label,
         vkind: VKind::of(v),
         preview: preview(v),
@@ -1112,6 +1219,77 @@ timeout = 30.5
         let labels: Vec<&str> = advanced.iter().map(|i| i.label.as_str()).collect();
         let header = labels.iter().position(|l| *l == "limits").expect("limits");
         assert_eq!(&labels[header..], ["limits", "max_connections", "timeout"]);
+    }
+
+    /// The shape that prompted compression: a category holding one export, which
+    /// holds a map, so it cannot inline and earns a page with one row on it.
+    const LONE: &str = r#"{
+      "exports": {"journal": {"label": "Public Journal",
+                              "gate": {"field": "audience", "value": "public"}}},
+      "diaryx": {"publish": {"audiences": [{"name": "public", "gates": []}]}},
+      "plain": {"a": 1, "b": 2}
+    }"#;
+
+    #[test]
+    fn a_row_whose_page_would_hold_only_it_names_the_chain_instead() {
+        let root = value_of(LONE, Format::Json);
+        let page = page_of(&root, &[]);
+        let exports = &page.items[0];
+
+        assert!(exports.is_compressed());
+        assert_eq!(exports.chain_labels(), ["exports", "journal"]);
+        // Described by what it lands on: `journal`'s two fields, not `exports`'
+        // one.
+        assert!(matches!(exports.kind, ItemKind::Drill { count: 2 }));
+        assert_eq!(exports.descend_to, vec![key("exports"), key("journal")]);
+        // The path is still the outermost node, so every op takes it unchanged.
+        assert_eq!(exports.path, vec![key("exports")]);
+    }
+
+    #[test]
+    fn compression_follows_the_chain_as_far_as_it_goes_including_a_lone_seq_item() {
+        let root = value_of(LONE, Format::Json);
+        let diaryx = &page_of(&root, &[])
+            .items
+            .iter()
+            .find(|i| i.label == "diaryx")
+            .expect("diaryx")
+            .clone();
+        // diaryx → publish → audiences → [0], and only then a page with two
+        // things on it.
+        assert_eq!(
+            diaryx.chain_labels(),
+            ["diaryx", "publish", "audiences", "[0]"]
+        );
+        assert!(matches!(diaryx.kind, ItemKind::Drill { count: 2 }));
+    }
+
+    #[test]
+    fn a_page_with_something_to_say_is_never_compressed_past() {
+        let root = value_of(LONE, Format::Json);
+        let page = page_of(&root, &[]);
+        let plain = page.items.iter().find(|i| i.label == "plain").unwrap();
+        // `plain` holds two scalars, so it inlines — nothing to compress, and
+        // the group header is not a drill at all.
+        assert!(!plain.is_compressed());
+        assert_eq!(plain.chain_labels(), ["plain"]);
+        assert_eq!(plain.descend_to, plain.path);
+
+        // A lone *scalar* child is a real answer too: its page shows a value.
+        let root = value_of(r#"{"outer": {"only": 1}}"#, Format::Json);
+        let outer = &page_of(&root, &[]).items[0];
+        assert!(!outer.is_compressed());
+    }
+
+    #[test]
+    fn an_uncompressed_row_descends_to_where_it_already_points() {
+        let root = sample();
+        for focus in [vec![], vec![key("server")]] {
+            for item in &page_of(&root, &focus).items {
+                assert_eq!(item.descend_to, item.path, "{}", item.label);
+                assert_eq!(item.chain_labels(), std::slice::from_ref(&item.label));
+            }
+        }
     }
 
     #[test]

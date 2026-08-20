@@ -184,6 +184,17 @@ pub struct PageItemView {
     pub inset: u32,
     /// Whether this is a mapping entry (its key can be renamed).
     pub can_rename: bool,
+    /// The names this row shows, outermost first. One element for an ordinary
+    /// row; several for a **compressed** drill — `["exports", "journal"]`, one
+    /// row standing for a chain of containers that hold only each other, because
+    /// the pages in between would each list nothing but the next name down.
+    /// Join with the same separator the breadcrumb uses. `label` is the first
+    /// element, and stays what the document calls this entry.
+    ///
+    /// Opening it is unchanged: pass `id` to `pageOpen` and it lands at the far
+    /// end of the chain. Every other op takes `id` too, and acts on the
+    /// outermost node — so deleting this row deletes the whole chain.
+    pub chain: Vec<String>,
     /// Whether this item belongs below the fields a reader came to edit — a
     /// key the embedder demoted, or anything under one. A host folds these into
     /// an "advanced" disclosure; the run of them is already contiguous at the
@@ -885,6 +896,7 @@ pub fn item_view_of(item: &PageItem) -> PageItemView {
         summary: item.summary.clone(),
         count: count as u32,
         inset: item.inset as u32,
+        chain: item.chain_labels(),
         can_rename: item.can_rename(),
         demoted: item.demoted,
     }
@@ -1221,9 +1233,34 @@ jobs:
         )
         .unwrap();
         let v = d.show_pages();
+        let on = item(&v.page, "on");
+        // `on` holds only `push`, so the row names the chain and describes what
+        // opening it lands on rather than the level it starts at.
+        assert_eq!(on.chain, ["on", "push"]);
+        assert_eq!(on.summary.as_deref(), Some("{branches: [master]}"));
+        // The id is still the outermost node, and that is what every op takes.
+        assert_eq!(on.id, "on");
+    }
+
+    #[test]
+    fn opening_a_compressed_row_lands_at_the_far_end_of_the_chain() {
+        let d = FlowerDoc::new(
+            "[on.push]\nbranches = [\"master\"]\ntags = [\"v*\"]\n".to_string(),
+            "toml".to_string(),
+            Vec::new(),
+        )
+        .unwrap();
+        d.show_pages();
+        let v = d.page_open("on".to_string());
+        // One crossing, two levels — and the breadcrumb still shows both.
+        assert_eq!(v.page.focus, "on.push");
         assert_eq!(
-            item(&v.page, "on").summary.as_deref(),
-            Some("{push: {branches: [master]}}")
+            v.page
+                .crumbs
+                .iter()
+                .map(|c| c.label.as_str())
+                .collect::<Vec<_>>(),
+            ["on", "push"]
         );
     }
 

@@ -125,6 +125,18 @@ impl PageItem {
     pub fn is_scalar(&self) -> bool {
         matches!(self.kind, ItemKind::Scalar)
     }
+
+    /// Whether this item's *label* can be changed — true for a mapping entry,
+    /// false for a sequence item.
+    ///
+    /// A sequence item's label is its index: it is the position, not a name, so
+    /// there is nothing to rename and the only thing that moves it is a reorder.
+    /// The inference is one line, which is exactly why it belongs here — every
+    /// frontend that redid it would be one edit away from disagreeing with the
+    /// op that actually refuses.
+    pub fn can_rename(&self) -> bool {
+        matches!(self.path.last(), Some(Seg::Key(_)))
+    }
 }
 
 /// One container's children, ready to render.
@@ -878,5 +890,14 @@ timeout = 30.5
         assert!(limits.is_container());
         assert!(!limits.is_drill());
         assert!(!page.has_drills());
+    }
+
+    #[test]
+    fn only_a_mapping_entry_can_be_renamed() {
+        let root = sample();
+        let page = page_of(&root, &[key("server"), key("tags")]);
+        // A sequence item's label is its index — a position, not a name.
+        assert!(page.items.iter().all(|i| !i.can_rename()));
+        assert!(page_of(&root, &[]).items.iter().all(|i| i.can_rename()));
     }
 }

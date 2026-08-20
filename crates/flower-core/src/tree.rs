@@ -134,6 +134,14 @@ impl Row {
     pub fn is_scalar(&self) -> bool {
         !self.is_container()
     }
+
+    /// Whether this row's *label* can be changed — true for a mapping entry,
+    /// false for a sequence item, whose label is its index. The peer of
+    /// [`PageItem::can_rename`](crate::PageItem::can_rename), so the two
+    /// projections answer it the same way.
+    pub fn can_rename(&self) -> bool {
+        matches!(self.path.last(), Some(Seg::Key(_)))
+    }
 }
 
 /// Render a mapping key `Value` as a display string.

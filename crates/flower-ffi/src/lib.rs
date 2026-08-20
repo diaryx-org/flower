@@ -42,17 +42,39 @@
 //! document and the same path-addressed edits; switching carries the cursor
 //! across, so they are two ways of looking at one position.
 //!
+//! ## Two audiences: the handle, and the projection
+//!
+//! [`FlowerDoc`] is a UniFFI *object*, and a UniFFI object cannot be generic —
+//! so it is nailed to a [`FigBackend`]: a fig editor over a blob of config
+//! bytes, which is exactly what the SwiftUI app wants and nothing more.
+//!
+//! The projection is the other half, and it has no such constraint. [`view_of`],
+//! [`pages_of`], [`path_for_id`] and the records they build are generic over
+//! [`Backend`], so an embedder with a backend of its own — a prov document's
+//! embedded metadata, say, where a commit restamps a hash and reconciles with a
+//! body editor — takes a `Model<ItsOwnBackend>` and gets the same flat frame the
+//! Swift app renders, to feed its own bindings.
+//!
+//! That is why this crate is published rather than internal. The alternative is
+//! every embedder reimplementing `pages_of` against a projection it can see but
+//! not call, which is how two copies of one rule end up disagreeing about which
+//! pane holds the cursor. Reuse the projection; bring your own handle.
+//!
 //! ## Threading
 //!
 //! A UniFFI object is handed to Swift as a reference-counted handle whose methods
 //! take `&self`, so the [`Model`] lives behind a [`Mutex`]. Every call locks,
 //! edits or reads, and returns a fresh [`DocView`]. Drive it from the main thread.
+//!
+//! The threading is the *handle's*, not the projection's: [`view_of`] and
+//! [`pages_of`] take a plain `&Model` and lock nothing, so an embedder that
+//! already owns its model's synchronisation does not inherit a second mutex.
 
 use std::sync::{Arc, Mutex};
 
 use fig::{Format, Value};
 use flower_core::page::{self, Page, PageItem};
-use flower_core::{FigBackend, ItemKind, Model, Seg, VKind, ViewMode};
+use flower_core::{Backend, FigBackend, ItemKind, Model, Seg, VKind, ViewMode};
 
 uniffi::setup_scaffolding!();
 
@@ -162,6 +184,11 @@ pub struct PageItemView {
     pub inset: u32,
     /// Whether this is a mapping entry (its key can be renamed).
     pub can_rename: bool,
+    /// Whether this item belongs below the fields a reader came to edit — a
+    /// key the embedder demoted, or anything under one. A host folds these into
+    /// an "advanced" disclosure; the run of them is already contiguous at the
+    /// end of a partition, and never cuts an inlined group in half.
+    pub demoted: bool,
 }
 
 /// A step of a page's breadcrumb: the container it names, and the id to open it.
@@ -184,6 +211,10 @@ pub struct PageView {
     /// The selected item, or `None` for a pane that doesn't hold the cursor — a
     /// preview, or the parent pane when what it marks is the page you opened.
     pub selected: Option<u32>,
+    /// Whether this whole pane sits under a demoted key — the page you reached
+    /// by opening a demoted row. Lets a host keep the framing once you are
+    /// inside, rather than having a section stop applying one level in.
+    pub demoted: bool,
 }
 
 /// A whole rendered frame of the page view: the pane you are on, the pane it came
@@ -550,6 +581,10 @@ impl FlowerDoc {
                 crumbs: Vec::new(),
                 items: Vec::new(),
                 selected: None,
+                // An id that names nothing is not under anything, demoted or
+                // otherwise. Claiming "advanced" for a page with no contents
+                // would put a fold around an empty list.
+                demoted: false,
             };
         };
         let selected = (path == m.focus()).then(|| m.page_selected());
@@ -686,7 +721,7 @@ impl FlowerDoc {
 /// cursor was on. Every index-taking method establishes its selection here, so
 /// this is the one place that has to say so — the page methods say the same thing
 /// the other way round.
-fn select_index(model: &mut Model<FigBackend>, index: u32) {
+pub fn select_index<B: Backend>(model: &mut Model<B>, index: u32) {
     model.set_view(ViewMode::Tree);
     if model.rows.is_empty() {
         model.selected = 0;
@@ -715,7 +750,11 @@ fn parse_format(name: &str) -> Result<Format, FlowerError> {
 
 /// Snapshot the model as a [`DocView`] — the one place core's row list crosses
 /// into the view shape.
-fn view_of(model: &Model<FigBackend>) -> DocView {
+///
+/// Generic over the backend, though [`FlowerDoc`] only ever calls it with
+/// [`FigBackend`]: see the crate docs on why the projection is reusable and the
+/// handle is not.
+pub fn view_of<B: Backend>(model: &Model<B>) -> DocView {
     let rows = model
         .rows
         .iter()
@@ -727,7 +766,7 @@ fn view_of(model: &Model<FigBackend>) -> DocView {
             preview: r.preview.clone(),
             is_container: r.is_container(),
             expanded: r.expanded,
-            can_rename: matches!(r.path.last(), Some(Seg::Key(_))),
+            can_rename: r.can_rename(),
         })
         .collect();
 
@@ -742,7 +781,7 @@ fn view_of(model: &Model<FigBackend>) -> DocView {
 }
 
 /// The renderer class id for a value kind — kept in sync with the Swift theme.
-fn kind_name(k: VKind) -> &'static str {
+pub fn kind_name(k: VKind) -> &'static str {
     match k {
         VKind::Null => "null",
         VKind::Bool => "bool",
@@ -757,7 +796,7 @@ fn kind_name(k: VKind) -> &'static str {
 
 /// A stable dotted-path identity for a row: `server.limits.port`, `tags.0`, or
 /// `""` for the document root. Unique among visible rows.
-fn path_id(path: &[Seg]) -> String {
+pub fn path_id(path: &[Seg]) -> String {
     let mut s = String::new();
     for seg in path {
         if !s.is_empty() {
@@ -779,7 +818,7 @@ fn path_id(path: &[Seg]) -> String {
 /// follows from the model: the page you are on always has it; the pane you came
 /// out of marks the row you opened, which is a trace and not a selection; a peek
 /// is a preview of something not yet opened, so it has none at all.
-fn pages_of(model: &Model<FigBackend>) -> PagesView {
+pub fn pages_of<B: Backend>(model: &Model<B>) -> PagesView {
     let page = page_view_of(model.page(), Some(model.page_selected()));
     let parent = (!model.focus().is_empty()).then(|| {
         let parent = model.parent_page();
@@ -799,12 +838,13 @@ fn pages_of(model: &Model<FigBackend>) -> PagesView {
     }
 }
 
-fn page_view_of(page: &Page, selected: Option<usize>) -> PageView {
+pub fn page_view_of(page: &Page, selected: Option<usize>) -> PageView {
     PageView {
         focus: path_id(&page.focus),
         crumbs: crumbs_of(page),
         items: page.items.iter().map(item_view_of).collect(),
         selected: selected.map(|i| i as u32),
+        demoted: page.demoted,
     }
 }
 
@@ -814,7 +854,7 @@ fn page_view_of(page: &Page, selected: Option<usize>) -> PageView {
 /// reads as what it is rather than as `[2]` — the same substitution
 /// `Page::breadcrumb` makes, and the same name the row carried on the page you
 /// opened it from.
-fn crumbs_of(page: &Page) -> Vec<CrumbView> {
+pub fn crumbs_of(page: &Page) -> Vec<CrumbView> {
     let last = page.focus.len().saturating_sub(1);
     page.focus
         .iter()
@@ -829,7 +869,7 @@ fn crumbs_of(page: &Page) -> Vec<CrumbView> {
         .collect()
 }
 
-fn item_view_of(item: &PageItem) -> PageItemView {
+pub fn item_view_of(item: &PageItem) -> PageItemView {
     let (role, count) = match item.kind {
         ItemKind::Scalar => ("scalar", 0),
         ItemKind::Drill { count } => ("drill", count),
@@ -845,7 +885,8 @@ fn item_view_of(item: &PageItem) -> PageItemView {
         summary: item.summary.clone(),
         count: count as u32,
         inset: item.inset as u32,
-        can_rename: matches!(item.path.last(), Some(Seg::Key(_))),
+        can_rename: item.can_rename(),
+        demoted: item.demoted,
     }
 }
 
@@ -857,7 +898,7 @@ fn item_view_of(item: &PageItem) -> PageItemView {
 /// path is a display form, not a parseable one. Every id a frontend can hold came
 /// from one of these panes, so the lookup is total for anything it can send. The
 /// empty id is the document root, which no item names.
-fn path_for_id(model: &Model<FigBackend>, id: &str) -> Option<Vec<Seg>> {
+pub fn path_for_id<B: Backend>(model: &Model<B>, id: &str) -> Option<Vec<Seg>> {
     if id.is_empty() {
         return Some(Vec::new());
     }

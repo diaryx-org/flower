@@ -963,11 +963,18 @@ mod tests {
                 && m.name == "flower-core"
                 && m.publishable)
         );
+        // The binding crate publishes too: its view projection is generic over
+        // the backend, so an embedder with its own needs to depend on it.
         assert!(
             found
                 .iter()
-                .any(|m| m.name == "flower-ffi" && !m.publishable),
-            "flower-ffi is publish = false",
+                .any(|m| m.name == "flower-ffi" && m.publishable),
+        );
+        assert!(
+            found
+                .iter()
+                .any(|m| m.name == "flower-ratatui" && !m.publishable),
+            "flower-ratatui is publish = false",
         );
         assert!(found.iter().any(|m| m.name == "xtask" && !m.publishable));
         assert!(found.len() >= 5, "the array spans several lines");

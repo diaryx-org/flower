@@ -29,6 +29,8 @@ Early prototype. Working today:
   always the page the right came out of — and one when there isn't. Depth costs a
   page rather than a column, so a deeply nested document stays as legible as a
   shallow one.
+- Sink the fields nobody types in (a recomputed hash, a relation another pane
+  owns) below the ones they do, subtree and all, without hiding them.
 - Edit a scalar in place (typed: `true`/`42`/`3.14`/`null`/text) — committed via
   `fig::Editor::replace_value`, so the splice is lossless and validated.
 - Delete a mapping entry or sequence item.
@@ -128,10 +130,15 @@ cargo run -- path/to/config.toml          # the TUI
 apps/flower-editor/bootstrap.sh           # generate the Swift binding + Xcode project
 ```
 
-`flower-ffi` builds today for the `aarch64-apple-darwin` slice (fig-sys ships a
-prebuilt macOS-arm64 static lib); the other Apple slices (macOS-x64, iOS,
-iOS-sim) build fig from source via Zig cross-compiling and are the next step for
-a distributable `FlowerFFI.xcframework`.
+The editor runs today on macOS and on the iOS simulator: Xcode's build phase
+compiles the `flower-ffi` staticlib for whichever slice it is building, so the
+simulator gets one from source via Zig cross-compiling rather than from the
+prebuilt macOS-arm64 lib fig-sys ships.
+
+`scripts/build-xcframework.sh` has not caught up — it still assembles one slice
+(`aarch64-apple-darwin`), so a *distributable* `FlowerFFI.xcframework` covering
+macOS-x64 and a real device is the step that remains. Running from a checkout
+does not need it.
 
 - **`crates/flower-core`** — the frontend-neutral model. Depends only on `fig`
   and `std`.
@@ -145,7 +152,11 @@ a distributable `FlowerFFI.xcframework`.
     items render alike (a list where some rows are expanded and others collapsed
     reads as a fault), and are titled by whichever of their fields best names
     them — `title_keys` scores coverage, distinctness, and convention, so a
-    workflow's steps list as `actions/checkout@v7` rather than as `[0]`.
+    workflow's steps list as `actions/checkout@v7` rather than as `[0]`. An
+    embedder can **demote** top-level keys (`Model::set_demoted`) so the fields
+    nothing hand-edits — a recomputed hash, a relation the sidebar owns — render
+    below the ones a reader came for; the mark covers the whole subtree, so
+    opening a demoted container stays inside the section.
   - `model.rs` — `Model`: owns the `fig::Editor` (source of truth), the derived
     `Value`/rows, selection, and the edit ops. Constructed from bytes; the
     embedder owns the file.
@@ -196,8 +207,10 @@ app-specific bridge lives in provui, not here — flower doesn't depend on prov.
 - **Schema layer**: the big one — fig has none, so a "what keys/values are valid
   here" layer is ours to add; unlocks completion, typed widgets, validation. It
   also supersedes the page view's structural guesses — inline-vs-drill, and which
-  field titles a sequence item — with declared group titles, ordering, and an
-  "advanced" rank. The same renderer, curated.
+  field titles a sequence item — with declared group titles and ordering. The
+  same renderer, curated. The "advanced" rank is the piece that has landed: it is
+  a set of keys the embedder names, and a schema would be where a document
+  declares its own instead.
 - **Stable identity for a sequence item**: a path addresses one by index, so
   reordering or deleting an earlier sibling silently re-points every id after it.
   Core re-finds the *cursor* across an edit, but a breadcrumb and a navigation
@@ -230,7 +243,9 @@ The Swift half needs macOS and Xcode, so it is run by hand:
 `scripts/test-swift.sh` runs its tests, and `scripts/build-xcframework.sh`
 produces the distributable framework.
 
-`flower-core` is the only crate on crates.io; `flower-ratatui`, `flower-tui`, and
-`flower-ffi` are `publish = false` and move with the same version number. See
+`flower-core` and `flower-ffi` are on crates.io — the binding crate because its
+view projection is generic over the `Backend`, so an embedder with its own can
+render a `Model` without reimplementing it. `flower-ratatui` and `flower-tui` are
+`publish = false` and move with the same version number. See
 [docs/releasing.md](docs/releasing.md) for how a release is cut and
 [docs/CHANGELOG.md](docs/CHANGELOG.md) for what has changed.

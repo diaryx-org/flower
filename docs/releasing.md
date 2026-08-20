@@ -13,19 +13,32 @@ do on its own.
 
 ## What goes to crates.io
 
-`flower-core` — the frontend-neutral structural editing model — and nothing
-else. `flower-ratatui`, `flower-tui`, and `flower-ffi` are `publish = false`:
+Two crates:
+
+- **`flower-core`** — the frontend-neutral structural editing model.
+- **`flower-ffi`** — the UniFFI binding. It is a staticlib for the Swift app,
+  but it is also a Rust API: [`view_of`]/[`pages_of`]/[`path_for_id`] and the
+  flat view records they build are generic over the `Backend`, and an embedder
+  with a backend of its own (a prov document's embedded metadata, say) needs
+  them. A UniFFI *object* cannot be generic, so the `FlowerDoc` handle stays
+  nailed to `FigBackend` — the projection is the reusable half, and the reason
+  this crate is on the registry. `leaf-ffi` is published for the same reason.
+
+`flower-ratatui` and `flower-tui` are `publish = false`:
 
 - **`flower-ratatui`** is a widget pinned to one ratatui minor whose only
   consumer is `flower-tui` in this repo.
 - **`flower-tui`** is the prototype binary; run it from a checkout
   (`cargo run -p flower-tui -- path/to/config.toml`).
-- **`flower-ffi`** is a UniFFI staticlib for the Swift app, not a Rust API.
 
 They still move with the workspace version, and still appear in the changelog —
 publishing is the only thing they are out of. To publish one, delete its
 `publish = false`: `cargo xtask publish` derives the list and the order from the
 manifests, so nothing else needs editing.
+
+**`flower-core` 0.1.0 is already on crates.io**, published by hand on
+2026-08-17 with no matching tag. It cannot be reused; releases start at 0.2.0,
+which is also where `flower-ffi` first uploads.
 
 ## What a tag starts
 

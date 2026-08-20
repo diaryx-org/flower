@@ -119,7 +119,7 @@ fn draw_tree<B: Backend>(f: &mut Frame, model: &Model<B>, area: Rect) {
         })
         .collect();
 
-    render_list(f, items, Some(model.selected), area);
+    render_list(f, items, Some(model.selected()), area);
 }
 
 // ── the page projection ──────────────────────────────────────────────────────

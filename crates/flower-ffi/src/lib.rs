@@ -382,7 +382,7 @@ impl FlowerDoc {
     pub fn toggle(&self, index: u32) -> DocView {
         let mut m = self.lock();
         select_index(&mut m, index);
-        if m.rows.get(m.selected).is_some_and(|r| r.is_container()) {
+        if m.rows.get(m.selected()).is_some_and(|r| r.is_container()) {
             m.activate();
         }
         view_of(&m)
@@ -398,7 +398,7 @@ impl FlowerDoc {
     pub fn set_value(&self, index: u32, text: String) -> DocView {
         let mut m = self.lock();
         select_index(&mut m, index);
-        if let Some(row) = m.rows.get(m.selected) {
+        if let Some(row) = m.rows.get(m.selected()) {
             if row.is_scalar() {
                 let path = row.path.clone();
                 m.set_scalar_text(&path, &text);
@@ -426,7 +426,7 @@ impl FlowerDoc {
     pub fn insert_key(&self, index: u32, key: String, text: String) -> DocView {
         let mut m = self.lock();
         select_index(&mut m, index);
-        match m.rows.get(m.selected).map(|r| (r.vkind, r.path.clone())) {
+        match m.rows.get(m.selected()).map(|r| (r.vkind, r.path.clone())) {
             Some((VKind::Map, path)) => m.insert_key_text(&path, &key, &text),
             Some(_) => m.set_status("select a mapping to add a key"),
             None => {}
@@ -440,7 +440,7 @@ impl FlowerDoc {
     pub fn append_item(&self, index: u32, text: String) -> DocView {
         let mut m = self.lock();
         select_index(&mut m, index);
-        match m.rows.get(m.selected).map(|r| (r.vkind, r.path.clone())) {
+        match m.rows.get(m.selected()).map(|r| (r.vkind, r.path.clone())) {
             Some((VKind::Seq, path)) => m.append_item_text(&path, &text),
             Some(_) => m.set_status("select a sequence to add an item"),
             None => {}
@@ -497,7 +497,7 @@ impl FlowerDoc {
     pub fn rename_key(&self, index: u32, new_key: String) -> DocView {
         let mut m = self.lock();
         select_index(&mut m, index);
-        if let Some(path) = m.rows.get(m.selected).map(|r| r.path.clone()) {
+        if let Some(path) = m.rows.get(m.selected()).map(|r| r.path.clone()) {
             m.rename_key(&path, &new_key);
         }
         view_of(&m)
@@ -733,12 +733,7 @@ impl FlowerDoc {
 /// this is the one place that has to say so — the page methods say the same thing
 /// the other way round.
 pub fn select_index<B: Backend>(model: &mut Model<B>, index: u32) {
-    model.set_view(ViewMode::Tree);
-    if model.rows.is_empty() {
-        model.selected = 0;
-        return;
-    }
-    model.selected = (index as usize).min(model.rows.len() - 1);
+    model.select_row(index as usize);
 }
 
 /// Map a format name (the file extension, lowercased) onto a `fig::Format`.
@@ -783,7 +778,7 @@ pub fn view_of<B: Backend>(model: &Model<B>) -> DocView {
 
     DocView {
         rows,
-        selected: model.selected as u32,
+        selected: model.selected() as u32,
         dirty: model.dirty,
         status: model.status.clone(),
         root_kind: model.root_kind().to_string(),

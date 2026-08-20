@@ -86,7 +86,14 @@ pub struct Model<B> {
     /// model behaves exactly as before.
     schema: Option<Schema>,
 
-    pub selected: usize,
+    /// The selected row of the **tree** projection — an index into
+    /// [`rows`](Self::rows), and meaningless against a page.
+    ///
+    /// Private, and the one piece of cursor state that is. A row index only says
+    /// what it means in the projection it was read from, and a public field
+    /// cannot check which projection a caller is in — so writing it goes through
+    /// [`select_row`](Self::select_row), which can.
+    selected: usize,
     pub mode: Mode,
     pub status: String,
     pub dirty: bool,
@@ -443,18 +450,56 @@ impl<B: Backend> Model<B> {
 
     // ── navigation ────────────────────────────────────────────────────────────
 
+    /// The selected row of the tree projection — an index into
+    /// [`rows`](Self::rows).
+    pub fn selected(&self) -> usize {
+        self.selected
+    }
+
+    /// Put the tree cursor on `index`, clamped to the row list.
+    ///
+    /// **Switches to the tree projection first**, and that is the point of the
+    /// method rather than a side effect. A row index is a coordinate in the row
+    /// list a caller last rendered; it names nothing on a page. A host driving
+    /// both surfaces — a metadata pane beside a settings page — would otherwise
+    /// hand a row index to a model still standing in the page projection, where
+    /// the very next [`delete_selected`](Self::delete_selected) reads the *page*
+    /// cursor and quietly removes a different node.
+    ///
+    /// So the vocabularies assert. Every method that establishes a cursor names
+    /// the projection its coordinates belong to ([`page_enter`](Self::page_enter)
+    /// and the rest do the same for pages), and the methods that merely *read* a
+    /// cursor stay neutral — a delete deletes what is selected, in whichever view
+    /// the user is actually looking at.
+    ///
+    /// A no-op when the model is already in the tree.
+    pub fn select_row(&mut self, index: usize) {
+        self.set_view(ViewMode::Tree);
+        self.selected = if self.rows.is_empty() {
+            0
+        } else {
+            index.min(self.rows.len() - 1)
+        };
+    }
+
     pub fn move_down(&mut self) {
+        // Tree vocabulary: assert the projection these coordinates belong to.
+        self.set_view(ViewMode::Tree);
         if self.selected + 1 < self.rows.len() {
             self.selected += 1;
         }
     }
 
     pub fn move_up(&mut self) {
+        // Tree vocabulary: assert the projection these coordinates belong to.
+        self.set_view(ViewMode::Tree);
         self.selected = self.selected.saturating_sub(1);
     }
 
     /// `l`: expand a collapsed container, else step into its first child.
     pub fn expand_or_enter(&mut self) {
+        // Tree vocabulary: assert the projection these coordinates belong to.
+        self.set_view(ViewMode::Tree);
         let Some(row) = self.selected_row() else {
             return;
         };
@@ -474,6 +519,8 @@ impl<B: Backend> Model<B> {
 
     /// `h`: collapse an expanded container, else step out to the parent row.
     pub fn collapse_or_leave(&mut self) {
+        // Tree vocabulary: assert the projection these coordinates belong to.
+        self.set_view(ViewMode::Tree);
         let Some(row) = self.selected_row() else {
             return;
         };
@@ -593,6 +640,10 @@ impl<B: Backend> Model<B> {
     /// inlining means), and also on the group's own page, which is a place page
     /// navigation would never have left you. A path that doesn't resolve is inert.
     pub fn focus_on(&mut self, path: &[Seg]) {
+        // Page vocabulary, like the rest. Re-entrant from `set_view`, which calls
+        // this to carry the cursor across — but by then `view` is already
+        // `Pages`, so the call below returns immediately rather than recursing.
+        self.set_view(ViewMode::Pages);
         if tree::value_at(&self.value, path).is_none() {
             return;
         }
@@ -645,6 +696,8 @@ impl<B: Backend> Model<B> {
 
     /// `j` in the page view.
     pub fn page_move_down(&mut self) {
+        // Page vocabulary: assert the projection this cursor belongs to.
+        self.set_view(ViewMode::Pages);
         if self.page_selected + 1 < self.page.items.len() {
             self.page_selected += 1;
         }
@@ -652,6 +705,8 @@ impl<B: Backend> Model<B> {
 
     /// `k` in the page view.
     pub fn page_move_up(&mut self) {
+        // Page vocabulary: assert the projection this cursor belongs to.
+        self.set_view(ViewMode::Pages);
         self.page_selected = self.page_selected.saturating_sub(1);
     }
 
@@ -664,6 +719,8 @@ impl<B: Backend> Model<B> {
     /// container that is visible but cannot be entered is a worse surprise than a
     /// page that repeats what you could already see.
     pub fn page_enter(&mut self) {
+        // Page vocabulary: assert the projection this cursor belongs to.
+        self.set_view(ViewMode::Pages);
         let Some(item) = self.page_item() else {
             return;
         };
@@ -698,6 +755,8 @@ impl<B: Backend> Model<B> {
     /// `h`/`Esc` in the page view: pop back to the parent page, restoring the
     /// cursor to the container you came out of.
     pub fn page_back(&mut self) {
+        // Page vocabulary: assert the projection this cursor belongs to.
+        self.set_view(ViewMode::Pages);
         if self.focus.is_empty() {
             self.status = "already at the top".to_string();
             return;
@@ -2066,6 +2125,67 @@ b = 2
         assert!(!model.source_snapshot().contains("exports"));
         assert!(!model.source_snapshot().contains("journal"));
         assert!(model.source_snapshot().contains('z'));
+    }
+
+    /// A host driving both surfaces — a metadata pane beside a settings page —
+    /// hands a *row* index to a model left standing in the page projection. The
+    /// index means nothing there, and before `select_row` asserted the tree the
+    /// delete that followed read the page cursor and removed a different node.
+    #[test]
+    fn a_row_index_deletes_the_row_it_names_even_from_the_page_projection() {
+        let backend = FigBackend::open(
+            br#"{"alpha": 1, "beta": 2, "gamma": {"inner": 3}}"#,
+            Format::Json,
+        )
+        .expect("open");
+        let mut model = Model::new(backend).expect("model");
+
+        // Go and stand somewhere in the page projection, with its cursor on a
+        // different node than the row index below names.
+        model.set_view(ViewMode::Pages);
+        model.page_move_down();
+        assert_eq!(
+            model.page_item().map(|i| i.label.clone()),
+            Some("beta".into())
+        );
+
+        // Now the other surface speaks, in its own coordinates, without first
+        // announcing a switch.
+        model.select_row(0);
+        model.delete_selected();
+
+        assert!(
+            !model.source_snapshot().contains("alpha"),
+            "row 0 was `alpha`"
+        );
+        assert!(
+            model.source_snapshot().contains("beta"),
+            "the page cursor was not the target"
+        );
+    }
+
+    /// The mirror: page vocabulary asserts pages, so a page op after tree work
+    /// acts on the page cursor rather than on whatever row was last selected.
+    #[test]
+    fn a_page_op_acts_on_the_page_cursor_even_from_the_tree_projection() {
+        // `gamma` holds a container *and* a scalar, so it neither inlines into
+        // the root page nor compresses into a chain — it is a plain drill row.
+        let backend = FigBackend::open(
+            br#"{"alpha": 1, "beta": 2, "gamma": {"inner": {"deep": 3}, "flag": true}}"#,
+            Format::Json,
+        )
+        .expect("open");
+        let mut model = Model::new(backend).expect("model");
+
+        model.select_row(0);
+        assert_eq!(model.view(), ViewMode::Tree);
+
+        // `page_enter` is page vocabulary; it must not be read against the tree.
+        model.page_move_down();
+        model.page_move_down();
+        model.page_enter();
+        assert_eq!(model.view(), ViewMode::Pages);
+        assert_eq!(model.focus(), &[key("gamma")]);
     }
 
     #[test]

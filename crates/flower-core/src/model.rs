@@ -386,12 +386,20 @@ impl<B: Backend> Model<B> {
         self.parent_page = if self.focus.is_empty() {
             Page::default()
         } else {
-            page::build_page(
-                &self.value,
-                &self.focus[..self.focus.len() - 1],
-                &self.hidden,
-                &self.demoted,
-            )
+            // The pane you came out of is the pane you *actually* came out of.
+            //
+            // One level out is the wrong answer once a row can compress: opening
+            // `exports › journal` skips the `exports` page precisely because it
+            // holds nothing but that one row, and drawing it on the left would
+            // spend half a wide layout on the page the compression existed to
+            // spare you. So walk out past every level a row compressed past, and
+            // stop at the page that actually lists the row that was tapped.
+            let mut parent = &self.focus[..self.focus.len() - 1];
+            while !parent.is_empty() && page::is_compressed_past(&self.value, parent, &self.hidden)
+            {
+                parent = &parent[..parent.len() - 1];
+            }
+            page::build_page(&self.value, parent, &self.hidden, &self.demoted)
         };
         if self.page_selected >= self.page.items.len() {
             self.page_selected = self.page.items.len().saturating_sub(1);
@@ -2107,6 +2115,39 @@ b = 2
 
         model.page_back();
         assert!(model.focus().is_empty());
+    }
+
+    #[test]
+    fn the_left_pane_is_the_page_that_listed_the_row_not_the_level_above() {
+        let backend = FigBackend::open(
+            br#"{"exports": {"journal": {"label": "x", "gate": {"f": 1}}}, "z": 1}"#,
+            Format::Json,
+        )
+        .expect("open");
+        let mut model = Model::new(backend).expect("model");
+        model.set_view(ViewMode::Pages);
+        model.page_enter();
+        assert_eq!(model.focus(), &[key("exports"), key("journal")]);
+
+        // One level out is `exports`, whose page holds nothing but the row that
+        // was tapped — the page the compression exists to skip. The left pane
+        // walks past it to the page that actually listed the row.
+        assert!(
+            model.parent_page().focus.is_empty(),
+            "the root, not `exports`"
+        );
+        // And it can still mark what was opened: the compressed row answers for
+        // its whole chain.
+        let marked = model
+            .parent_page()
+            .position_of(model.focus())
+            .expect("marked");
+        assert_eq!(model.parent_page().items[marked].label, "exports");
+
+        // Backing out is still granular, so `exports` remains a page you can
+        // stand on — it is skipped as a *pane*, not made unreachable.
+        model.page_back();
+        assert_eq!(model.focus(), &[key("exports")]);
     }
 
     #[test]

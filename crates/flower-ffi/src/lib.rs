@@ -1238,6 +1238,34 @@ jobs:
     }
 
     #[test]
+    fn the_parent_pane_skips_the_page_the_compression_skipped() {
+        let d = FlowerDoc::new(
+            "[on.push]\nbranches = [\"master\"]\ntags = [\"v*\"]\n\n[other]\nx = 1\n".to_string(),
+            "toml".to_string(),
+            Vec::new(),
+        )
+        .unwrap();
+        d.show_pages();
+        let v = d.page_open("on".to_string());
+        let parent = v.parent.expect("a left pane");
+        // Not `on` — that page holds only the row just tapped, and a wide layout
+        // would spend half its width redrawing it.
+        assert_eq!(parent.focus, "");
+        // `other` holds one scalar, so it inlines as a group header plus its
+        // member — the root page, in full, which is what a left pane is for.
+        assert_eq!(
+            parent
+                .items
+                .iter()
+                .map(|i| i.id.as_str())
+                .collect::<Vec<_>>(),
+            ["on", "other", "other.x"]
+        );
+        // The row that was opened is still the one marked.
+        assert_eq!(parent.selected, Some(0));
+    }
+
+    #[test]
     fn opening_a_compressed_row_lands_at_the_far_end_of_the_chain() {
         let d = FlowerDoc::new(
             "[on.push]\nbranches = [\"master\"]\ntags = [\"v*\"]\n".to_string(),

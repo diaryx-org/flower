@@ -253,8 +253,17 @@ impl Page {
     }
 
     /// Where `path` sits in this page, if it is on it.
+    ///
+    /// A compressed row answers for its whole chain: both the node it *is*
+    /// (`exports`) and the node it *opens* (`exports.journal`) find it, because
+    /// every caller is asking the same question — which row here corresponds to
+    /// that node — and for a chain the answer is the one row standing for all of
+    /// it. Identical to matching on the path alone for any row that is not
+    /// compressed, where the two are the same.
     pub fn position_of(&self, path: &[Seg]) -> Option<usize> {
-        self.items.iter().position(|i| i.path == path)
+        self.items
+            .iter()
+            .position(|i| i.path == path || i.descend_to == path)
     }
 
     /// Whether any item on this page opens a page of its own.
@@ -622,6 +631,17 @@ fn compress<'v>(base: &[Seg], v: &'v Value) -> (Vec<Seg>, &'v Value) {
         deep = next;
     }
     (descend_to, deep)
+}
+
+/// Whether the page listing `focus` is one a row compressed past: it holds
+/// exactly one item, and that item opens a page of its own.
+///
+/// The same condition [`compress`] walks, asked from the other end. A frontend
+/// that skipped this level going in should not be handed it coming out — see
+/// [`Model::parent_page`](crate::Model::parent_page).
+pub fn is_compressed_past(root: &Value, focus: &[Seg], hidden: &HashSet<String>) -> bool {
+    let page = build_page(root, focus, hidden, &HashSet::new());
+    page.items.len() == 1 && page.items[0].is_drill()
 }
 
 /// Whether `path` descends from a demoted top-level key.

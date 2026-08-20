@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
 #
-# Type-check the FlowerUI renderer against the real generated FlowerFFI binding,
+# Type-check the Swift renderers against the real generated FlowerFFI binding,
 # without an Xcode project — the Swift peer of `cargo check`. Builds the host
 # dylib, generates the UniFFI Swift, emits a FlowerFFI .swiftmodule, then
-# `-typecheck`s packages/flower-swift/Sources/FlowerUI against it. macOS only.
+# `-typecheck`s the two source targets against it. macOS only.
+#
+# FlowerPagesUI is checked *first and alone*, with neither the binding nor its
+# headers on the search path. That ordering is the test: the page editor is
+# meant to have no FFI dependency, and the only way to keep it that way is to
+# compile it somewhere an FFI import would not resolve.
 #
 # Usage: scripts/check-swift.sh
 set -euo pipefail
@@ -35,6 +40,13 @@ swiftc -emit-module -module-name FlowerFFI \
   -sdk "$SDK" -target "$TARGET" \
   -I "$WORK/headers" -Xcc -fmodule-map-file="$WORK/headers/module.modulemap"
 
+echo "▸ Type-checking FlowerPagesUI (no binding in scope)…"
+swiftc -emit-module -module-name FlowerPagesUI \
+  -emit-module-path "$WORK/FlowerPagesUI.swiftmodule" \
+  "$ROOT"/packages/flower-swift/Sources/FlowerPagesUI/*.swift \
+  -sdk "$SDK" -target "$TARGET"
+echo "  ✓ FFI-free"
+
 echo "▸ Type-checking FlowerUI (macOS)…"
 swiftc -typecheck -module-name FlowerUI \
   "$ROOT"/packages/flower-swift/Sources/FlowerUI/*.swift \
@@ -43,4 +55,4 @@ swiftc -typecheck -module-name FlowerUI \
   -I "$WORK/headers" -Xcc -fmodule-map-file="$WORK/headers/module.modulemap"
 echo "  ✓ macOS"
 
-echo "✓ FlowerUI type-checks against the generated FlowerFFI binding."
+echo "✓ Both targets type-check, and the page editor does so without a binding."

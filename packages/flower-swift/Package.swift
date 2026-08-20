@@ -23,7 +23,12 @@ let package = Package(
         // The low-level binding: `FlowerDoc` + the `DocView`/`RowView` value types.
         .library(name: "FlowerFFI", targets: ["FlowerFFI"]),
         // The SwiftUI tree editor built on it: `FlowerEditor` + `FlowerModel`.
+        // Re-exports FlowerPagesUI, so one `import FlowerUI` still gets both.
         .library(name: "FlowerUI", targets: ["FlowerUI"]),
+        // The page editor, with no binding behind it: `FlowerPages` and the
+        // protocols it renders. A host with its own UniFFI records conforms them
+        // and links this alone — no second staticlib, no second namespace.
+        .library(name: "FlowerPagesUI", targets: ["FlowerPagesUI"]),
     ],
     targets: [
         // The C ABI as a clang module (`import flower_ffiFFI`). No library to link
@@ -36,18 +41,31 @@ let package = Package(
             dependencies: ["flower_ffiFFI"],
             path: "generated/Sources/FlowerFFI"
         ),
-        // The reusable SwiftUI editor surface (committed source).
+        // The page editor and the presentation vocabulary both surfaces share.
+        // **No FFI dependency**, by design: it is written against the protocols
+        // in PageProtocols.swift, which this package's generated records satisfy
+        // as they are and another host's records satisfy with an extension.
+        .target(
+            name: "FlowerPagesUI",
+            path: "Sources/FlowerPagesUI"
+        ),
+        // The reusable SwiftUI editor surface (committed source): the tree
+        // editor, the model, and the conformances that let the page editor
+        // render this package's records.
         .target(
             name: "FlowerUI",
-            dependencies: ["FlowerFFI"],
+            dependencies: ["FlowerFFI", "FlowerPagesUI"],
             path: "Sources/FlowerUI"
         ),
         // Renderer unit tests. They build `RowView`/`DocView` fixtures in pure
         // Swift, but the module still references the FFI symbols, so the test
         // binary must link the staticlib — `scripts/test-swift.sh` force-loads it.
+        // `FlowerPagesUI` is named directly, not leaned on transitively:
+        // ForeignHostTests.swift renders the page editor over records of its own
+        // with no binding in sight, which is the test that the split is real.
         .testTarget(
             name: "FlowerUITests",
-            dependencies: ["FlowerUI"],
+            dependencies: ["FlowerUI", "FlowerPagesUI"],
             path: "Tests/FlowerUITests"
         ),
     ]

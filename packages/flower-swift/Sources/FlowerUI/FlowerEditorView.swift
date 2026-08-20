@@ -35,20 +35,6 @@ public enum FlowerProjection {
     case pages
 }
 
-/// Which way the last page navigation went, for a frontend that animates along
-/// it: a `push` went one level deeper, a `pop` came one level out, and a `jump`
-/// is everything else — a sibling opened from the pane beside you, a breadcrumb
-/// tapped several levels up, a cursor carried in from the tree.
-///
-/// It is decided where the move happens rather than by the view comparing frames,
-/// so the direction and the frame it describes arrive in the same update. A view
-/// that worked it out afterwards would animate each navigation the way the *last*
-/// one went.
-public enum PageMove {
-    case push
-    case pop
-    case jump
-}
 
 /// The observable owner of a document. Hold it with `@StateObject`; render its
 /// `state.rows` and call the command methods from taps, buttons, or keys.

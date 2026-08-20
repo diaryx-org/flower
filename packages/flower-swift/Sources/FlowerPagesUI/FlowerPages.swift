@@ -48,12 +48,16 @@
 //  direction checks it has something to say before saying it, which is what stops
 //  the two chasing each other.
 
-import SwiftUI
-import FlowerFFI
+//  ## Written against protocols, not records
+//
+//  Nothing here imports a binding. The views take whatever satisfies
+//  `PageDriving` and `PageItemDisplaying` (PageProtocols.swift), which the
+//  generated `FlowerDoc` records do as they are and a second host's records do
+//  with an empty extension. That is the Swift echo of what flower-core already
+//  does in Rust, where the projection is generic over the backend and only the
+//  UniFFI handle is not.
 
-// A `PageItemView` is identified by its dotted fig path, like every other node
-// flower names, so it can key a `ForEach` directly.
-extension PageItemView: @retroactive Identifiable {}
+import SwiftUI
 
 /// Below this the two panes leave neither one usable, so the page view collapses
 /// to a single column — the same interaction with one pane instead of two.
@@ -68,8 +72,13 @@ private let twoPaneMinWidth: CGFloat = 620
 /// `rootLabel` names the document root in the breadcrumb. flower-core has no name
 /// for it — the document is bytes the host opened — so the host supplies one; the
 /// TUI calls it `‹document›`.
-public struct FlowerPages: View {
-    @ObservedObject private var model: FlowerModel
+public struct FlowerPages<Model: PageDriving>: View {
+    /// The panes and rows are written in terms of these rather than of the
+    /// deeply-nested associated types they unwrap to.
+    public typealias Page = Model.Pages.Page
+    public typealias Item = Page.Item
+
+    @ObservedObject private var model: Model
     private let theme: FlowerTheme
     private let rootLabel: String
 
@@ -79,7 +88,7 @@ public struct FlowerPages: View {
     @State private var path: [String] = []
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-    public init(model: FlowerModel, theme: FlowerTheme = .default, rootLabel: String = "Document") {
+    public init(model: Model, theme: FlowerTheme = .default, rootLabel: String = "Document") {
         self.model = model
         self.theme = theme
         self.rootLabel = rootLabel
@@ -120,7 +129,7 @@ public struct FlowerPages: View {
     /// rather than a content swap, and stacked rather than laid out side by side:
     /// mid-transition both pages exist, and in an `HStack` that would briefly make
     /// four columns out of two.
-    private func sliding(_ page: PageView, role: PaneRole) -> some View {
+    private func sliding(_ page: Page, role: PaneRole) -> some View {
         ZStack {
             PagePane(page: page, model: model, theme: theme,
                      rootLabel: rootLabel, role: role)
@@ -184,7 +193,7 @@ public struct FlowerPages: View {
 
     /// The left pane: the page the current one was opened from, or — at the root,
     /// which has no parent — the root page itself.
-    private var left: PageView {
+    private var left: Page {
         model.pages.parent ?? model.pages.page
     }
 
@@ -267,9 +276,11 @@ private enum PaneRole {
 }
 
 /// One page: its items as a card of settings rows.
-private struct PagePane: View {
-    let page: PageView
-    @ObservedObject var model: FlowerModel
+private struct PagePane<Model: PageDriving>: View {
+    typealias Page = Model.Pages.Page
+
+    let page: Page
+    @ObservedObject var model: Model
     let theme: FlowerTheme
     let rootLabel: String
     let role: PaneRole
@@ -343,8 +354,8 @@ private struct PagePane: View {
 /// The header of a container inlined into this page: a caption over the members
 /// listed under it. No chevron, though it names a container — its members are
 /// already on screen, which is the whole point of inlining them.
-private struct GroupHeaderRow: View {
-    let item: PageItemView
+private struct GroupHeaderRow<Item: PageItemDisplaying>: View {
+    let item: Item
     let first: Bool
 
     var body: some View {
@@ -374,9 +385,11 @@ private struct GroupHeaderRow: View {
 /// affordance flushed right — because that is what makes a page scannable: the
 /// names form one column and the values another, instead of a ragged `key = value`
 /// edge that moves with every key length.
-private struct PageRow: View {
-    let item: PageItemView
-    @ObservedObject var model: FlowerModel
+private struct PageRow<Model: PageDriving>: View {
+    typealias Item = Model.Pages.Page.Item
+
+    let item: Item
+    @ObservedObject var model: Model
     let theme: FlowerTheme
     let selected: Bool
     let role: PaneRole
@@ -510,9 +523,11 @@ private struct PageRow: View {
 /// The per-row menu. Every operation takes a path, and a group header still
 /// carries one, so a group inlined into this page is as operable as a row that
 /// opens its own — inlining is a presentation default, never a cage.
-private struct PageRowMenu: View {
-    let item: PageItemView
-    @ObservedObject var model: FlowerModel
+private struct PageRowMenu<Model: PageDriving>: View {
+    typealias Item = Model.Pages.Page.Item
+
+    let item: Item
+    @ObservedObject var model: Model
 
     var body: some View {
         if item.role == "scalar" {

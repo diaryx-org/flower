@@ -81,7 +81,7 @@ fig (Zig) → fig-sys (FFI, libfig.a) → fig crate (Editor/Document/Value)
          (ratatui widget)        (UniFFI C-ABI binding)      (app: file I/O + loop)
                                           │
                               packages/flower-swift
-                          (FlowerFFI + FlowerUI, SwiftUI)
+                     (FlowerFFI + FlowerUI + FlowerPagesUI)
                                           │
                                apps/flower-editor
                              (macOS/iOS example app)
@@ -95,7 +95,7 @@ fig (Zig) → fig-sys (FFI, libfig.a) → fig crate (Editor/Document/Value)
 | widget | [`crates/flower-ratatui`](crates/flower-ratatui) | a `draw(frame, &Model, header)` ratatui widget. |
 | binding | [`crates/flower-ffi`](crates/flower-ffi) | the **UniFFI C-ABI binding** — wraps the filesystem-free `Model` so a native Apple app can drive it. The native-Apple peer of the ratatui widget. |
 | app | [`crates/flower-tui`](crates/flower-tui) | the terminal app (binary `flower`) — file I/O + event loop. |
-| Swift SDK | [`packages/flower-swift`](packages/flower-swift) | the Swift Package — `FlowerUI`, the SwiftUI editor surfaces (`FlowerEditor`, the settings list; `FlowerPages`, the page view) over the UniFFI `flower-ffi` binding. |
+| Swift SDK | [`packages/flower-swift`](packages/flower-swift) | the Swift Package. `FlowerPagesUI` is the page view (`FlowerPages`) written against protocols, with **no binding behind it**; `FlowerUI` is the settings-list view (`FlowerEditor`) plus `FlowerModel` over the UniFFI `flower-ffi` binding, and the conformances that let the page view render its records. `import FlowerUI` re-exports both. |
 | Swift app | [`apps/flower-editor`](apps/flower-editor) | the cross-platform (macOS + iOS) SwiftUI example, consuming `packages/flower-swift`. |
 
 The Swift frontend keeps the same contract as the TUI: **core owns the model**
@@ -239,9 +239,11 @@ runs, in the same order, and `cargo xtask <job>` runs one.
 | `msrv` | a build on `workspace.package.rust-version` (1.88) |
 
 The Swift half needs macOS and Xcode, so it is run by hand:
-`scripts/check-swift.sh` type-checks `FlowerUI` against the generated binding,
-`scripts/test-swift.sh` runs its tests, and `scripts/build-xcframework.sh`
-produces the distributable framework.
+`scripts/check-swift.sh` type-checks both Swift targets, `scripts/test-swift.sh`
+runs their tests, and `scripts/build-xcframework.sh` produces the distributable
+framework. The check compiles `FlowerPagesUI` first and alone, with no binding on
+the search path: the only way to keep a target FFI-free is to compile it
+somewhere an FFI import would not resolve.
 
 `flower-core` and `flower-ffi` are on crates.io — the binding crate because its
 view projection is generic over the `Backend`, so an embedder with its own can

@@ -66,6 +66,18 @@ public protocol PageDriving: ObservableObject {
 
     /// Commit a boolean immediately — a switch has no separate confirm.
     func setBool(_ item: Pages.Page.Item, _ value: Bool)
+
+    /// Commit a term picked from a controlled vocabulary
+    /// (``PageItemDisplaying/enumOptions``), immediately.
+    ///
+    /// Separate from ``beginEdit(_:)``/``commitEdit()`` for the same reason
+    /// ``setBool(_:_:)`` is: those two exist to hold a *half-typed* value
+    /// somewhere that is not the document, because a key being typed one
+    /// character at a time is not a key. Choosing from a list has no half-typed
+    /// state to hold — the value is legal the instant it is chosen — so routing
+    /// it through the edit buffer would add a confirm step to an interaction
+    /// that has already confirmed itself.
+    func setChoice(_ item: Pages.Page.Item, _ value: String)
     func delete(_ item: Pages.Page.Item)
 
     /// Whether `item` can take a new child (it is a container).

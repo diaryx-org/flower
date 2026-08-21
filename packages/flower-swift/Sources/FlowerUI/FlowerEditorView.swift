@@ -352,6 +352,21 @@ public final class FlowerModel: ObservableObject {
         apply(doc.pageSetValue(id: item.id, text: value ? "true" : "false"))
     }
 
+    /// Commit a term chosen from a controlled vocabulary.
+    ///
+    /// The same write `setBool` makes, for the same reason: a value picked off a
+    /// list has no half-typed state to hold, so it goes straight to the document
+    /// rather than through the edit buffer.
+    ///
+    /// This binding carries no schema of its own — `PageItemView` has no
+    /// vocabulary to offer — so nothing here reaches it yet. It exists because
+    /// the intent belongs to the protocol rather than to the host that first
+    /// needed it, and a host that *does* resolve a schema drives the same view
+    /// through the same call.
+    public func setChoice(_ item: PageItemView, _ value: String) {
+        apply(doc.pageSetValue(id: item.id, text: value))
+    }
+
     /// Delete the mapping entry or sequence item `item` names.
     public func delete(_ item: PageItemView) {
         if editingId == item.id { editingId = nil }

@@ -3,11 +3,15 @@
 //  The presentation vocabulary both surfaces share: how a key reads as a name,
 //  and which symbol and colour stand for a field.
 //
-//  Pure inference over the two strings core hands a row — its label and its kind
-//  — and no document behind it, which is why it lives in the FFI-free target
-//  alongside the views that use it. Both the tree editor and the page editor
-//  draw the same icon for the same key, and they do it by sharing this rather
-//  than by two tables that agree until one of them is edited.
+//  Two layers, in that order: what a schema *said* about a field, and — when
+//  nothing said anything — what its key and kind suggest. The inference is the
+//  floor rather than the answer, because it has to work on a document nobody
+//  has described; wherever a schema has described one, it wins.
+//
+//  Pure functions over strings, with no document behind them, which is why this
+//  lives in the FFI-free target alongside the views that use it. Both the tree
+//  editor and the page editor draw the same icon for the same field, and they do
+//  it by sharing this rather than by two tables that agree until one is edited.
 
 import SwiftUI
 
@@ -20,19 +24,27 @@ public func prettify(_ key: String) -> String {
 }
 
 /// The colored rounded-square glyph at the head of a row — the device that makes
-/// a form read as "settings". Inferred from the key name, falling back to the
-/// value kind. A schema layer would override these per key.
+/// a form read as "settings".
+///
+/// The schema's `icon` and `tint` when it named them, and the inference from key
+/// name and value kind when it did not. `icon` and `tint` are independent: a
+/// schema can say a field is dangerous without saying what it looks like, and
+/// the inferred symbol then wears the declared colour.
 public struct IconTile: View {
     let label: String
     let kind: String
+    let icon: String?
+    let tint: String?
 
-    public init(label: String, kind: String) {
+    public init(label: String, kind: String, icon: String? = nil, tint: String? = nil) {
         self.label = label
         self.kind = kind
+        self.icon = icon
+        self.tint = tint
     }
 
     public var body: some View {
-        let spec = FlowerPalette.icon(label: label, kind: kind)
+        let spec = FlowerPalette.icon(label: label, kind: kind, icon: icon, tint: tint)
         Image(systemName: spec.symbol)
             .font(.system(size: 13, weight: .medium))
             .foregroundStyle(spec.color)
@@ -46,7 +58,68 @@ public struct IconTile: View {
 public enum FlowerPalette {
     public struct IconSpec { let symbol: String; let color: Color }
 
-    public static func icon(label: String, kind: String) -> IconSpec {
+    /// The symbol and colour a row's tile wears, resolved schema-first.
+    ///
+    /// `icon` and `tint` are what a schema declared, either or both possibly
+    /// absent; `label` and `kind` are what the document itself offers, and are
+    /// always there. Each half falls back independently, so a schema that names
+    /// only one of them is taken at its word about that one instead of being
+    /// ignored for being incomplete.
+    ///
+    /// An unrecognised `icon` name falls back too, rather than rendering as a
+    /// missing glyph: the vocabulary is open (fig-schema's `Icon::Other`), so a
+    /// name this host has never heard of is a schema talking to some other
+    /// frontend, not a schema making a mistake.
+    public static func icon(
+        label: String,
+        kind: String,
+        icon: String? = nil,
+        tint: String? = nil
+    ) -> IconSpec {
+        let inferred = inferredIcon(label: label, kind: kind)
+        return IconSpec(
+            symbol: icon.flatMap(symbol(forSemanticIcon:)) ?? inferred.symbol,
+            color: tint.flatMap(color(forTint:)) ?? inferred.color
+        )
+    }
+
+    /// fig-schema's `Icon` vocabulary in SF Symbols. `nil` for a name outside
+    /// it — including `Icon::Other`, which by construction names a symbol set
+    /// this host may not be.
+    public static func symbol(forSemanticIcon name: String) -> String? {
+        switch name {
+        case "link": return "link"
+        case "enum": return "list.bullet"
+        case "toggle": return "switch.2"
+        case "lock": return "lock.fill"
+        case "globe": return "globe"
+        case "clock": return "clock.fill"
+        case "tag": return "tag.fill"
+        case "text": return "textformat"
+        default: return nil
+        }
+    }
+
+    /// fig-schema's `Tint` vocabulary as theme-adaptive colours. `nil` for a
+    /// name outside it.
+    ///
+    /// `neutral` is deliberately a colour rather than "leave it alone": a schema
+    /// saying a field is unremarkable is saying something, and the row that
+    /// carries it should not end up louder than the one marked `danger`.
+    public static func color(forTint name: String) -> Color? {
+        switch name {
+        case "accent": return .accentColor
+        case "neutral": return .secondary
+        case "positive": return .green
+        case "warning": return .orange
+        case "danger": return .red
+        default: return nil
+        }
+    }
+
+    /// The floor: what a key's name and a value's kind suggest, for a document
+    /// no schema describes.
+    public static func inferredIcon(label: String, kind: String) -> IconSpec {
         let l = label.lowercased()
         func has(_ needles: [String]) -> Bool { needles.contains { l.contains($0) } }
 

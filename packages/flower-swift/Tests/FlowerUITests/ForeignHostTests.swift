@@ -36,6 +36,37 @@ private struct MetaItem: PageItemDisplaying {
     var inset: UInt32 { UInt32(depth) }
 }
 
+/// A second foreign record, this one with a schema behind it — the case
+/// `MetaItem` above deliberately does not cover.
+///
+/// Two records rather than fields added to one, because both halves need
+/// holding: a host with no schema must keep conforming without writing a line
+/// (the defaults), and a host with one must be able to say so without flower's
+/// binding anywhere in reach.
+private struct SchemaItem: PageItemDisplaying {
+    let id: String
+    let label: String
+    var title: String?
+    var kind: String = "str"
+    var role: String = "scalar"
+    var preview: String = ""
+    var summary: String?
+    var count: UInt32 = 0
+    var inset: UInt32 = 0
+    var chain: [String] = []
+    var canRename: Bool = true
+    var demoted: Bool = false
+
+    var enumOptions: [String] = []
+    var isClosedEnum: Bool = false
+    var isReadonly: Bool = false
+
+    var displayTitle: String?
+    var icon: String?
+    var tint: String?
+    var description: String?
+}
+
 private struct MetaCrumb: CrumbDisplaying {
     let id: String
     let label: String
@@ -88,6 +119,7 @@ private final class MetaModel: PageDriving {
     func commitRename() { sent.append("commitRename") }
     func cancelRename() { sent.append("cancelRename") }
     func setBool(_ item: MetaItem, _ value: Bool) { sent.append("bool:\(item.id)=\(value)") }
+    func setChoice(_ item: MetaItem, _ value: String) { sent.append("choice:\(item.id)=\(value)") }
     func delete(_ item: MetaItem) { sent.append("delete:\(item.id)") }
     func canAddChild(_ item: MetaItem) -> Bool { item.role != "scalar" }
     func pageAddChild(id: String) { sent.append("add:\(id)") }
@@ -147,5 +179,127 @@ final class ForeignHostTests: XCTestCase {
         XCTAssertTrue(model.sent.isEmpty)
         model.pageActivate(model.pages.page.items[2])
         XCTAssertEqual(model.sent, ["activate:exports"])
+    }
+
+    // ── the schema half ───────────────────────────────────────────────────────
+
+    /// A host with no schema says nothing and still conforms — which is what
+    /// keeps the addition from being a breaking change to every existing
+    /// embedder. `MetaItem` declares none of the three; the defaults answer.
+    func testAHostWithoutASchemaInheritsTheUnconstrainedRendering() {
+        let item = sample().pages.page.items[1]
+        XCTAssertEqual(item.enumOptions, [])
+        XCTAssertFalse(item.isClosedEnum)
+        XCTAssertFalse(item.isReadonly)
+    }
+
+    /// ...and a host that *has* one is read through the protocol rather than
+    /// through its own type, which is the only version of this that the view
+    /// actually benefits from — `PageRow` sees `some PageItemDisplaying`.
+    func testAHostWithASchemaIsReadThroughTheProtocol() {
+        func vocabulary(of item: some PageItemDisplaying) -> ([String], Bool) {
+            (item.enumOptions, item.isClosedEnum)
+        }
+        let closed = SchemaItem(id: "metadata_format", label: "metadata_format",
+                                preview: "yaml",
+                                enumOptions: ["yaml", "toml", "json"],
+                                isClosedEnum: true)
+        XCTAssertEqual(vocabulary(of: closed).0, ["yaml", "toml", "json"])
+        XCTAssertTrue(vocabulary(of: closed).1)
+
+        // The default is not sticky: a stored property wins over the extension,
+        // even reached generically. This is the assertion that would catch the
+        // dispatch mistake — a requirement declared only in the extension would
+        // bind statically and hand back `[]` here.
+        let none = SchemaItem(id: "title", label: "title", preview: "A Note")
+        XCTAssertEqual(vocabulary(of: none).0, [])
+    }
+
+    /// An open vocabulary is a set of suggestions, not a fence, and the flag is
+    /// the whole of what tells the two apart at the seam.
+    func testAnOpenVocabularyIsDistinguishableFromAClosedOne() {
+        let open = SchemaItem(id: "content_format", label: "content_format",
+                              preview: "markdown",
+                              enumOptions: ["markdown", "html"],
+                              isClosedEnum: false)
+        XCTAssertFalse(open.isClosedEnum)
+        XCTAssertFalse(open.enumOptions.isEmpty)
+    }
+
+    /// Picking a term is its own intent, so a host keeps the same veto over a
+    /// chosen value that it has over a typed one.
+    func testChoosingATermIsSentAsAnIntent() {
+        let model = sample()
+        model.setChoice(model.pages.page.items[1], "private")
+        XCTAssertEqual(model.sent, ["choice:audience=private"])
+    }
+
+    // ── what the schema calls it ──────────────────────────────────────────────
+
+    /// The same bargain the vocabulary half struck: a host that never heard of
+    /// presentation keeps conforming, and gets the inference it always got.
+    func testAHostThatNamesNothingStillConforms() {
+        let item = sample().pages.page.items[0]
+        XCTAssertNil(item.displayTitle)
+        XCTAssertNil(item.icon)
+        XCTAssertNil(item.tint)
+        XCTAssertNil(item.description)
+    }
+
+    /// ...and a host that *has* a schema is read through the protocol, so the
+    /// row renders the declared name rather than a title-cased key.
+    func testASchemasNameAndSymbolCrossTheSeam() {
+        func presentation(of item: some PageItemDisplaying) -> (String?, String?, String?) {
+            (item.displayTitle, item.icon, item.tint)
+        }
+        let spec = SchemaItem(id: "spec", label: "spec", preview: "1",
+                              isReadonly: true,
+                              displayTitle: "Config format version",
+                              icon: "lock",
+                              tint: "neutral")
+        XCTAssertEqual(presentation(of: spec).0, "Config format version")
+        XCTAssertEqual(presentation(of: spec).1, "lock")
+        XCTAssertEqual(presentation(of: spec).2, "neutral")
+
+        // Same dispatch trap as the vocabulary half: a stored property must win
+        // over the extension's default even when reached generically.
+        let plain = SchemaItem(id: "title", label: "title", preview: "A Note")
+        XCTAssertNil(presentation(of: plain).0)
+    }
+
+    // ── the palette resolves schema first, inference second ───────────────────
+
+    /// The point of the whole layer: what a schema said beats what a key looks
+    /// like. `spec` infers nothing in particular; declared, it is a lock.
+    func testADeclaredIconBeatsTheInferenceFromTheKey() {
+        let inferred = FlowerPalette.icon(label: "spec", kind: "int")
+        let declared = FlowerPalette.icon(label: "spec", kind: "int", icon: "lock")
+        XCTAssertEqual(inferred.symbol, FlowerPalette.inferredIcon(label: "spec", kind: "int").symbol)
+        XCTAssertEqual(declared.symbol, FlowerPalette.symbol(forSemanticIcon: "lock"))
+        XCTAssertNotEqual(declared.symbol, inferred.symbol)
+    }
+
+    /// The two halves fall back independently: a schema saying only "this one is
+    /// dangerous" is taken at its word about the colour and left to the
+    /// inference about the symbol, rather than ignored for being incomplete.
+    func testASchemaMaySayTheColourWithoutSayingTheSymbol() {
+        let inferred = FlowerPalette.inferredIcon(label: "recycle_bin", kind: "bool")
+        let tinted = FlowerPalette.icon(label: "recycle_bin", kind: "bool", tint: "danger")
+        XCTAssertEqual(tinted.symbol, inferred.symbol)
+        XCTAssertEqual(tinted.color, FlowerPalette.color(forTint: "danger"))
+        XCTAssertNotEqual(tinted.color, inferred.color)
+    }
+
+    /// An unknown name is a schema talking to some other frontend, not a schema
+    /// making a mistake — so it falls back rather than rendering a hole.
+    func testAnUnknownNameFallsBackInsteadOfDrawingNothing() {
+        XCTAssertNil(FlowerPalette.symbol(forSemanticIcon: "sparkles.rectangle"))
+        XCTAssertNil(FlowerPalette.color(forTint: "chartreuse"))
+
+        let inferred = FlowerPalette.inferredIcon(label: "host", kind: "str")
+        let unknown = FlowerPalette.icon(label: "host", kind: "str",
+                                         icon: "sparkles.rectangle", tint: "chartreuse")
+        XCTAssertEqual(unknown.symbol, inferred.symbol)
+        XCTAssertEqual(unknown.color, inferred.color)
     }
 }

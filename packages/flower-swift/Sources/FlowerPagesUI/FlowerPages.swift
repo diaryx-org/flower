@@ -281,6 +281,7 @@ public struct FlowerPages<Model: PageDriving>: View {
                     .font(.system(size: 12, weight: .semibold))
             }
             .buttonStyle(.plain)
+            .accessibilityLabel("Back")
             .disabled(!model.canPageBack)
             .foregroundStyle(model.canPageBack ? Color.accentColor : Color.secondary.opacity(0.4))
             .padding(.trailing, 4)
@@ -348,6 +349,38 @@ func partitionDemoted<Item: PageItemDisplaying>(
     return (promoted, demoted)
 }
 
+/// What a container's row says about it: its contents when they fit, and a
+/// count when they don't.
+///
+/// `1 field ›` is strictly less than the document says when the field is right
+/// there — the count is the fallback for a container too big to put on a row,
+/// which is the only case where counting beats showing. Core caps the summary
+/// it offers; the row truncates whatever is left over.
+func drillSummary<Item: PageItemDisplaying>(_ item: Item) -> String {
+    if let summary = item.summary { return summary }
+    let n = item.count
+    if item.kind == "seq" { return n == 1 ? "1 item" : "\(n) items" }
+    return n == 1 ? "1 field" : "\(n) fields"
+}
+
+/// What a row announces as its name — the same resolution the drawn name line
+/// makes (schema title, then the prettified key, then the key as the document
+/// spells it), so VoiceOver and the screen agree about what a row is called.
+/// A titled sequence item announces both, index first, like the row shows both.
+func rowAccessibilityLabel<Item: PageItemDisplaying>(_ item: Item) -> String {
+    let own = item.displayTitle ?? (item.canRename ? prettify(item.label) : item.label)
+    guard let title = item.title else { return own }
+    return "\(own), \(title)"
+}
+
+/// ...and as its value: where it goes, what it counts, or what it holds — the
+/// same precedence the trailing edge draws in.
+func rowAccessibilityValue<Item: PageItemDisplaying>(_ item: Item) -> String {
+    if let link = item.linkLabel { return link }
+    if item.role == "drill" { return drillSummary(item) }
+    return item.preview.isEmpty ? "Not set" : item.preview
+}
+
 /// One page: its items as a card of settings rows, with the demoted ones folded
 /// behind an "Advanced" disclosure below it.
 private struct PagePane<Model: PageDriving>: View {
@@ -380,6 +413,7 @@ private struct PagePane<Model: PageDriving>: View {
                         .tracking(0.6)
                         .foregroundStyle(.tertiary)
                         .padding(.leading, 14)
+                        .accessibilityAddTraits(.isHeader)
                 }
                 if page.items.isEmpty {
                     Text("Empty")
@@ -408,16 +442,23 @@ private struct PagePane<Model: PageDriving>: View {
         }
         .opacity(role == .preview ? 0.55 : 1)
         .allowsHitTesting(role.isInteractive)
+        .accessibilityHidden(role == .preview)
     }
 
-    /// Whether the fold is showing: opened by hand, or held open by a cursor,
-    /// edit or rename sitting inside it — a disclosure that could hide the row
-    /// being edited would make the fold a place where state goes to get lost.
+    /// Whether the fold is showing: opened by hand, or held open by what must
+    /// not disappear into it — a disclosure that could hide the row being
+    /// edited would make the fold a place where state goes to get lost.
+    ///
+    /// The cursor is deliberately *not* on that list for the pane being looked
+    /// at: a selection often arrives carried over from another projection (the
+    /// tree's cursor sits on the first row, which is frequently a demoted one),
+    /// and prying the fold open for it would defeat the fold on arrival. On the
+    /// trail pane the marked row is the way back — that one stays visible.
     private func advancedOpen(_ demoted: [(index: Int, item: Page.Item)]) -> Bool {
         advancedOpened || demoted.contains { entry in
-            (page.selected.map { Int($0) == entry.index } ?? false)
-                || model.editingId == entry.item.id
+            model.editingId == entry.item.id
                 || model.renamingId == entry.item.id
+                || (role != .cursor && (page.selected.map { Int($0) == entry.index } ?? false))
         }
     }
 
@@ -448,6 +489,7 @@ private struct PagePane<Model: PageDriving>: View {
         .buttonStyle(.plain)
         .padding(.horizontal, 14)
         .padding(.top, 9)
+        .accessibilityIdentifier("flower-advanced")
         .accessibilityLabel("Advanced")
         .accessibilityValue(open ? "expanded, \(count) fields" : "collapsed, \(count) fields")
     }
@@ -551,6 +593,9 @@ private struct AddChildRow<Model: PageDriving>: View {
         #endif
         .padding(.horizontal, 14)
         .padding(.top, 2)
+        .accessibilityIdentifier("flower-add-field")
+        .accessibilityLabel("Add a Field")
+        .help("Add a field to this page")
     }
 
     /// The offer, presented as the row it would become: the schema's name and
@@ -583,6 +628,9 @@ private struct GroupHeaderRow<Item: PageItemDisplaying>: View {
         .padding(.horizontal, 14)
         .padding(.top, first ? 12 : 16)
         .padding(.bottom, 6)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(name)
+        .accessibilityAddTraits(.isHeader)
     }
 
     private var name: String {
@@ -613,7 +661,50 @@ private struct PageRow<Model: PageDriving>: View {
     private var isRenaming: Bool { model.renamingId == item.id }
     private var isDrill: Bool { item.role == "drill" }
 
-    var body: some View {
+    /// Whether the row's value is an interactive control of its own — a
+    /// toggle, a vocabulary menu, an open editor. Those rows stay AX containers
+    /// so the control keeps its role and its own label; every other row
+    /// collapses to one element, because a tap gesture on an `HStack` is
+    /// nothing to accessibility: no role, no name, no press action, and a page
+    /// of them reads as a page of nothing.
+    private var hasOwnControl: Bool {
+        if isRenaming { return true }
+        if isDrill || item.linkLabel != nil || item.isReadonly { return false }
+        return !item.enumOptions.isEmpty || item.kind == "bool" || isEditing
+    }
+
+    @ViewBuilder var body: some View {
+        if hasOwnControl {
+            core
+                .accessibilityElement(children: .contain)
+                .accessibilityIdentifier(item.id)
+        } else {
+            // One element, named and valued the way the row draws, whose press
+            // is the tap's `pageActivate` — and the context menu again as
+            // custom actions, which is the only way its operations reach
+            // VoiceOver at all.
+            core
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(rowAccessibilityLabel(item))
+                .accessibilityValue(rowAccessibilityValue(item))
+                .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
+                .accessibilityHint(axHint)
+                .accessibilityIdentifier(item.id)
+                .accessibilityAction { model.pageActivate(item) }
+                .accessibilityActions { PageRowMenu(item: item, model: model) }
+        }
+    }
+
+    /// Spoken after the value, saying what acting on the row does — or, for a
+    /// maintained field, why nothing does.
+    private var axHint: String {
+        if let description = item.description, !description.isEmpty { return description }
+        if let link = item.linkLabel { return "Opens \(link)" }
+        if item.isReadonly { return "Maintained automatically" }
+        return ""
+    }
+
+    private var core: some View {
         HStack(spacing: 12) {
             IconTile(label: item.label, kind: item.kind, icon: item.icon, tint: item.tint)
             name
@@ -642,6 +733,7 @@ private struct PageRow<Model: PageDriving>: View {
             TextField("key", text: $model.renameBuffer)
                 .textFieldStyle(.plain)
                 .font(.system(size: 15, weight: .medium))
+                .accessibilityLabel("Rename \(item.label)")
                 .focused($keyFocused)
                 .onSubmit { model.commitRename() }
                 #if os(macOS)
@@ -692,7 +784,7 @@ private struct PageRow<Model: PageDriving>: View {
     @ViewBuilder private var trailing: some View {
         if isDrill {
             HStack(spacing: 6) {
-                Text(drillText)
+                Text(drillSummary(item))
                     .font(.system(size: 13, design: item.summary != nil ? .monospaced : .default))
                     .foregroundStyle(.tertiary)
                     .lineLimit(1)
@@ -718,8 +810,6 @@ private struct PageRow<Model: PageDriving>: View {
                     .foregroundStyle(.tertiary)
                     .accessibilityHidden(true)
             }
-            .accessibilityElement(children: .combine)
-            .accessibilityHint("Opens \(link)")
         } else if item.isReadonly {
             // Maintained by something other than the reader. Shown, because a
             // field visible in the file and absent from the editor reads as data
@@ -736,8 +826,6 @@ private struct PageRow<Model: PageDriving>: View {
                     .foregroundStyle(.tertiary)
                     .accessibilityHidden(true)
             }
-            .accessibilityElement(children: .combine)
-            .accessibilityHint("Maintained automatically")
         } else if !item.enumOptions.isEmpty {
             // A vocabulary → a list of it. Ahead of `isEditing` on purpose: this
             // control owns its own text-entry state for the open case, so a stray
@@ -749,12 +837,14 @@ private struct PageRow<Model: PageDriving>: View {
                                      set: { model.setBool(item, $0) }))
                 .labelsHidden()
                 .toggleStyle(.switch)
+                .accessibilityLabel(rowAccessibilityLabel(item))
         } else if isEditing {
             HStack(spacing: 6) {
                 TextField("value", text: $model.editBuffer)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(size: 14, design: numeric ? .monospaced : .default))
                     .frame(maxWidth: 150)
+                    .accessibilityLabel(rowAccessibilityLabel(item))
                     .focused($focused)
                     .onSubmit { model.commitEdit() }
                     #if os(macOS)
@@ -764,6 +854,7 @@ private struct PageRow<Model: PageDriving>: View {
                 if numeric {
                     Stepper("", onIncrement: { step(+1) }, onDecrement: { step(-1) })
                         .labelsHidden()
+                        .accessibilityLabel("Adjust \(rowAccessibilityLabel(item))")
                 }
             }
         } else {
@@ -774,20 +865,6 @@ private struct PageRow<Model: PageDriving>: View {
                                  : FlowerPalette.value(forKind: item.kind))
                 .lineLimit(1)
         }
-    }
-
-    /// What a container's row says about it: its contents when they fit, and a
-    /// count when they don't.
-    ///
-    /// `1 field ›` is strictly less than the document says when the field is right
-    /// there — the count is the fallback for a container too big to put on a row,
-    /// which is the only case where counting beats showing. Core caps the summary
-    /// it offers; the row truncates whatever is left over.
-    private var drillText: String {
-        if let summary = item.summary { return summary }
-        let n = item.count
-        if item.kind == "seq" { return n == 1 ? "1 item" : "\(n) items" }
-        return n == 1 ? "1 field" : "\(n) fields"
     }
 
     private var numeric: Bool { item.kind == "int" || item.kind == "float" }
@@ -850,6 +927,7 @@ private struct ChoiceControl<Model: PageDriving>: View {
                 .textFieldStyle(.roundedBorder)
                 .font(.system(size: 14))
                 .frame(maxWidth: 150)
+                .accessibilityLabel(item.displayTitle ?? prettify(item.label))
                 .focused($focused)
                 .onSubmit { model.commitEdit() }
                 #if os(macOS)

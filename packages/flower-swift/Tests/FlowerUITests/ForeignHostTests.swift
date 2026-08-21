@@ -424,4 +424,55 @@ final class ForeignHostTests: XCTestCase {
         model.pageAddChild(id: "", key: "audience", value: "public")
         XCTAssertEqual(model.sent, ["add::audience=public"])
     }
+
+    // ── what a row announces ──────────────────────────────────────────────────
+
+    /// The announced name follows the drawn one, step for step: the schema's
+    /// title, then the prettified key, then — for a key that cannot be renamed —
+    /// the key exactly as the document spells it.
+    func testARowAnnouncesTheNameItDraws() {
+        XCTAssertEqual(
+            rowAccessibilityLabel(SchemaItem(id: "spec", label: "spec",
+                                             displayTitle: "Config format version")),
+            "Config format version")
+        XCTAssertEqual(
+            rowAccessibilityLabel(MetaItem(id: "content_hash", label: "content_hash")),
+            "Content Hash")
+        XCTAssertEqual(
+            rowAccessibilityLabel(MetaItem(id: "content_hash", label: "content_hash",
+                                           canRename: false)),
+            "content_hash")
+        // A titled sequence item announces both halves, index first, as drawn.
+        XCTAssertEqual(
+            rowAccessibilityLabel(MetaItem(id: "steps.0", label: "[0]",
+                                           title: "Warm up", canRename: false)),
+            "[0], Warm up")
+    }
+
+    /// ...and the announced value follows the trailing edge's precedence: where
+    /// it goes, what it counts, then what it holds — with silence never an
+    /// answer, because "Not set" is drawn for an empty value too.
+    func testARowAnnouncesTheValueItDraws() {
+        XCTAssertEqual(
+            rowAccessibilityValue(SchemaItem(id: "part_of", label: "part_of",
+                                             preview: "[2026](id:6tzwsxg)",
+                                             linkLabel: "2026")),
+            "2026")
+        XCTAssertEqual(
+            rowAccessibilityValue(MetaItem(id: "exports", label: "exports",
+                                           kind: "map", role: "drill",
+                                           summary: "{branches: [master]}")),
+            "{branches: [master]}")
+        XCTAssertEqual(
+            rowAccessibilityValue(MetaItem(id: "tags", label: "tags",
+                                           kind: "seq", role: "drill", fieldCount: 2)),
+            "2 items")
+        XCTAssertEqual(
+            rowAccessibilityValue(MetaItem(id: "title", label: "title")),
+            "Not set")
+        XCTAssertEqual(
+            rowAccessibilityValue(MetaItem(id: "title", label: "title",
+                                           preview: "A Note")),
+            "A Note")
+    }
 }

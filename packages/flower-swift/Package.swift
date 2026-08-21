@@ -20,10 +20,11 @@ let package = Package(
     name: "FlowerFFI",
     platforms: [.macOS(.v13), .iOS(.v16)],
     products: [
-        // The low-level binding: `FlowerDoc` + the `DocView`/`RowView` value types.
+        // The low-level binding: `FlowerDoc` + the `PagesView`/`DocView` value types.
         .library(name: "FlowerFFI", targets: ["FlowerFFI"]),
-        // The SwiftUI tree editor built on it: `FlowerEditor` + `FlowerModel`.
-        // Re-exports FlowerPagesUI, so one `import FlowerUI` still gets both.
+        // The model over that binding: `FlowerModel`, plus the conformances that
+        // let the page editor render its records. Re-exports FlowerPagesUI, so
+        // one `import FlowerUI` gets the whole editor.
         .library(name: "FlowerUI", targets: ["FlowerUI"]),
         // The page editor, with no binding behind it: `FlowerPages` and the
         // protocols it renders. A host with its own UniFFI records conforms them
@@ -49,9 +50,8 @@ let package = Package(
             name: "FlowerPagesUI",
             path: "Sources/FlowerPagesUI"
         ),
-        // The reusable SwiftUI editor surface (committed source): the tree
-        // editor, the model, and the conformances that let the page editor
-        // render this package's records.
+        // The committed-source half over the binding: the model, and the
+        // conformances that let the page editor render this package's records.
         .target(
             name: "FlowerUI",
             dependencies: ["FlowerFFI", "FlowerPagesUI"],

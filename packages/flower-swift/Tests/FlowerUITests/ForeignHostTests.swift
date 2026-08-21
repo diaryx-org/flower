@@ -394,6 +394,90 @@ final class ForeignHostTests: XCTestCase {
         XCTAssertEqual(split.demoted.map(\.index), [1, 3])
     }
 
+    // ── the settings-screen layout ────────────────────────────────────────────
+
+    private func entries(_ items: [MetaItem]) -> [(index: Int, item: MetaItem)] {
+        items.enumerated().map { ($0.offset, $0.element) }
+    }
+
+    /// The section grammar: a rank-0 group becomes a card of its own under a
+    /// caption, its members rebased a rank left — and the rows around it
+    /// collect into untitled cards, in document order.
+    func testARankZeroGroupBecomesATitledSectionWithRebasedInsets() {
+        let items = [
+            MetaItem(id: "title", label: "title"),
+            MetaItem(id: "server", label: "server", kind: "map", role: "group"),
+            MetaItem(id: "server.host", label: "host", depth: 1),
+            MetaItem(id: "server.port", label: "port", depth: 1),
+            MetaItem(id: "after", label: "after"),
+        ]
+        let sections = pageLayout(entries(items))
+        XCTAssertEqual(sections.map(\.id), ["run-title", "server", "run-after"])
+        XCTAssertNil(sections[0].header)
+        XCTAssertEqual(sections[1].header?.item.id, "server")
+        guard case let .row(index, host, inset) = sections[1].entries[0] else {
+            return XCTFail("expected a row")
+        }
+        XCTAssertEqual(host.id, "server.host")
+        XCTAssertEqual(inset, 0, "the caption already says whose rows these are")
+        XCTAssertEqual(index, 2, "the document index survives the rebase")
+    }
+
+    /// A scalar sequence is one fact about the document, so it draws as one
+    /// row of chips — inside the surrounding card, never as a section.
+    func testAScalarSequenceFoldsIntoOneRowOfChips() {
+        let items = [
+            MetaItem(id: "title", label: "title"),
+            MetaItem(id: "tags", label: "tags", kind: "seq", role: "group"),
+            MetaItem(id: "tags.0", label: "[0]", preview: "journal", depth: 1, canRename: false),
+            MetaItem(id: "tags.1", label: "[1]", preview: "draft", depth: 1, canRename: false),
+        ]
+        let sections = pageLayout(entries(items))
+        XCTAssertEqual(sections.count, 1)
+        XCTAssertNil(sections[0].header)
+        guard case let .chips(_, header, members, inset) = sections[0].entries[1] else {
+            return XCTFail("tags should fold to chips")
+        }
+        XCTAssertEqual(header.id, "tags")
+        XCTAssertEqual(members.map(\.item.id), ["tags.0", "tags.1"])
+        XCTAssertEqual(inset, 0)
+    }
+
+    /// A group nested *inside* a titled section stays an in-card caption at its
+    /// rebased inset — the eye tracks one rank of containment per card.
+    func testANestedGroupStaysACaptionInsideItsSectionsCard() {
+        let items = [
+            MetaItem(id: "server", label: "server", kind: "map", role: "group"),
+            MetaItem(id: "server.host", label: "host", depth: 1),
+            MetaItem(id: "server.limits", label: "limits", kind: "map", role: "group", depth: 1),
+            MetaItem(id: "server.limits.max", label: "max", depth: 2),
+        ]
+        let sections = pageLayout(entries(items))
+        XCTAssertEqual(sections.count, 1)
+        XCTAssertEqual(sections[0].header?.item.id, "server")
+        XCTAssertTrue(sections[0].entries[1].isGroupCaption)
+        guard case let .row(_, max, inset) = sections[0].entries[2] else {
+            return XCTFail("expected a row")
+        }
+        XCTAssertEqual(max.id, "server.limits.max")
+        XCTAssertEqual(inset, 1)
+    }
+
+    /// A sequence whose members carry structure of their own keeps its rows —
+    /// chips would hide exactly what the deeper budget paid to show.
+    func testASequenceWithNestedMembersKeepsItsRows() {
+        let items = [
+            MetaItem(id: "steps", label: "steps", kind: "seq", role: "group"),
+            MetaItem(id: "steps.0", label: "[0]", kind: "map", role: "group", depth: 1),
+            MetaItem(id: "steps.0.run", label: "run", depth: 2),
+        ]
+        let sections = pageLayout(entries(items))
+        XCTAssertEqual(sections.count, 1)
+        XCTAssertEqual(sections[0].header?.item.id, "steps",
+                       "a non-chips rank-0 group is still a section")
+        XCTAssertTrue(sections[0].entries[0].isGroupCaption, "[0] stays a caption row")
+    }
+
     // ── adding what a schema declares ─────────────────────────────────────────
 
     /// A host that offers nothing keeps exactly the affordances it had: no page

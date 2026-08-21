@@ -17,23 +17,30 @@ final class FlowerModelTests: XCTestCase {
     """
 
     func makeModel() throws -> FlowerModel {
-        try FlowerModel(source: sample, format: "toml")
+        let model = try FlowerModel(source: sample, format: "toml")
+        model.showPages()
+        return model
     }
 
-    func testViewListsTopLevelRows() throws {
+    private func item(_ model: FlowerModel, _ id: String) -> PageItemView? {
+        model.page.items.first { $0.id == id }
+    }
+
+    func testTheRootPageListsTopLevelEntries() throws {
         let model = try makeModel()
-        let labels = model.state.rows.map { $0.label }
+        let labels = model.page.items.filter { $0.inset == 0 }.map(\.label)
         XCTAssertTrue(labels.contains("title"))
         XCTAssertTrue(labels.contains("server"))
         XCTAssertFalse(model.isDirty)
+        XCTAssertEqual(model.rootKind, "map")
     }
 
     func testEditingAScalarIsLosslessAndDirties() throws {
         let model = try makeModel()
-        guard let row = model.state.rows.first(where: { $0.id == "version" }) else {
+        guard let version = item(model, "version") else {
             return XCTFail("no version row")
         }
-        model.beginEdit(row)
+        model.beginEdit(version)
         XCTAssertEqual(model.editBuffer, "1")
         model.editBuffer = "2"
         model.commitEdit()
@@ -43,63 +50,55 @@ final class FlowerModelTests: XCTestCase {
         XCTAssertTrue(model.source().contains("title = \"flower\""), "sibling preserved")
     }
 
-    func testTogglingAContainerCollapsesItsChildren() throws {
+    func testMarkSavedClearsTheDirtyFlag() throws {
         let model = try makeModel()
-        guard let server = model.state.rows.first(where: { $0.id == "server" }) else {
-            return XCTFail("no server row")
+        guard let version = item(model, "version") else {
+            return XCTFail("no version row")
         }
-        model.toggle(server)
-        XCTAssertFalse(model.state.rows.contains { $0.id == "server.host" })
-        model.toggle(server)
-        XCTAssertTrue(model.state.rows.contains { $0.id == "server.host" })
+        model.beginEdit(version)
+        model.editBuffer = "3"
+        model.commitEdit()
+        XCTAssertTrue(model.isDirty)
+
+        model.markSaved()
+        XCTAssertFalse(model.isDirty)
     }
 
     func testDeleteRemovesAKey() throws {
         let model = try makeModel()
-        guard let row = model.state.rows.first(where: { $0.id == "enabled" }) else {
+        guard let enabled = item(model, "enabled") else {
             return XCTFail("no enabled row")
         }
-        model.delete(row)
+        model.delete(enabled)
         XCTAssertFalse(model.source().contains("enabled = true"))
         XCTAssertTrue(model.source().contains("title = \"flower\""))
     }
 
-    func testAddChildAppendsToASequenceAndOpensItForEditing() throws {
+    func testAddingToTheRootPageOpensTheNewFieldForEditing() throws {
         let model = try makeModel()
-        guard let tags = model.state.rows.first(where: { $0.id == "server.tags" }) else {
-            return XCTFail("no tags row")
-        }
-        model.addChild(tags)
-        XCTAssertTrue(model.state.rows.contains { $0.id == "server.tags.2" })
+        model.pageAddChild(id: "")
+        XCTAssertTrue(model.page.items.contains { $0.id == "new_key" })
+        XCTAssertEqual(model.editingId, "new_key", "the new field opens for editing")
+        // A second add picks a key that does not collide with the first.
+        model.commitEdit()
+        model.pageAddChild(id: "")
+        XCTAssertTrue(model.page.items.contains { $0.id == "new_key2" })
+    }
+
+    func testAddingToAnInlinedSequenceAppendsAndOpensTheNewItem() throws {
+        let model = try makeModel()
+        model.pageOpen(id: "server")
+        model.pageAddChild(id: "server.tags")
+        XCTAssertTrue(model.page.items.contains { $0.id == "server.tags.2" })
         XCTAssertEqual(model.editingId, "server.tags.2", "new item opens for editing")
         model.editBuffer = "gamma"
         model.commitEdit()
         XCTAssertTrue(model.source().contains("gamma"))
     }
 
-    func testAddChildInsertsAKeyIntoAMapping() throws {
-        let model = try makeModel()
-        guard let server = model.state.rows.first(where: { $0.id == "server" }) else {
-            return XCTFail("no server row")
-        }
-        model.addChild(server)
-        XCTAssertTrue(model.state.rows.contains { $0.id == "server.new_key" })
-        XCTAssertEqual(model.editingId, "server.new_key")
-    }
-
-    func testMoveRowReordersWithinParent() throws {
-        let model = try makeModel()
-        guard let beta = model.state.rows.first(where: { $0.id == "server.tags.1" }) else {
-            return XCTFail("no tags[1] row")
-        }
-        model.moveRowUp(beta)
-        let src = model.source()
-        XCTAssertLessThan(src.range(of: "beta")!.lowerBound, src.range(of: "alpha")!.lowerBound)
-    }
-
     func testSetBoolCommitsImmediately() throws {
         let model = try makeModel()
-        guard let enabled = model.state.rows.first(where: { $0.id == "enabled" }) else {
+        guard let enabled = item(model, "enabled") else {
             return XCTFail("no enabled row")
         }
         model.setBool(enabled, false)
@@ -108,31 +107,24 @@ final class FlowerModelTests: XCTestCase {
 
     func testHiddenKeysAreProjectedOutButKept() throws {
         let model = try FlowerModel(source: sample, format: "toml", hiddenKeys: ["title", "enabled"])
-        XCTAssertFalse(model.state.rows.contains { $0.id == "title" })
-        XCTAssertFalse(model.state.rows.contains { $0.id == "enabled" })
-        XCTAssertTrue(model.state.rows.contains { $0.id == "version" })
+        model.showPages()
+        XCTAssertFalse(model.page.items.contains { $0.id == "title" })
+        XCTAssertFalse(model.page.items.contains { $0.id == "enabled" })
+        XCTAssertTrue(model.page.items.contains { $0.id == "version" })
         XCTAssertEqual(model.hiddenCount, 2)
         XCTAssertTrue(model.source().contains("title = \"flower\""))
     }
 
-    func testAddRootChildInsertsATopLevelKey() throws {
-        let model = try makeModel()
-        XCTAssertEqual(model.rootKind, "map")
-        model.addRootChild()
-        XCTAssertTrue(model.state.rows.contains { $0.id == "new_key" })
-        XCTAssertEqual(model.editingId, "new_key")
-    }
-
     func testRenameKeyKeepsValue() throws {
         let model = try makeModel()
-        guard let row = model.state.rows.first(where: { $0.id == "version" }) else {
+        guard let version = item(model, "version") else {
             return XCTFail("no version row")
         }
-        model.beginRename(row)
+        model.beginRename(version)
         XCTAssertEqual(model.renameBuffer, "version")
         model.renameBuffer = "revision"
         model.commitRename()
-        XCTAssertTrue(model.state.rows.contains { $0.id == "revision" })
+        XCTAssertTrue(model.page.items.contains { $0.id == "revision" })
         XCTAssertTrue(model.source().contains("= 1"))
     }
 

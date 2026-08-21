@@ -135,28 +135,35 @@ final class FlowerPageTests: XCTestCase {
         XCTAssertFalse(model.source().contains("test"))
     }
 
-    func testSwitchingSurfacesCarriesTheCursorAndKeepsBothFramesLive() throws {
+    func testRaisingTheInlineBudgetInlinesTheDocumentOntoTheRootPage() throws {
         let model = try makeModel()
-        model.pageOpen(id: "server")
-        XCTAssertEqual(model.projection, .pages)
+        model.setInlineBudget(rows: 99, depth: 8)
 
-        // The tree frame is refreshed by page commands, not left behind.
-        XCTAssertTrue(model.state.rows.contains { $0.id == "server.port" })
+        // Everything inlines: `server` is a group on the root page, `limits` a
+        // group one rank in, its members two ranks in — the settings-list
+        // rendering, from the same projection.
+        XCTAssertEqual(model.page.focus, "")
+        XCTAssertEqual(item(model, "server")?.role, "group")
+        XCTAssertEqual(item(model, "server.limits")?.role, "group")
+        XCTAssertEqual(item(model, "server.limits.timeout")?.inset, 2)
+        XCTAssertFalse(model.pages.twoPane, "nothing left to drill into")
 
-        model.showTree()
-        XCTAssertEqual(model.projection, .tree)
-        // The cursor is the *selected item*, not the container the page listed:
-        // opening `server` put it on the first row of that page.
-        XCTAssertEqual(model.selectedRow?.id, "server.host", "the cursor came with it")
-
-        // …and back, onto the page that lists whatever the tree was on.
-        guard let timeout = model.state.rows.first(where: { $0.id == "server.limits.timeout" }) else {
+        // Edits keep addressing the same paths at any budget.
+        guard let timeout = item(model, "server.limits.timeout") else {
             return XCTFail("no timeout row")
         }
-        model.select(timeout)
-        model.showPages()
-        XCTAssertEqual(model.page.focus, "server", "the group is inlined into `server`")
-        XCTAssertEqual(model.selectedItem?.id, "server.limits.timeout")
+        model.beginEdit(timeout)
+        model.editBuffer = "45"
+        model.commitEdit()
+        XCTAssertTrue(model.source().contains("timeout: 45"))
+
+        // Back at the default, depth costs a page again.
+        model.setInlineBudget(rows: 6, depth: 1)
+        XCTAssertEqual(item(model, "server")?.role, "drill")
+    }
+
+    private func item(_ model: FlowerModel, _ id: String) -> PageItemView? {
+        model.page.items.first { $0.id == id }
     }
 
     // ── navigation state the two layouts read ─────────────────────────────────

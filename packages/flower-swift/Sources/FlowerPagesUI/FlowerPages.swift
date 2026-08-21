@@ -4,16 +4,19 @@
 //  flower-core's `page` projection, rendered the way a settings app renders a
 //  preference pane.
 //
-//  `FlowerEditor` (FlowerSettingsView.swift) shows the whole document at once and
-//  indents to say what contains what. That reads well until the document is deep,
-//  where the useful levels drift right until the keys no longer fit. A page
-//  answers the narrower question — "what is *in* this container?" — so depth costs
-//  a navigation step instead of a column, and a document nested twelve deep
-//  renders exactly as wide as one nested twice.
+//  It is the only face. Showing the whole document at once used to be a second
+//  surface; now it is the same one under a generous inline budget (the model's
+//  `setInlineBudget`), which inlines whole subtrees onto their parent's page —
+//  a small document renders on one page, and a deep one pays for depth with a
+//  navigation step instead of a column of indentation. How much inlines is a
+//  question about the document (and the room), not about what the user is
+//  allowed to do: every edit is path-addressed and lossless at any budget.
 //
-//  Both surfaces drive one model over one document; every edit is path-addressed
-//  and lossless either way. Which one to show is a question about the document
-//  (and the room), not about what the user is allowed to do.
+//  What the projection ships is a flat item list — insets, group headers, a
+//  demoted flag — and what a settings screen draws is structure: cards under
+//  captions, a tag list as chips, an "Advanced" fold. `pageLayout` is the seam
+//  between them (see its docs), pure and testable, so the two hosts of this
+//  view lay a page out identically without sharing a pixel of chrome.
 //
 //  ## Two panes, or one — and two different navigations
 //
@@ -349,6 +352,148 @@ func partitionDemoted<Item: PageItemDisplaying>(
     return (promoted, demoted)
 }
 
+// ── Laying a run of items out as a settings screen ────────────────────────────
+
+/// One drawable line of a card: a row, or a scalar sequence folded into a
+/// single line of chips.
+///
+/// `inset` is the *drawn* indentation, not the projection's: a titled section
+/// already says its members belong to it with a caption, so they are rebased a
+/// rank left rather than indented under a name that is no longer a row.
+enum PageEntry<Item: PageItemDisplaying>: Identifiable {
+    /// One item as one row. `index` is the item's position in the whole item
+    /// list — what `selected` counts.
+    case row(index: Int, item: Item, inset: Int)
+    /// A scalar sequence as one row of chips: the header names it, the members
+    /// are the chips. The one place several items share a line.
+    case chips(index: Int, header: Item, members: [(index: Int, item: Item)], inset: Int)
+
+    var id: String {
+        switch self {
+        case let .row(_, item, _): return item.id
+        case let .chips(_, header, _, _): return header.id
+        }
+    }
+
+    /// Whether this entry draws as a caption rather than a row — the hairline a
+    /// caption carries stands in for the divider its neighbour would get.
+    var isGroupCaption: Bool {
+        if case let .row(_, item, _) = self { return item.role == "group" }
+        return false
+    }
+}
+
+/// One card of a pane: a run of entries, under the group that titles it — or
+/// under no title, for a run of the page's own rows.
+struct PageSection<Item: PageItemDisplaying>: Identifiable {
+    let id: String
+    /// The rank-0 group whose members this card holds, drawn as a caption above
+    /// it rather than as a row inside it. `nil` for an untitled run.
+    let header: (index: Int, item: Item)?
+    let entries: [PageEntry<Item>]
+}
+
+/// Whether a group renders as one row of chips: a scalar sequence, all of whose
+/// members sit directly under it. The settings-screen rendering of a tag list —
+/// `[0]`, `[1]`, `[2]` are positions, not information, and a page has no reason
+/// to spend a row on each.
+private func chipsEligible<Item: PageItemDisplaying>(
+    _ header: Item, _ members: [(index: Int, item: Item)]
+) -> Bool {
+    header.kind == "seq" && !members.isEmpty
+        && members.allSatisfy { $0.item.role == "scalar" && $0.item.inset == header.inset + 1 }
+}
+
+/// A run of a page's items, laid out the way a settings screen reads.
+///
+/// Three rules, applied to the projection's flat, inset-tagged list:
+///
+/// - a **rank-0 group** becomes its own card, its name the caption above it and
+///   its members rebased a rank left — the grammar a grouped settings screen
+///   uses for its sections;
+/// - a **scalar sequence** becomes one row of chips wherever it sits, because a
+///   list of tags is one fact about the document, not `n` rows of positions;
+/// - everything else stays a row at its inset, group headers included — a
+///   nested group is a caption *inside* its section's card, which is as far as
+///   the eye should be asked to track containment before the budget hands the
+///   subtree a page of its own.
+///
+/// Runs of rank-0 rows between titled sections collect into untitled cards, in
+/// document order throughout. Pure and total, so both layouts (and the tests)
+/// lay a page out identically.
+func pageLayout<Item: PageItemDisplaying>(
+    _ entries: [(index: Int, item: Item)]
+) -> [PageSection<Item>] {
+    var sections: [PageSection<Item>] = []
+    var run: [(index: Int, item: Item)] = []
+    func flushRun() {
+        guard !run.isEmpty else { return }
+        sections.append(
+            PageSection(id: "run-\(run[0].item.id)", header: nil,
+                        entries: cardEntries(run, shift: 0)))
+        run = []
+    }
+    var i = 0
+    while i < entries.count {
+        let entry = entries[i]
+        if entry.item.role == "group", entry.item.inset == 0 {
+            var j = i + 1
+            var members: [(index: Int, item: Item)] = []
+            while j < entries.count, entries[j].item.inset > 0 {
+                members.append(entries[j])
+                j += 1
+            }
+            if chipsEligible(entry.item, members) {
+                // A chips row is a row: it stays in the surrounding card.
+                run.append(entry)
+                run.append(contentsOf: members)
+            } else {
+                flushRun()
+                sections.append(
+                    PageSection(id: entry.item.id, header: (entry.index, entry.item),
+                                entries: cardEntries(members, shift: 1)))
+            }
+            i = j
+        } else {
+            run.append(entry)
+            i += 1
+        }
+    }
+    flushRun()
+    return sections
+}
+
+/// One card's worth of entries: chips folded, every drawn inset shifted left by
+/// `shift` (1 inside a titled section, whose caption already says what the
+/// members belong to).
+private func cardEntries<Item: PageItemDisplaying>(
+    _ entries: [(index: Int, item: Item)], shift: Int
+) -> [PageEntry<Item>] {
+    var out: [PageEntry<Item>] = []
+    var i = 0
+    while i < entries.count {
+        let entry = entries[i]
+        let inset = Int(entry.item.inset) - shift
+        if entry.item.role == "group" {
+            var j = i + 1
+            var members: [(index: Int, item: Item)] = []
+            while j < entries.count, entries[j].item.inset > entry.item.inset {
+                members.append(entries[j])
+                j += 1
+            }
+            if chipsEligible(entry.item, members) {
+                out.append(.chips(index: entry.index, header: entry.item,
+                                  members: members, inset: inset))
+                i = j
+                continue
+            }
+        }
+        out.append(.row(index: entry.index, item: entry.item, inset: inset))
+        i += 1
+    }
+    return out
+}
+
 /// What a container's row says about it: its contents when they fit, and a
 /// count when they don't.
 ///
@@ -406,7 +551,9 @@ private struct PagePane<Model: PageDriving>: View {
         // every run would be the folded one and the page would arrive shut).
         let folded = !page.demoted && !split.promoted.isEmpty && !split.demoted.isEmpty
         ScrollView {
-            VStack(alignment: .leading, spacing: 7) {
+            // Lazy, because a generous inline budget can put a whole document
+            // on this one page — the case the second surface used to carry.
+            LazyVStack(alignment: .leading, spacing: 14) {
                 if role != .cursor {
                     Text(paneTitle.uppercased())
                         .font(.system(size: 11, weight: .semibold))
@@ -423,7 +570,7 @@ private struct PagePane<Model: PageDriving>: View {
                         .padding(.vertical, 12)
                     addRow
                 } else if folded {
-                    card(split.promoted)
+                    sections(pageLayout(split.promoted))
                     // Above the fold, not under it: adding a field belongs to
                     // the rows a reader came to edit, and a fold that has to be
                     // opened to reach the offer — or that pushes it a screen
@@ -432,10 +579,10 @@ private struct PagePane<Model: PageDriving>: View {
                     advancedHeader(count: split.demoted.count,
                                    open: advancedOpen(split.demoted))
                     if advancedOpen(split.demoted) {
-                        card(split.demoted)
+                        sections(pageLayout(split.demoted))
                     }
                 } else {
-                    card(split.promoted + split.demoted)
+                    sections(pageLayout(split.promoted + split.demoted))
                     addRow
                 }
             }
@@ -447,6 +594,20 @@ private struct PagePane<Model: PageDriving>: View {
         .opacity(role == .preview ? 0.55 : 1)
         .allowsHitTesting(role.isInteractive)
         .accessibilityHidden(role == .preview)
+    }
+
+    /// The cards of one run: each titled section under its caption, each
+    /// untitled run as a bare card — the grammar of a grouped settings screen.
+    private func sections(_ sections: [PageSection<Page.Item>]) -> some View {
+        ForEach(sections) { section in
+            VStack(alignment: .leading, spacing: 7) {
+                if let header = section.header {
+                    SectionCaption(item: header.item, model: model,
+                                   selected: page.selected.map { Int($0) == header.index } ?? false)
+                }
+                card(section.entries)
+            }
+        }
     }
 
     /// The offer to add a child, where the page takes one and the pane is the
@@ -512,18 +673,32 @@ private struct PagePane<Model: PageDriving>: View {
         return prettify(last.label)
     }
 
-    private func card(_ entries: [(index: Int, item: Page.Item)]) -> some View {
+    private func selected(_ index: Int) -> Bool {
+        page.selected.map { Int($0) == index } ?? false
+    }
+
+    private func card(_ entries: [PageEntry<Page.Item>]) -> some View {
         VStack(spacing: 0) {
-            ForEach(Array(entries.enumerated()), id: \.element.item.id) { pos, entry in
-                if entry.item.role == "group" {
-                    GroupHeaderRow(item: entry.item, first: pos == 0)
-                } else {
-                    if pos > 0, entries[pos - 1].item.role != "group" {
-                        Divider().padding(.leading, 57 + CGFloat(entry.item.inset) * 16)
+            ForEach(Array(entries.enumerated()), id: \.element.id) { pos, entry in
+                switch entry {
+                case let .row(index, item, inset):
+                    if item.role == "group" {
+                        GroupHeaderRow(item: item, model: model, inset: inset, first: pos == 0)
+                    } else {
+                        if pos > 0, !entries[pos - 1].isGroupCaption {
+                            Divider().padding(.leading, 57 + CGFloat(inset) * 16)
+                        }
+                        PageRow(item: item, model: model, theme: theme,
+                                selected: selected(index), inset: inset, role: role)
                     }
-                    PageRow(item: entry.item, model: model, theme: theme,
-                            selected: page.selected.map { Int($0) == entry.index } ?? false,
-                            role: role)
+                case let .chips(index, header, members, inset):
+                    if pos > 0, !entries[pos - 1].isGroupCaption {
+                        Divider().padding(.leading, 57 + CGFloat(inset) * 16)
+                    }
+                    PageChipsRow(header: header, members: members, model: model,
+                                 selected: selected(index)
+                                     || members.contains { selected($0.index) },
+                                 inset: inset, role: role)
                 }
             }
         }
@@ -621,16 +796,52 @@ private struct AddChildRow<Model: PageDriving>: View {
     }
 }
 
+/// What names a group or section: the schema's title, the prettified key, and —
+/// for a titled sequence item — the title that names it.
+private func groupName<Item: PageItemDisplaying>(_ item: Item) -> String {
+    let own = item.displayTitle ?? prettify(item.label)
+    guard let title = item.title else { return own }
+    return "\(own) · \(title)"
+}
+
+/// The caption above a titled section's card: the rank-0 group whose members
+/// the card holds, named but not listed — being the card's title *is* its
+/// rendering. It keeps the group's operations in its context menu, because a
+/// container that stopped being a row should not stop being deletable.
+private struct SectionCaption<Model: PageDriving>: View {
+    let item: Model.Pages.Page.Item
+    @ObservedObject var model: Model
+    let selected: Bool
+
+    var body: some View {
+        Text(groupName(item).uppercased())
+            .font(.system(size: 11, weight: .semibold))
+            .tracking(0.6)
+            .foregroundStyle(selected ? Color.accentColor : Color.secondary)
+            .padding(.leading, 14)
+            .contentShape(Rectangle())
+            .onTapGesture { model.pageActivate(item) }
+            .contextMenu { PageRowMenu(item: item, model: model) }
+            .accessibilityLabel(groupName(item))
+            .accessibilityAddTraits(.isHeader)
+            .accessibilityIdentifier(item.id)
+    }
+}
+
 /// The header of a container inlined into this page: a caption over the members
 /// listed under it. No chevron, though it names a container — its members are
-/// already on screen, which is the whole point of inlining them.
-private struct GroupHeaderRow<Item: PageItemDisplaying>: View {
-    let item: Item
+/// already on screen, which is the whole point of inlining them. Its context
+/// menu carries the container's own operations, so inlining stays a
+/// presentation default rather than a cage.
+private struct GroupHeaderRow<Model: PageDriving>: View {
+    let item: Model.Pages.Page.Item
+    @ObservedObject var model: Model
+    let inset: Int
     let first: Bool
 
     var body: some View {
         HStack(spacing: 8) {
-            Text(name.uppercased())
+            Text(groupName(item).uppercased())
                 .font(.system(size: 11, weight: .semibold))
                 .tracking(0.5)
                 .foregroundStyle(.secondary)
@@ -639,17 +850,14 @@ private struct GroupHeaderRow<Item: PageItemDisplaying>: View {
                 .frame(height: 1)
         }
         .padding(.horizontal, 14)
+        .padding(.leading, CGFloat(inset) * 16)
         .padding(.top, first ? 12 : 16)
         .padding(.bottom, 6)
+        .contentShape(Rectangle())
+        .contextMenu { PageRowMenu(item: item, model: model) }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(name)
+        .accessibilityLabel(groupName(item))
         .accessibilityAddTraits(.isHeader)
-    }
-
-    private var name: String {
-        let own = item.displayTitle ?? prettify(item.label)
-        guard let title = item.title else { return own }
-        return "\(own) · \(title)"
     }
 }
 
@@ -666,6 +874,8 @@ private struct PageRow<Model: PageDriving>: View {
     @ObservedObject var model: Model
     let theme: FlowerTheme
     let selected: Bool
+    /// The drawn indentation — the layout's rebased rank, not `item.inset`.
+    let inset: Int
     let role: PaneRole
     @FocusState private var focused: Bool
     @FocusState private var keyFocused: Bool
@@ -726,7 +936,7 @@ private struct PageRow<Model: PageDriving>: View {
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 9)
-        .padding(.leading, CGFloat(item.inset) * 16)
+        .padding(.leading, CGFloat(inset) * 16)
         .frame(minHeight: 44)
         .background(selected ? Color.accentColor.opacity(0.12) : Color.clear)
         .contentShape(Rectangle())
@@ -1064,6 +1274,155 @@ private struct PageRowMenu<Model: PageDriving>: View {
             Button("Move Down") { model.moveItemDown(item) }
             Divider()
             Button("Delete", role: .destructive) { model.delete(item) }
+        }
+    }
+}
+
+// ── A scalar sequence as chips ────────────────────────────────────────────────
+
+/// A scalar sequence as one settings row: the name on the left, the members as
+/// removable chips on the right, with the add control among them.
+///
+/// The alternative spends a row per member on labels that are pure position —
+/// `[0]`, `[1]` — for values that are each a word or two. A tag list is one
+/// fact about the document, and this draws it as one.
+///
+/// Every chip is still its own node: tapping one edits it in place through the
+/// same buffer every editor shares, deleting one deletes that member, and the
+/// header's context menu keeps the sequence's own operations.
+private struct PageChipsRow<Model: PageDriving>: View {
+    typealias Item = Model.Pages.Page.Item
+
+    let header: Item
+    let members: [(index: Int, item: Item)]
+    @ObservedObject var model: Model
+    let selected: Bool
+    let inset: Int
+    let role: PaneRole
+    @FocusState private var chipFocused: Bool
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 12) {
+            IconTile(label: header.label, kind: header.kind,
+                     icon: header.icon, tint: header.tint)
+            Text(header.displayTitle ?? (header.canRename ? prettify(header.label) : header.label))
+                .font(.system(size: 15))
+                .lineLimit(1)
+                .padding(.top, 5)
+            Spacer(minLength: 8)
+            FlowWrap(spacing: 6) {
+                ForEach(members, id: \.item.id) { member in
+                    chip(for: member.item)
+                }
+                if role == .cursor, !header.isReadonly {
+                    Button { model.pageAddChild(id: header.id) } label: {
+                        Label("Add", systemImage: "plus").labelStyle(.titleOnly)
+                            .font(.system(size: 13, weight: .medium))
+                            .padding(.horizontal, 11).padding(.vertical, 4)
+                            .overlay(Capsule().strokeBorder(Color.secondary.opacity(0.4),
+                                                            style: StrokeStyle(lineWidth: 1, dash: [3])))
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .accessibilityLabel("Add to \(rowAccessibilityLabel(header))")
+                }
+            }
+            .frame(maxWidth: 340, alignment: .trailing)
+            .padding(.vertical, 5)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 4)
+        .padding(.leading, CGFloat(inset) * 16)
+        .frame(minHeight: 44)
+        .background(selected ? Color.accentColor.opacity(0.12) : Color.clear)
+        .contentShape(Rectangle())
+        .contextMenu { PageRowMenu(item: header, model: model) }
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel(rowAccessibilityLabel(header))
+        .accessibilityIdentifier(header.id)
+    }
+
+    @ViewBuilder private func chip(for item: Item) -> some View {
+        if model.editingId == item.id {
+            TextField("", text: $model.editBuffer)
+                .textFieldStyle(.plain)
+                .font(.system(size: 13, weight: .medium))
+                .frame(width: 70)
+                .padding(.horizontal, 10).padding(.vertical, 4)
+                .background(Capsule().fill(Color.accentColor.opacity(0.12)))
+                .accessibilityLabel("Edit \(rowAccessibilityLabel(item))")
+                .focused($chipFocused)
+                .onSubmit { model.commitEdit() }
+                #if os(macOS)
+                .onExitCommand { model.cancelEdit() }
+                #endif
+                .onAppear { chipFocused = true }
+        } else {
+            HStack(spacing: 5) {
+                Button { model.beginEdit(item) } label: {
+                    Text(item.preview.isEmpty ? "—" : item.preview)
+                        .font(.system(size: 13, weight: .medium))
+                }
+                .buttonStyle(.plain)
+                .disabled(header.isReadonly)
+                .accessibilityLabel(item.preview.isEmpty ? "Not set" : item.preview)
+                if !header.isReadonly {
+                    Button { model.delete(item) } label: {
+                        Image(systemName: "xmark").font(.system(size: 9, weight: .bold))
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .accessibilityLabel("Delete \(item.preview)")
+                }
+            }
+            .padding(.leading, 11)
+            .padding(.trailing, header.isReadonly ? 11 : 7)
+            .padding(.vertical, 4)
+            .background(Capsule().fill(Color.accentColor.opacity(0.14)))
+            .foregroundStyle(Color.accentColor)
+        }
+    }
+}
+
+// ── A minimal wrapping HStack for chips ───────────────────────────────────────
+
+/// Lays children left→right, wrapping to new lines — for tag chips. A small
+/// self-contained flow layout (SwiftUI's `Layout`, available on the package's
+/// deployment targets).
+struct FlowWrap: Layout {
+    var spacing: CGFloat = 6
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let maxWidth = proposal.width ?? .infinity
+        var rows: [[CGSize]] = [[]]
+        var x: CGFloat = 0
+        for v in subviews {
+            let s = v.sizeThatFits(.unspecified)
+            if x + s.width > maxWidth, !rows[rows.count - 1].isEmpty {
+                rows.append([]); x = 0
+            }
+            rows[rows.count - 1].append(s); x += s.width + spacing
+        }
+        let height = rows.reduce(CGFloat(0)) { acc, row in
+            acc + (row.map(\.height).max() ?? 0) + spacing
+        } - (rows.isEmpty ? 0 : spacing)
+        let width = rows.map { $0.reduce(CGFloat(0)) { $0 + $1.width + spacing } - spacing }.max() ?? 0
+        return CGSize(width: min(width, maxWidth), height: max(height, 0))
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let maxWidth = bounds.width
+        var x = bounds.minX
+        var y = bounds.minY
+        var lineHeight: CGFloat = 0
+        for v in subviews {
+            let s = v.sizeThatFits(.unspecified)
+            if x + s.width > bounds.minX + maxWidth, x > bounds.minX {
+                x = bounds.minX; y += lineHeight + spacing; lineHeight = 0
+            }
+            v.place(at: CGPoint(x: x, y: y), anchor: .topLeading, proposal: ProposedViewSize(s))
+            x += s.width + spacing
+            lineHeight = max(lineHeight, s.height)
         }
     }
 }

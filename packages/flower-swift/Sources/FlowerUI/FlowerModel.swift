@@ -1,57 +1,31 @@
-//  FlowerEditorView.swift
+//  FlowerModel.swift
 //
-//  The SwiftUI face of the structural editor, shared across macOS and iOS.
+//  The observable owner of a document, shared across macOS and iOS.
 //  `FlowerModel` is a platform-neutral `ObservableObject` that owns the
-//  `FlowerDoc` and exposes flower-core's navigation + edit commands. `FlowerEditor`
-//  is the tree view that renders the model's visible rows and drives it back;
-//  `FlowerPages` (FlowerPageView.swift) renders the other projection — one
-//  container at a time — off the same model.
+//  `FlowerDoc` and exposes flower-core's page projection: `FlowerPages`
+//  (FlowerPagesUI) renders its frames and drives it back through `PageDriving`.
 //
-//  The model holds both projections at once, because core does: `state` is the
-//  tree frame, `pages` is the page frame, and every command refreshes both, so
-//  switching surfaces never shows a stale one. `projection` says which one the
-//  document is being driven through — the seam an edit committed from an inline
-//  field reads to know which way to send it.
+//  One projection, on purpose. Core still offers the tree; the Swift surface
+//  does not, because the page view covers both of its jobs — a small document
+//  inlines onto one page under a generous inline budget (`setInlineBudget`),
+//  and a deep one pays for depth with navigation instead of indentation.
 //
 //  Usage:
 //      @StateObject private var model = try! FlowerModel(
 //          source: "title = \"flower\"\n", format: "toml")
 //
-//      var body: some View { FlowerEditor(model: model) }
+//      var body: some View { FlowerPages(model: model) }
 
 import SwiftUI
 import FlowerFFI
 
-// A `RowView` already carries a stable `id` (its dotted fig path), so it can key a
-// SwiftUI `ForEach`/`List` directly.
-extension RowView: @retroactive Identifiable {}
-
-/// Which of core's two projections a document is being driven through — the tree
-/// (`FlowerEditor`) or the page view (`FlowerPages`). An inline edit reads it on
-/// commit, since a node id means the same thing in both and only the route back
-/// into core differs.
-public enum FlowerProjection {
-    case tree
-    case pages
-}
-
-
 /// The observable owner of a document. Hold it with `@StateObject`; render its
-/// `state.rows` and call the command methods from taps, buttons, or keys.
+/// pages with `FlowerPages` and call the intent methods from taps and buttons.
 public final class FlowerModel: ObservableObject {
-    /// The latest rendered frame — the visible rows, selection, dirty, and status.
-    /// Replaced wholesale after every command.
-    @Published public private(set) var state: DocView
-
     /// The latest **page** frame: the page you are on, the page it came out of,
-    /// and the page the cursor would open. Refreshed by every command, so a host
-    /// can switch surfaces without a reload.
+    /// and the page the cursor would open. Replaced wholesale after every
+    /// command.
     @Published public private(set) var pages: PagesView
-
-    /// Which projection the document is being driven through. `FlowerEditor` sets
-    /// it to `.tree` and `FlowerPages` to `.pages`; a commit reads it to know
-    /// which of the two an inline edit belongs to.
-    @Published public private(set) var projection: FlowerProjection = .tree
 
     /// Which way the page view last moved — see ``PageMove``.
     @Published public private(set) var lastMove: PageMove = .jump
@@ -78,201 +52,37 @@ public final class FlowerModel: ObservableObject {
     public init(source: String, format: String, hiddenKeys: [String] = []) throws {
         let doc = try FlowerDoc(source: source, format: format, hiddenKeys: hiddenKeys)
         self.doc = doc
-        self.state = doc.view()
         self.pages = doc.pages()
     }
 
+    /// Set how much of a container's subtree inlines onto its parent's page
+    /// rather than drilling: at most `rows` rows per inlined subtree, reaching
+    /// at most `depth` ranks of inset.
+    ///
+    /// The default (6 rows, 1 rank) is the settings-menu rule. Raised past the
+    /// document's size, the root page simply *is* the whole document — the
+    /// host's call, because the right amount is about the room the pages are
+    /// drawn in, not about the document.
+    public func setInlineBudget(rows: Int, depth: Int) {
+        apply(doc.setInlineBudget(rows: UInt32(rows), depth: UInt32(depth)))
+    }
+
     /// The document root's kind — `"map"`, `"seq"`, or `"scalar"`.
-    public var rootKind: String { state.rootKind }
+    public var rootKind: String { pages.rootKind }
     /// How many managed (hidden) top-level keys the document carries.
-    public var hiddenCount: Int { Int(state.hiddenCount) }
+    public var hiddenCount: Int { Int(pages.hiddenCount) }
 
     // ── host-facing model access ──────────────────────────────────────────────
 
     public func source() -> String { doc.source() }
-    public func markSaved() { apply(doc.markSaved()) }
-    public var isDirty: Bool { state.dirty }
-    public var status: String { state.status }
-
-    /// The selected row, if any — for a detail pane or a delete affordance.
-    public var selectedRow: RowView? {
-        state.rows.indices.contains(Int(state.selected)) ? state.rows[Int(state.selected)] : nil
+    public func markSaved() {
+        _ = doc.markSaved()
+        apply(doc.pages())
     }
-
-    // ── selection & navigation ────────────────────────────────────────────────
-
-    private func index(of id: String) -> UInt32? {
-        state.rows.firstIndex(where: { $0.id == id }).map(UInt32.init)
-    }
-
-    public func select(_ row: RowView) {
-        guard let i = index(of: row.id) else { return }
-        apply(doc.select(index: i))
-    }
-
-    public func toggle(_ row: RowView) {
-        guard let i = index(of: row.id) else { return }
-        apply(doc.toggle(index: i))
-    }
-
-    public func moveUp() { apply(doc.moveUp()) }
-    public func moveDown() { apply(doc.moveDown()) }
-    public func expandOrEnter() { apply(doc.expandOrEnter()) }
-    public func collapseOrLeave() { apply(doc.collapseOrLeave()) }
-
-    /// A tap on a row: a container toggles; a scalar opens for editing. Any edit
-    /// already in flight on another row is committed first.
-    public func activate(_ row: RowView) {
-        if let editing = editingId, editing != row.id { commitEdit() }
-        if let renaming = renamingId, renaming != row.id { commitRename() }
-        if row.isContainer {
-            toggle(row)
-        } else {
-            beginEdit(row)
-        }
-    }
-
-    // ── editing ───────────────────────────────────────────────────────────────
-
-    /// Open the scalar `row` for inline editing, seeding the field with its
-    /// current text. A no-op on a container or a row already being edited.
-    public func beginEdit(_ row: RowView) {
-        guard !row.isContainer, editingId != row.id else { return }
-        select(row)
-        editBuffer = row.preview
-        editingId = row.id
-    }
-
-    /// Commit the in-flight edit: parse the buffer by literal shape and splice it
-    /// losslessly through fig.
-    ///
-    /// The buffer belongs to a *node*, whichever surface opened it, so the commit
-    /// routes by ``projection`` — the tree speaks row indices and
-    /// the page view speaks ids, and a node open for editing in one is not
-    /// necessarily even visible in the other.
-    public func commitEdit() {
-        guard let id = editingId else { return }
-        editingId = nil
-        switch projection {
-        case .pages:
-            apply(doc.pageSetValue(id: id, text: editBuffer))
-        case .tree:
-            guard let i = index(of: id) else { return }
-            apply(doc.setValue(index: i, text: editBuffer))
-        }
-    }
-
-    public func cancelEdit() {
-        editingId = nil
-    }
-
-    /// Delete the mapping entry or sequence item.
-    public func delete(_ row: RowView) {
-        guard let i = index(of: row.id) else { return }
-        if editingId == row.id { editingId = nil }
-        apply(doc.delete(index: i))
-    }
-
-    /// Set a boolean scalar directly — the commit behind an inline `Toggle`.
-    public func setBool(_ row: RowView, _ value: Bool) {
-        guard let i = index(of: row.id) else { return }
-        apply(doc.setValue(index: i, text: value ? "true" : "false"))
-    }
-
-    // ── insert & reorder ──────────────────────────────────────────────────────
-
-    /// Whether `row` can hold children — i.e. "Add" applies to it.
-    public func canAddChild(_ row: RowView) -> Bool { row.isContainer }
-
-    /// Add a child to the container `row`: a fresh `new_key` for a mapping, or an
-    /// appended item for a sequence — then open the new scalar for editing.
-    public func addChild(_ row: RowView) {
-        guard let i = index(of: row.id), row.isContainer else { return }
-        let prefix = row.id.isEmpty ? "" : row.id + "."
-        if row.kind == "seq" {
-            let count = state.rows.filter { isDirectChild($0, of: row) }.count
-            apply(doc.appendItem(index: i, text: ""))
-            if let created = state.rows.first(where: { $0.id == prefix + String(count) }) {
-                beginEdit(created)
-            }
-        } else {
-            let key = freshKey(under: row)
-            apply(doc.insertKey(index: i, key: key, text: ""))
-            if let created = state.rows.first(where: { $0.id == prefix + key }) {
-                beginEdit(created)
-            }
-        }
-    }
-
-    /// Whether `row` can be reordered (anything but the document root).
-    public func canReorder(_ row: RowView) -> Bool { !row.id.isEmpty }
-
-    public func moveRowUp(_ row: RowView) {
-        guard let i = index(of: row.id) else { return }
-        apply(doc.moveRowUp(index: i))
-    }
-
-    public func moveRowDown(_ row: RowView) {
-        guard let i = index(of: row.id) else { return }
-        apply(doc.moveRowDown(index: i))
-    }
-
-    /// Add a top-level entry at the document root: a fresh `new_key` for a mapping
-    /// root, or an appended item for a sequence root — then open it for editing.
-    /// The root has no row to select, so this is separate from `addChild`.
-    public func addRootChild() {
-        if rootKind == "seq" {
-            let count = state.rows.filter { $0.depth == 0 }.count
-            apply(doc.appendRootItem(text: ""))
-            if let created = state.rows.first(where: { $0.id == String(count) }) {
-                beginEdit(created)
-            }
-        } else if rootKind == "map" {
-            let key = freshRootKey()
-            apply(doc.insertRootKey(key: key, text: ""))
-            if let created = state.rows.first(where: { $0.id == key }) {
-                beginEdit(created)
-            }
-        }
-    }
-
-    // ── key rename ────────────────────────────────────────────────────────────
-
-    /// Open the mapping entry `row` for renaming its key. A no-op on a sequence
-    /// item (which has an index, not a key).
-    public func beginRename(_ row: RowView) {
-        guard row.canRename, renamingId != row.id else { return }
-        select(row)
-        editingId = nil
-        renameBuffer = row.label
-        renamingId = row.id
-    }
-
-    /// Commit the in-flight key rename, routed the same way as an edit.
-    public func commitRename() {
-        guard let id = renamingId else { return }
-        renamingId = nil
-        let name = renameBuffer.trimmingCharacters(in: .whitespaces)
-        guard !name.isEmpty else { return }
-        switch projection {
-        case .pages:
-            apply(doc.pageRename(id: id, newKey: name))
-        case .tree:
-            guard let i = index(of: id) else { return }
-            apply(doc.renameKey(index: i, newKey: name))
-        }
-    }
-
-    public func cancelRename() {
-        renamingId = nil
-    }
+    public var isDirty: Bool { pages.dirty }
+    public var status: String { pages.status }
 
     // ── the page projection ───────────────────────────────────────────────────
-    //
-    // The page surface drives the same document by the same node ids the tree
-    // uses, so `editingId` / `editBuffer` are shared: an edit belongs to a node,
-    // not to the list it was started from. Only the commit differs, and
-    // `projection` is what tells it which way to go.
 
     /// The page currently being listed.
     public var page: PageView { pages.page }
@@ -293,17 +103,12 @@ public final class FlowerModel: ObservableObject {
     /// you are actually on.
     public func pageAt(id: String) -> PageView { doc.pageAt(id: id) }
 
-    /// Switch to the page view. The cursor carries across, so the node selected in
-    /// the tree is the node selected on the page you land on.
+    /// Claim the page projection. The one surface there is, so this only
+    /// refreshes the frame — kept because `FlowerPages` announces itself with it
+    /// (``PageDriving/showPages()``), and a second host's model may have more to
+    /// do here.
     public func showPages() {
-        projection = .pages
         apply(doc.showPages())
-    }
-
-    /// Switch back to the tree view, carrying the cursor the same way.
-    public func showTree() {
-        projection = .tree
-        apply(doc.showTree())
     }
 
     /// Put the cursor on `item` — a tap on a row, in any pane.
@@ -338,6 +143,8 @@ public final class FlowerModel: ObservableObject {
     /// Whether there is a page to pop back to.
     public var canPageBack: Bool { !pages.page.focus.isEmpty }
 
+    // ── editing ───────────────────────────────────────────────────────────────
+
     /// Open the scalar `item` for inline editing, seeded with its current text.
     public func beginEdit(_ item: PageItemView) {
         guard item.role == "scalar", editingId != item.id else { return }
@@ -345,6 +152,18 @@ public final class FlowerModel: ObservableObject {
         apply(doc.pageSelect(id: item.id))
         editBuffer = item.preview
         editingId = item.id
+    }
+
+    /// Commit the in-flight edit: parse the buffer by literal shape and splice it
+    /// losslessly through fig.
+    public func commitEdit() {
+        guard let id = editingId else { return }
+        editingId = nil
+        apply(doc.pageSetValue(id: id, text: editBuffer))
+    }
+
+    public func cancelEdit() {
+        editingId = nil
     }
 
     /// Set a boolean scalar directly — the commit behind an inline `Toggle`.
@@ -373,6 +192,8 @@ public final class FlowerModel: ObservableObject {
         apply(doc.pageDelete(id: item.id))
     }
 
+    // ── key rename ────────────────────────────────────────────────────────────
+
     /// Open `item`'s key for renaming. A no-op on a sequence item, which has an
     /// index, not a key.
     public func beginRename(_ item: PageItemView) {
@@ -383,6 +204,21 @@ public final class FlowerModel: ObservableObject {
         renamingId = item.id
     }
 
+    /// Commit the in-flight key rename.
+    public func commitRename() {
+        guard let id = renamingId else { return }
+        renamingId = nil
+        let name = renameBuffer.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty else { return }
+        apply(doc.pageRename(id: id, newKey: name))
+    }
+
+    public func cancelRename() {
+        renamingId = nil
+    }
+
+    // ── insert & reorder ──────────────────────────────────────────────────────
+
     public func moveItemUp(_ item: PageItemView) { apply(doc.pageMoveItemUp(id: item.id)) }
     public func moveItemDown(_ item: PageItemView) { apply(doc.pageMoveItemDown(id: item.id)) }
 
@@ -391,8 +227,7 @@ public final class FlowerModel: ObservableObject {
     /// editing.
     ///
     /// A page names its own container, so "add to this page" and "add to that row"
-    /// are one call with a different id. That is not true of the tree, where the
-    /// root has no row and needs a method of its own.
+    /// are one call with a different id.
     public func pageAddChild(id: String) {
         let existing = Set(pages.page.items.map(\.id))
         let key = freshKey(among: childLabels(of: id))
@@ -413,12 +248,17 @@ public final class FlowerModel: ObservableObject {
         if id == pages.page.focus {
             return Set(pages.page.items.filter { $0.inset == 0 }.map(\.label))
         }
-        // A row on this page: its children are the group members inlined under it,
-        // when it is one; otherwise the page it opens is not loaded and a plain
-        // `new_key` is as good a guess as any.
+        // A row on this page: its children are the members inlined under it,
+        // when it carries any — the run of deeper insets that follows it, kept
+        // to the rank directly below its own. Otherwise the page it opens is
+        // not loaded and a plain `new_key` is as good a guess as any.
         guard let at = pages.page.items.firstIndex(where: { $0.id == id }) else { return [] }
+        let base = pages.page.items[at].inset
         return Set(
-            pages.page.items[(at + 1)...].prefix { $0.inset > 0 }.map(\.label)
+            pages.page.items[(at + 1)...]
+                .prefix { $0.inset > base }
+                .filter { $0.inset == base + 1 }
+                .map(\.label)
         )
     }
 
@@ -429,22 +269,11 @@ public final class FlowerModel: ObservableObject {
         return "new_key\(n)"
     }
 
-    // ── keeping the two frames in step ────────────────────────────────────────
-    //
-    // Core keeps both projections live off one document, so the model does too:
-    // every command replaces the frame it was made from and re-reads the other.
-    // The alternative — refreshing lazily on a surface switch — shows a stale
-    // page for exactly as long as it takes the user to notice.
-
-    private func apply(_ view: DocView) {
-        state = view
-        pages = doc.pages()
-    }
+    // ── the one seam to the handle ────────────────────────────────────────────
 
     private func apply(_ view: PagesView) {
         lastMove = move(from: pages.page, to: view.page)
         pages = view
-        state = doc.view()
     }
 
     /// How the page view got from `old` to `new`, by depth: the trail is the
@@ -459,25 +288,5 @@ public final class FlowerModel: ObservableObject {
         case -1: return .pop
         default: return .jump
         }
-    }
-
-    private func isDirectChild(_ r: RowView, of parent: RowView) -> Bool {
-        r.depth == parent.depth + 1 && (parent.id.isEmpty || r.id.hasPrefix(parent.id + "."))
-    }
-
-    private func freshRootKey() -> String {
-        let existing = Set(state.rows.filter { $0.depth == 0 }.map(\.label))
-        if !existing.contains("new_key") { return "new_key" }
-        var n = 2
-        while existing.contains("new_key\(n)") { n += 1 }
-        return "new_key\(n)"
-    }
-
-    private func freshKey(under row: RowView) -> String {
-        let existing = Set(state.rows.filter { isDirectChild($0, of: row) }.map(\.label))
-        if !existing.contains("new_key") { return "new_key" }
-        var n = 2
-        while existing.contains("new_key\(n)") { n += 1 }
-        return "new_key\(n)"
     }
 }

@@ -2,14 +2,15 @@
 //
 //  Maps a row's semantic `kind` (the renderer class id flower-ffi ships:
 //  "null"/"bool"/"int"/"float"/"str"/"ext"/"map"/"seq") onto the SwiftUI
-//  presentation — the value colour and a glyph — plus the fonts the tree draws
-//  with. Pure data, so it type-checks and unit-tests without any Rust runtime.
+//  presentation — the value colour and a glyph — plus fonts a host may
+//  customise. Pure data, so it type-checks and unit-tests without any Rust
+//  runtime.
 
 import SwiftUI
 
-/// The look of the tree: fonts for labels and values, and the palette a value's
+/// The look of the rows: fonts for labels and values, and the palette a value's
 /// kind resolves to. Customise by constructing one and passing it to
-/// `FlowerEditor(model:theme:)`.
+/// `FlowerPages(model:theme:)`.
 public struct FlowerTheme {
     public var labelFont: Font
     public var valueFont: Font

@@ -421,8 +421,14 @@ private struct PagePane<Model: PageDriving>: View {
                         .foregroundStyle(.tertiary)
                         .padding(.horizontal, 14)
                         .padding(.vertical, 12)
+                    addRow
                 } else if folded {
                     card(split.promoted)
+                    // Above the fold, not under it: adding a field belongs to
+                    // the rows a reader came to edit, and a fold that has to be
+                    // opened to reach the offer — or that pushes it a screen
+                    // down when opened — hides an action that is not advanced.
+                    addRow
                     advancedHeader(count: split.demoted.count,
                                    open: advancedOpen(split.demoted))
                     if advancedOpen(split.demoted) {
@@ -430,9 +436,7 @@ private struct PagePane<Model: PageDriving>: View {
                     }
                 } else {
                     card(split.promoted + split.demoted)
-                }
-                if role == .cursor, model.canAddChild(pageId: page.focus) {
-                    AddChildRow(pageId: page.focus, model: model)
+                    addRow
                 }
             }
             .padding(.horizontal, 14)
@@ -443,6 +447,15 @@ private struct PagePane<Model: PageDriving>: View {
         .opacity(role == .preview ? 0.55 : 1)
         .allowsHitTesting(role.isInteractive)
         .accessibilityHidden(role == .preview)
+    }
+
+    /// The offer to add a child, where the page takes one and the pane is the
+    /// one being edited. A preview or a trail pane is a picture of somewhere
+    /// else; an action drawn on it would act on a page the reader has left.
+    @ViewBuilder private var addRow: some View {
+        if role == .cursor, model.canAddChild(pageId: page.focus) {
+            AddChildRow(pageId: page.focus, model: model)
+        }
     }
 
     /// Whether the fold is showing: opened by hand, or held open by what must

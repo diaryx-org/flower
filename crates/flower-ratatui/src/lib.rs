@@ -370,13 +370,21 @@ fn draw_footer<B: Backend>(f: &mut Frame, model: &Model<B>, area: Rect) {
             Span::styled("▏", Style::default().fg(Color::Yellow)),
             Span::styled("   (Enter to commit · Esc to cancel)", dim()),
         ]),
-        Mode::Normal => Line::from(vec![
-            Span::styled(
-                format!(" {} ", model.status),
-                Style::default().fg(Color::Black).bg(Color::Green),
-            ),
-            Span::styled(hints, dim()),
-        ]),
+        // The status carries refusals, and is empty until there has been one —
+        // so the badge is drawn only when it has something in it. A green block
+        // holding two spaces is a widget reporting that nothing is wrong, which
+        // is the state the footer is in almost all the time.
+        Mode::Normal => {
+            let mut spans = Vec::new();
+            if !model.status.is_empty() {
+                spans.push(Span::styled(
+                    format!(" {} ", model.status),
+                    Style::default().fg(Color::Black).bg(Color::Green),
+                ));
+            }
+            spans.push(Span::styled(hints, dim()));
+            Line::from(spans)
+        }
     };
     f.render_widget(line, area);
 }

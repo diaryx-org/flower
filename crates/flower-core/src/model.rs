@@ -95,6 +95,13 @@ pub struct Model<B> {
     /// [`select_row`](Self::select_row), which can.
     selected: usize,
     pub mode: Mode,
+    /// The last thing that happened worth saying out loud — almost always a
+    /// refusal (`rejected: ...`, `only mapping keys can be renamed`).
+    ///
+    /// Empty until something happens. A frontend draws this in whatever it uses
+    /// for a status line, and an empty string is what lets it draw *nothing*:
+    /// a bar that opens holding a word nobody asked for teaches the reader to
+    /// stop reading it, which is the one thing a refusal channel cannot afford.
     pub status: String,
     pub dirty: bool,
 
@@ -191,7 +198,9 @@ impl<B: Backend> Model<B> {
             schema,
             selected: 0,
             mode: Mode::Normal,
-            status: "opened".to_string(),
+            // Nothing has happened yet, so there is nothing to report. See
+            // `status`.
+            status: String::new(),
             dirty: false,
             view: ViewMode::default(),
             focus: Vec::new(),
@@ -1311,6 +1320,18 @@ timeout = 30.5
             model.edit_push(c);
         }
         model.edit_commit();
+    }
+
+    #[test]
+    fn a_fresh_model_has_nothing_to_report() {
+        // The status line carries refusals. A model that has refused nothing
+        // has nothing for it, and a frontend reads the empty string as "draw no
+        // bar" rather than having to know which openings words are noise.
+        assert!(
+            sample_model().status.is_empty(),
+            "status: {}",
+            sample_model().status
+        );
     }
 
     #[test]

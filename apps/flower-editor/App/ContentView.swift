@@ -1,21 +1,21 @@
 import SwiftUI
 import FlowerUI
 
-/// A minimal cross-platform host for the `FlowerUI` structural editor: a header
-/// with the document name, a surface switch and a Save control, the editor
-/// surface, and a status footer. Everything — the projections, navigation, and
+/// A minimal cross-platform host for the `FlowerUI` page editor: a header with
+/// the document name, an inline-budget control and a Save control, the editor
+/// surface, and a status footer. Everything — the projection, navigation, and
 /// the lossless path-addressed edits — comes from flower-core over the FFI; this
 /// file is only chrome.
 ///
-/// Two documents and two surfaces, because both choices are the point of the
-/// demo. A flat note is the case the settings list was built for; a CI workflow
-/// is the case it isn't — nested six deep with a sequence of steps — and the page
-/// view is what stays legible there.
+/// Two documents, because both ends of the inline budget are the point of the
+/// demo. A flat note inlines onto one page at any budget; a CI workflow —
+/// nested six deep with a sequence of steps — drills at the default and flattens
+/// as the budget grows, which is the one knob where a second surface used to be.
 struct ContentView: View {
     @StateObject private var note = makeNoteModel()
     @StateObject private var workflow = makeWorkflowModel()
     @State private var sample: Sample = .workflow
-    @State private var surface: Surface = .pages
+    @State private var budget: Budget = .default
 
     private var model: FlowerModel { sample == .note ? note : workflow }
 
@@ -23,26 +23,17 @@ struct ContentView: View {
         VStack(spacing: 0) {
             header
             Divider()
-            editor
+            // The `id` makes a document swap a genuine appearance rather than a
+            // redraw of the same view, so it re-enters the page view at the root.
+            FlowerPages(model: model, rootLabel: sample.rawValue)
+                .id(sample.rawValue)
                 .background(editorBackground)
             Divider()
             footer
         }
         .ignoresSafeArea(.keyboard, edges: .bottom)
-    }
-
-    /// One surface at a time, and each claims its projection when it appears — the
-    /// `id` makes the switch a genuine appearance rather than a redraw of the same
-    /// view, so a document swap re-enters the page view at the root.
-    @ViewBuilder private var editor: some View {
-        switch surface {
-        case .pages:
-            FlowerPages(model: model, rootLabel: sample.rawValue)
-                .id("\(sample.rawValue)-pages")
-        case .list:
-            FlowerEditor(model: model)
-                .id("\(sample.rawValue)-list")
-        }
+        .onChange(of: budget) { model.setInlineBudget(rows: $0.rows, depth: $0.depth) }
+        .onChange(of: sample) { _ in model.setInlineBudget(rows: budget.rows, depth: budget.depth) }
     }
 
     private var header: some View {
@@ -61,12 +52,13 @@ struct ContentView: View {
                 Circle().fill(.secondary).frame(width: 6, height: 6)
             }
             Spacer()
-            Picker("Surface", selection: $surface) {
-                ForEach(Surface.allCases) { Label($0.name, systemImage: $0.symbol).tag($0) }
+            Picker("Inline", selection: $budget) {
+                ForEach(Budget.allCases) { Text($0.name).tag($0) }
             }
             .pickerStyle(.segmented)
             .labelsHidden()
             .fixedSize()
+            .help("How much of the document inlines onto one page before drilling")
             Divider().frame(height: 18)
             structureControls
             Divider().frame(height: 18)
@@ -85,48 +77,8 @@ struct ContentView: View {
         .background(.bar)
     }
 
-    /// Structural editing controls, acting on whatever the visible surface has
-    /// selected: the tree's selected row, or the page's selected item. Same
-    /// operations either way — the two surfaces differ in what they can show, not
-    /// in what they can do.
+    /// Structural editing controls, acting on whatever the page has selected.
     @ViewBuilder private var structureControls: some View {
-        switch surface {
-        case .list: treeControls
-        case .pages: pageControls
-        }
-    }
-
-    @ViewBuilder private var treeControls: some View {
-        let row = model.selectedRow
-        Menu {
-            Button("Add top-level field") { model.addRootChild() }
-            if let row, model.canAddChild(row) {
-                Button("Add to \"\(row.label)\"") { model.addChild(row) }
-            }
-        } label: {
-            Image(systemName: "plus")
-        }
-        .menuStyle(.borderlessButton)
-        .fixedSize()
-        .help("Add a field to the document or the selected container")
-
-        Button {
-            if let row { model.moveRowUp(row) }
-        } label: { Image(systemName: "arrow.up") }
-            .disabled(!(row.map(model.canReorder) ?? false))
-
-        Button {
-            if let row { model.moveRowDown(row) }
-        } label: { Image(systemName: "arrow.down") }
-            .disabled(!(row.map(model.canReorder) ?? false))
-
-        Button(role: .destructive) {
-            if let row { model.delete(row) }
-        } label: { Image(systemName: "trash") }
-            .disabled(row == nil)
-    }
-
-    @ViewBuilder private var pageControls: some View {
         let item = model.selectedItem
         Menu {
             Button("Add to this page") { model.pageAddChild(id: model.page.focus) }
@@ -168,9 +120,7 @@ struct ContentView: View {
                     .help("Prov-managed keys (id, prov, contents, …) stay in the file but aren't shown or editable here.")
             }
             Spacer()
-            Text(surface == .pages
-                 ? "tap a section to open it · right-click a row to rename · add · reorder · delete"
-                 : "right-click a row to rename · add · reorder · delete")
+            Text("tap a section to open it · right-click a row to rename · add · reorder · delete")
                 .font(.footnote)
                 .foregroundStyle(.tertiary)
         }
@@ -180,16 +130,37 @@ struct ContentView: View {
     }
 }
 
-/// Which of the two `FlowerUI` surfaces is on screen.
-private enum Surface: String, CaseIterable, Identifiable {
-    /// The whole document at once, indented — `FlowerEditor`.
-    case list
-    /// One container at a time, pushed and popped — `FlowerPages`.
-    case pages
+/// The inline budgets the demo offers — the ends of the knob and the middle.
+private enum Budget: String, CaseIterable, Identifiable {
+    /// The settings-menu rule: small all-scalar groups inline.
+    case `default`
+    /// A couple of ranks, enough for a medium config on few pages.
+    case roomy
+    /// Effectively unbounded: the whole document on one page.
+    case flat
 
     var id: Self { self }
-    var name: String { self == .list ? "List" : "Pages" }
-    var symbol: String { self == .list ? "list.bullet.indent" : "sidebar.right" }
+    var name: String {
+        switch self {
+        case .default: return "Pages"
+        case .roomy: return "Roomy"
+        case .flat: return "Flat"
+        }
+    }
+    var rows: Int {
+        switch self {
+        case .default: return 6
+        case .roomy: return 24
+        case .flat: return 9999
+        }
+    }
+    var depth: Int {
+        switch self {
+        case .default: return 1
+        case .roomy: return 2
+        case .flat: return 99
+        }
+    }
 }
 
 /// The demo documents, named by the file they stand in for.
@@ -221,7 +192,7 @@ private func makeNoteModel() -> FlowerModel {
 
 private func makeWorkflowModel() -> FlowerModel {
     // The deep case: a CI workflow, where the interesting levels are four and five
-    // deep and the tree spends most of its width on ancestors.
+    // deep and the page view is what stays legible.
     try! FlowerModel(source: sampleWorkflow, format: "yaml")
 }
 

@@ -1549,19 +1549,18 @@ timeout = 30.5
     #[test]
     fn schema_closed_vocabulary_rejects_an_unknown_edit() {
         use crate::schema::{Constraint, FieldRule};
-        use fig_schema::{FieldType, PathPat, Presentation, Term};
+        use fig_schema::{FieldType, PathPat, Term};
         let src = "audience = [\"public\"]\ntitle = \"note\"\n";
         let backend = FigBackend::open(src.as_bytes(), Format::Toml).expect("open");
         let mut model = Model::new(backend).expect("model");
-        model.set_schema(crate::schema::Schema::new(vec![FieldRule {
-            at: PathPat::each_item_of("audience"),
-            ty: Some(FieldType::Str),
-            constraint: Some(Constraint::Enum {
-                values: vec![Term::value("public"), Term::value("private")],
-                closed: true,
-            }),
-            present: Presentation::default(),
-        }]));
+        model.set_schema(crate::schema::Schema::new(vec![
+            FieldRule::new(PathPat::each_item_of("audience"))
+                .ty(FieldType::Str)
+                .constraint(Constraint::Enum {
+                    values: vec![Term::value("public"), Term::value("private")],
+                    closed: true,
+                }),
+        ]));
 
         // An unknown value is rejected at the commit funnel; the document is
         // untouched (fig never sees the edit).
@@ -1593,43 +1592,25 @@ timeout = 30.5
     #[test]
     fn addable_fields_are_the_declared_keys_the_document_lacks() {
         use crate::schema::{Constraint, FieldRule};
-        use fig_schema::{FieldType, PathPat, Presentation, Term};
+        use fig_schema::{FieldType, PathPat, Term};
         let src = "audience = [\"public\"]\ntitle = \"note\"\n";
         let backend = FigBackend::open(src.as_bytes(), Format::Toml).expect("open");
         let mut model =
             Model::with_hidden(backend, vec!["title".into(), "updated".into()]).expect("model");
         model.set_schema(crate::schema::Schema::new(vec![
             // Present in the document — already reachable, so never offered.
-            FieldRule {
-                at: PathPat::key("audience"),
-                ty: Some(FieldType::Str),
-                constraint: None,
-                present: Presentation::default(),
-            },
+            FieldRule::new(PathPat::key("audience")).ty(FieldType::Str),
             // An each-item rule governs *within* a field; it names none.
-            FieldRule {
-                at: PathPat::each_item_of("audience"),
-                ty: Some(FieldType::Str),
-                constraint: Some(Constraint::Enum {
+            FieldRule::new(PathPat::each_item_of("audience"))
+                .ty(FieldType::Str)
+                .constraint(Constraint::Enum {
                     values: vec![Term::value("public")],
                     closed: true,
                 }),
-                present: Presentation::default(),
-            },
             // Declared, absent, not managed — the one to offer.
-            FieldRule {
-                at: PathPat::key("created"),
-                ty: Some(FieldType::Str),
-                constraint: None,
-                present: Presentation::default(),
-            },
+            FieldRule::new(PathPat::key("created")).ty(FieldType::Str),
             // Declared and absent, but the embedder manages it.
-            FieldRule {
-                at: PathPat::key("updated"),
-                ty: Some(FieldType::Str),
-                constraint: None,
-                present: Presentation::default(),
-            },
+            FieldRule::new(PathPat::key("updated")).ty(FieldType::Str),
         ]));
 
         let offered: Vec<_> = model
@@ -1694,16 +1675,13 @@ timeout = 30.5
     #[test]
     fn schema_typed_field_keeps_a_numeric_string_as_text() {
         use crate::schema::FieldRule;
-        use fig_schema::{FieldType, PathPat, Presentation};
+        use fig_schema::{FieldType, PathPat};
         let src = "code = \"x\"\n";
         let backend = FigBackend::open(src.as_bytes(), Format::Toml).expect("open");
         let mut model = Model::new(backend).expect("model");
-        model.set_schema(crate::schema::Schema::new(vec![FieldRule {
-            at: PathPat::key("code"),
-            ty: Some(FieldType::Str),
-            constraint: None,
-            present: Presentation::default(),
-        }]));
+        model.set_schema(crate::schema::Schema::new(vec![
+            FieldRule::new(PathPat::key("code")).ty(FieldType::Str),
+        ]));
 
         select(&mut model, &[Seg::Key("code".into())]);
         model.begin_edit();
@@ -1804,33 +1782,19 @@ timeout = 30.5
     #[test]
     fn insert_and_append_are_type_directed_by_the_schema() {
         use crate::schema::FieldRule;
-        use fig_schema::{FieldType, PathPat, Presentation};
+        use fig_schema::{FieldType, PathPat};
         let src = "tags = [\"alpha\"]\n\n[meta]\nk = \"v\"\n";
         let backend = FigBackend::open(src.as_bytes(), Format::Toml).expect("open");
         let mut model = Model::new(backend).expect("model");
         model.set_schema(crate::schema::Schema::new(vec![
             // The *items* of `tags` are strings — the list itself is a seq.
-            FieldRule {
-                at: PathPat::each_item_of("tags"),
-                ty: Some(FieldType::Str),
-                constraint: None,
-                present: Presentation::default(),
-            },
-            FieldRule {
-                at: PathPat::key("year"),
-                ty: Some(FieldType::Str),
-                constraint: None,
-                present: Presentation::default(),
-            },
-            FieldRule {
-                at: PathPat(vec![
-                    fig_schema::SegPat::Key("meta".into()),
-                    fig_schema::SegPat::Key("code".into()),
-                ]),
-                ty: Some(FieldType::Str),
-                constraint: None,
-                present: Presentation::default(),
-            },
+            FieldRule::new(PathPat::each_item_of("tags")).ty(FieldType::Str),
+            FieldRule::new(PathPat::key("year")).ty(FieldType::Str),
+            FieldRule::new(PathPat(vec![
+                fig_schema::SegPat::Key("meta".into()),
+                fig_schema::SegPat::Key("code".into()),
+            ]))
+            .ty(FieldType::Str),
         ]));
 
         model.append_item_text(&[Seg::Key("tags".into())], "2026");

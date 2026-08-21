@@ -619,17 +619,22 @@ mod tests {
 
     /// flower's own backend is the suite's first subject.
     ///
-    /// It passes every guarantee but one, and that one is an upstream defect
+    /// It passes every guarantee but one, and that one is an upstream limit
     /// rather than a contract that was written too strictly: `ReplaceValue` at a
-    /// TOML **table-header** table (`[nested]`) rewrites the *header's key* instead
-    /// of the table's value, so replacing `nested` with `"REPLACED"` silently
-    /// renames the section to `["REPLACED"]` and reports `Ok`. It is specific to
-    /// that one shape — an inline table, an array, and every YAML/JSON container
+    /// TOML **table-header** table (`[nested]`) is refused. It is specific to that
+    /// one shape — an inline table, an array, and every YAML/JSON container
     /// replace correctly.
     ///
-    /// The deviation is pinned here rather than dropped from
-    /// [`conformance::check`], so it cannot grow quietly and so this test turns red
-    /// (and the block goes away) the day fig fixes it.
+    /// Until fig 3.2 this was a far worse deviation: the op reported `Ok` and
+    /// rewrote the *header's key*, silently renaming the section to
+    /// `["REPLACED"]` and stranding the table's body under it. fig 3.2 refuses
+    /// instead and leaves the document alone, which is why the count below did
+    /// not change while its meaning did — an unsupported op is a deviation from
+    /// the contract, but it is no longer a corruption.
+    ///
+    /// The deviation stays pinned here rather than dropped from
+    /// [`conformance::check`], so it cannot grow quietly and so this test turns
+    /// red (and the block goes away) the day fig supports the shape.
     #[test]
     fn fig_backend_satisfies_the_edit_op_contract_but_for_a_known_fig_defect() {
         let report = conformance::check(open_fixture)
@@ -645,20 +650,28 @@ mod tests {
         );
     }
 
-    /// The corruption itself, stated as behavior rather than as a count — so the
-    /// hazard is legible to anyone reaching for `Model::set_value_at` on a TOML
-    /// table, and so a *change* in how fig gets it wrong is caught too.
+    /// The refusal itself, stated as behavior rather than as a count — so what
+    /// happens to anyone reaching for `Model::set_value_at` on a TOML table is
+    /// legible, and so a *change* in how fig handles the shape is caught too.
+    ///
+    /// The second assertion is the one that matters. Before fig 3.2 this op
+    /// reported success and quietly rewrote the section header; the document
+    /// being byte-identical after a refusal is the whole of the improvement, and
+    /// an error return that had still mutated the file would be worse than the
+    /// original defect rather than better.
     #[test]
-    fn replacing_a_toml_table_header_renames_the_section_upstream() {
+    fn replacing_a_toml_table_header_is_refused_and_changes_nothing() {
         let mut backend = open_fixture();
-        backend
-            .apply(EditOp::ReplaceValue {
-                path: vec![Seg::Key("nested".into())],
-                value: Value::Str("REPLACED".into()),
-            })
-            .expect("fig reports success");
-        let src = backend.source().expect("source");
-        assert!(src.contains("[\"REPLACED\"]"), "header renamed:\n{src}");
-        assert!(src.contains("k = \"v\""), "table body left behind:\n{src}");
+        let before = backend.source().expect("source");
+        let result = backend.apply(EditOp::ReplaceValue {
+            path: vec![Seg::Key("nested".into())],
+            value: Value::Str("REPLACED".into()),
+        });
+        assert!(result.is_err(), "fig refuses the shape it cannot rewrite");
+        assert_eq!(
+            backend.source().expect("source"),
+            before,
+            "a refused op leaves the document byte-identical"
+        );
     }
 }

@@ -81,19 +81,16 @@ impl FieldRuleExt for FieldRule {
 mod tests {
     use super::*;
     use crate::tree::Seg;
-    use fig_schema::{FieldType, Issue, PathPat, Presentation};
+    use fig_schema::{FieldType, Issue, PathPat};
 
     #[test]
     fn closed_enum_rejects_unknown_accepts_known() {
-        let rule = FieldRule {
-            at: PathPat::each_item_of("audience"),
-            ty: Some(FieldType::Str),
-            constraint: Some(Constraint::Enum {
+        let rule = FieldRule::new(PathPat::each_item_of("audience"))
+            .ty(FieldType::Str)
+            .constraint(Constraint::Enum {
                 values: vec![Term::value("public"), Term::value("private")],
                 closed: true,
-            }),
-            present: Presentation::default(),
-        };
+            });
         assert_eq!(rule.validate(&Value::Str("public".into())), Validation::Ok);
         assert!(matches!(
             rule.validate(&Value::Str("familly".into())),
@@ -103,16 +100,13 @@ mod tests {
 
     #[test]
     fn reference_constraint_is_not_checked_here() {
-        let rule = FieldRule {
-            at: PathPat::key("part_of"),
-            ty: Some(FieldType::Ref),
-            constraint: Some(Constraint::Reference {
+        let rule = FieldRule::new(PathPat::key("part_of"))
+            .ty(FieldType::Ref)
+            .constraint(Constraint::Reference {
                 relation: "part_of".into(),
                 cardinality: Cardinality::One,
                 spanning: true,
-            }),
-            present: Presentation::default(),
-        };
+            });
         assert_eq!(
             rule.validate(&Value::Str("anything".into())),
             Validation::Ok
@@ -122,21 +116,12 @@ mod tests {
 
     #[test]
     fn schema_rule_for_matches_by_path() {
-        let schema = Schema::new(vec![FieldRule {
-            at: PathPat::key("status"),
-            ty: None,
-            constraint: Some(Constraint::Enum {
-                values: vec![
-                    Term::value("active"),
-                    Term {
-                        retired: true,
-                        ..Term::value("archived")
-                    },
-                ],
+        let schema = Schema::new(vec![FieldRule::new(PathPat::key("status")).constraint(
+            Constraint::Enum {
+                values: vec![Term::value("active"), Term::value("archived").retired(true)],
                 closed: true,
-            }),
-            present: Presentation::default(),
-        }]);
+            },
+        )]);
         let rule = schema.rule_for(&[Seg::Key("status".into())]).unwrap();
         assert_eq!(rule.validate(&Value::Str("active".into())), Validation::Ok);
         // A retired term is still a *member*, so even a closed vocabulary only

@@ -13,7 +13,7 @@ members = [
 
 [workspace.package]
 edition = "2024"
-version = "0.1.0"
+version = "0.2.0"
 # Minimum supported Rust version, enforced by the `msrv` CI job (which reads this
 # very value). Edition 2024 needs 1.85, but `flower-core` uses an `if let … && let …`
 # let-chain in a stable position, stabilized in 1.88 — so 1.88 is the true floor.
@@ -30,5 +30,5 @@ fig-schema = "0.2.0"
 ratatui = "0.29"
 anyhow = "1"
 # Internal crates.
-flower-core = { path = "crates/flower-core", version = "0.1.0" }
+flower-core = { path = "crates/flower-core", version = "0.2.0" }
 flower-ratatui = { path = "crates/flower-ratatui" }

@@ -39,6 +39,16 @@ bucket first. `docs/releasing.md` is how it is cut.
 
 <!-- git-cliff:begin — generated; edits here are overwritten -->
 
+_No commits since the last tag._
+
+<!-- git-cliff:end -->
+
+## v0.2.0 — 2026-08-20
+
+### Breaking
+
+- **deps** — fig-schema 0.2.0, whose types are built rather than spelled ([`f1c77dd`](https://github.com/diaryx-org/flower/commit/f1c77dd9b76290939bcd2e12355932b3304d579b))
+
 ### Added
 
 - SwiftUI frontend for Flower ([`7f15f8c`](https://github.com/diaryx-org/flower/commit/7f15f8c780279903a4b6e052aadf09caeb8b3cd3))
@@ -50,6 +60,24 @@ bucket first. `docs/releasing.md` is how it is cut.
 - **model** — separate the managed fields that are hidden from those that are derived ([`2abe52f`](https://github.com/diaryx-org/flower/commit/2abe52f23861977544611a7db5affa2a9c213cae))
 - add: upstreamed from Diaryx: Document edit contracts and schema-aware
 value parsing ([`b046c0b`](https://github.com/diaryx-org/flower/commit/b046c0b075c82f06a171c177eea1672026f1cd39))
+- **page** — a settings-menu view, so depth costs a page and not a column ([`0b2c0e1`](https://github.com/diaryx-org/flower/commit/0b2c0e1f418bbe83aa12bcadec9627433d162b5f))
+- **page** — name a sequence's items by what is in them, not by their index ([`d2593b3`](https://github.com/diaryx-org/flower/commit/d2593b3f938c8658b536558896e5e6d81231d902))
+- **page** — show a small container, slide the panes, and stop repeating a group ([`59a3ea1`](https://github.com/diaryx-org/flower/commit/59a3ea19dccf2deda0f8b55efb1f6c154a535796))
+- **swift** — the page view, so a deep config is as legible on Apple as in the terminal ([`c6960ff`](https://github.com/diaryx-org/flower/commit/c6960ff2718314cd6100adfd8995448ca2ecf8b1))
+- **swift** — the OS's stack where the layout is a stack, and a slide where it isn't ([`c6c0a31`](https://github.com/diaryx-org/flower/commit/c6c0a3198ca9b70317dd44bb1fcb9192132c7911))
+- **core** — answer "can this be renamed?" where the path already is ([`365659a`](https://github.com/diaryx-org/flower/commit/365659af2ef4e9986ab47db27078cf2f8b51287e))
+- **page** — sink the fields nobody types in below the ones they do ([`47e88b9`](https://github.com/diaryx-org/flower/commit/47e88b9757707fa2b0273768472d3b4bcf82d71c))
+- **ffi** — publish the binding, so a foreign backend gets the same projection ([`35028a2`](https://github.com/diaryx-org/flower/commit/35028a226f2d71aec6519f0861e00ee0bce8a92e))
+- **page** — one row for a chain of containers that hold only each other ([`c72a67d`](https://github.com/diaryx-org/flower/commit/c72a67d795c99bb198d1d903e7118edb75ecd95a))
+- **swift** — the page editor, written against a document rather than a binding ([`73004be`](https://github.com/diaryx-org/flower/commit/73004be018a4a4264afc777fecd8cd436eee9842))
+- **swift** — a page row that renders what the schema says instead of guessing ([`859edad`](https://github.com/diaryx-org/flower/commit/859edad2779bf3e83f8782c801bbb81627068648))
+
+### Fixed
+
+- **model** — a cursor means what it says only in the projection it came from ([`2df1a7c`](https://github.com/diaryx-org/flower/commit/2df1a7cf086f306fce5b5148dbc631012060274d))
+- **page** — the left pane is the page you came out of, not the one you skipped ([`cebf2b1`](https://github.com/diaryx-org/flower/commit/cebf2b1bad2c19730754966cd9bbb6356933b2a1))
+- **page** — leaving a compressed row costs the step that arriving cost ([`82ddfef`](https://github.com/diaryx-org/flower/commit/82ddfef48224b8a63454d0e46e5bae42fe9af8ce))
+- **model** — a status line that opens with nothing to say ([`89422bc`](https://github.com/diaryx-org/flower/commit/89422bccc04514ff12f011e47acc08b3f0d147d9))
 
 ### Changed
 
@@ -131,4 +159,99 @@ depends on prov or leaf; the workspace is back to a clean generic config editor
 - prepare for publishing ([`17e450f`](https://github.com/diaryx-org/flower/commit/17e450fe81332b586d649d2a07ed93c85aa5a61b))
 - Update .gitignore ([`adbb1cb`](https://github.com/diaryx-org/flower/commit/adbb1cbc66a4f5b8c9ba19ca330bf75d253f2bc1))
 
-<!-- git-cliff:end -->
+### Behavioural changes
+
+- `Mode::Editing` now carries the `path` it is editing
+ alongside its buffer, so a pattern match on `Mode::Editing { buffer }` needs
+ `{ buffer, .. }`. An edit is anchored to the node it opened on rather than
+ re-read from the selection at commit time, which is what lets an edit begun in
+ one projection commit correctly regardless of how the other indexes its rows.
+
+- `tree::preview` now cuts a string at its first line break
+ and marks it with an ellipsis, where it previously returned the value whole. A
+ caller rendering it as one row was already relying on that being true — a YAML
+ block scalar drew a row several lines tall and threw the rows below it out of
+ alignment. `tree::edit_seed` is unchanged and still yields the whole string, so
+ what you edit is never the abbreviation you were shown.
+
+- `PageItem::is_drill` no longer answers true for a group
+ header; `PageItem::is_container` is the test for "names a container at all".
+ `Page::has_drills` narrows with it, so a page whose only containers are inlined
+ groups now reports nothing to navigate into — which is the question its one
+ caller, `Model::pages_would_degenerate`, was asking.
+
+- `FlowerDoc`'s page methods now resolve an `id` naming an
+ ancestor of the current focus, which no live pane lists. `page_open` on one was
+ inert and now navigates to it; `page_select`, `page_delete`, `page_rename`, and
+ the rest likewise now act on such an id rather than doing nothing.
+
+- `page::build_page` takes a fourth argument, the
+demoted top-level keys; pass `&HashSet::new()` for the previous
+behaviour. `PageItem` and `Page` each gained a public `demoted` field, so
+struct literals over them need updating — `Page::default()` and every
+`Model` accessor are unaffected. Nothing renders differently until an
+embedder calls `Model::set_demoted`, except that a model built with
+derived keys now reports them demoted.
+
+- `flower-ffi` is published to crates.io from the next
+release, first appearing at that version rather than at 0.1.0.
+`PageItemView` and `PageView` each gained a `demoted` field, which
+regenerates the Swift binding — additive for a host that only reads
+them.
+
+- `PageItem` gained `descend_to` and `PageItemView`
+gained `chain`; both equal the row's own path/label for anything not
+compressed. A drill row over a single-child chain now reports the count,
+summary, kind, and preview of the container it *opens* rather than of the
+one it starts at, and `page_enter` / `page_open` / the peek pane land
+there. Ops are unaffected: they still take the outermost node.
+
+- `FlowerPages` is now generic over its model
+(`FlowerPages<Model: PageDriving>`); the call site infers it and is
+unchanged. `PageMove`, `FlowerTheme`, `IconTile`, `FlowerPalette`, and
+`prettify` move to the `FlowerPagesUI` module, re-exported from
+`FlowerUI` — a consumer importing `FlowerUI` sees no difference, one
+importing the target directly names the new module.
+
+- `Model::selected` is no longer a public field. Read
+it with `selected()`; set it with `select_row(index)`, which switches to
+the tree projection first. Calling tree-cursor or page-cursor methods now
+switches the model into the matching projection, carrying the cursor
+across as `set_view` always has — so a caller that mixed the two
+vocabularies without switching gets the node it named rather than the one
+the other projection was pointing at.
+
+- `Model::parent_page` (and `PagesView.parent`) can now
+be more than one level out from the focus, when the levels between were
+compressed into a single row. `Page::position_of` also matches an item's
+`descend_to`, so a compressed row is found by the path it opens as well
+as by its own.
+
+- `Model::page_back` can now move out more than one level
+  at a time. On a document where a row compresses (a container holding only
+  another container), it lands on the page that listed the row rather than on
+  the intermediate page, so `focus()` after one call may be several segments
+  shorter than before.
+
+- `PageItemDisplaying` has seven new members, all defaulted.
+  An existing conformance keeps compiling and keeps rendering as it did; a host
+  that fills them in gets pickers, locks, and schema-chosen names and symbols.
+
+- `PageDriving` requires `setChoice(_:_:)`. A host that does
+  not offer a vocabulary can leave it empty, but it has to declare it.
+
+- `Model::status` is empty on a freshly opened document
+  instead of holding "opened". A frontend that renders the status
+  unconditionally will now draw an empty string there until the first refusal;
+  one that already checks for empty gets a status line that appears when it
+  has something to say.
+
+- `flower_core::FieldRule`, `Presentation` and `Term` are
+  re-exports of `#[non_exhaustive]` types. Code constructing them with struct
+  literals — including `..Default::default()` — must move to the constructors
+  and setters; reading their fields is unchanged.
+
+- `EditOp::ReplaceValue` on a TOML table-header table now
+  returns `Err` and leaves the document unchanged. It used to return `Ok` and
+  corrupt the file by renaming the section header.
+

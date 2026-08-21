@@ -30,8 +30,9 @@
 //! ## Two projections, one document
 //!
 //! The tree is not the only shape core offers. [`FlowerDoc::show_pages`] switches
-//! to the **page** projection — one container at a time, with small all-scalar
-//! groups inlined, pushed and popped like a settings menu — and returns a
+//! to the **page** projection — one container at a time, with budget-fitting
+//! containers inlined ([`FlowerDoc::set_inline_budget`]; small all-scalar
+//! groups by default), pushed and popped like a settings menu — and returns a
 //! [`PagesView`]: the page you are on, the page it came out of, and the page the
 //! cursor would open, so a two-pane host needs one crossing per frame there too.
 //!
@@ -73,7 +74,7 @@
 use std::sync::{Arc, Mutex};
 
 use fig::{Format, Value};
-use flower_core::page::{self, Page, PageItem};
+use flower_core::page::{self, InlineBudget, Page, PageItem};
 use flower_core::{Backend, FigBackend, ItemKind, Model, Seg, VKind, ViewMode};
 
 uniffi::setup_scaffolding!();
@@ -179,8 +180,10 @@ pub struct PageItemView {
     pub summary: Option<String>,
     /// How many children a container holds; 0 for a scalar.
     pub count: u32,
-    /// 0 for a direct child of the page's focus; 1 for a member of a group inlined
-    /// into it. Never more.
+    /// 0 for a direct child of the page's focus; 1 for a member of a group
+    /// inlined into it, and one more for each further rank the inline budget
+    /// admitted ([`FlowerDoc::set_inline_budget`]). Under the default budget,
+    /// never more than 1.
     pub inset: u32,
     /// Whether this is a mapping entry (its key can be renamed).
     pub can_rename: bool,
@@ -506,7 +509,7 @@ impl FlowerDoc {
     // ── the page projection ───────────────────────────────────────────────────
     //
     // The page methods drive the other projection: one container at a time, with
-    // small all-scalar groups inlined, pushed and popped. They address nodes by
+    // budget-fitting containers inlined, pushed and popped. They address nodes by
     // the same dotted-path `id` a `RowView` carries — not by index — because a
     // page item need not be a visible row at all (its ancestors may be folded in
     // the tree), and because a page host has three panes' worth of ids in hand.
@@ -539,6 +542,25 @@ impl FlowerDoc {
     /// made from.
     pub fn pages(&self) -> PagesView {
         pages_of(&self.lock())
+    }
+
+    /// Set how much of a container's subtree the page projection inlines rather
+    /// than drills: at most `rows` rows per inlined subtree (every descendant is
+    /// one — nested headers included), reaching at most `depth` ranks of inset.
+    ///
+    /// The default (6 rows, 1 rank) is the settings-menu rule: small all-scalar
+    /// groups inline, everything substantial earns a page. Raised past the
+    /// document's size, the root page simply *is* the whole document — the
+    /// settings-list rendering, without a second surface. The host picks,
+    /// because the right amount is a fact about the room the pages are drawn
+    /// in, not about the document.
+    pub fn set_inline_budget(&self, rows: u32, depth: u32) -> PagesView {
+        let mut m = self.lock();
+        m.set_inline_budget(InlineBudget {
+            rows: rows as usize,
+            depth: depth as usize,
+        });
+        pages_of(&m)
     }
 
     /// Put the cursor on the item `id` names, pointing the page view at whichever
@@ -1206,6 +1228,26 @@ jobs:
         // A group header opens no page of its own — its members are already here.
         let v = d.page_open("server.limits".to_string());
         assert_eq!(v.page.focus, "server", "still on the page listing it");
+    }
+
+    #[test]
+    fn raising_the_inline_budget_inlines_the_document_onto_the_root_page() {
+        let d = deep();
+        d.show_pages();
+        let v = d.set_inline_budget(99, 8);
+        // Everything inlines: `server` and `jobs` are groups on the root page,
+        // `limits` a group one rank in, its members two ranks in.
+        assert_eq!(item(&v.page, "server").role, "group");
+        assert_eq!(item(&v.page, "server.limits").role, "group");
+        assert_eq!(item(&v.page, "server.limits.timeout").inset, 2);
+        assert_eq!(item(&v.page, "jobs.0").title.as_deref(), Some("build"));
+        // With nothing left to drill into, one full-width pane is the layout.
+        assert!(!v.two_pane);
+
+        // Ops keep addressing the same paths at any budget.
+        let v = d.page_set_value("server.limits.timeout".to_string(), "45".to_string());
+        assert!(v.dirty);
+        assert!(d.source().contains("timeout: 45"));
     }
 
     #[test]

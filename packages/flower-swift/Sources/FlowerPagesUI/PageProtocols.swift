@@ -143,6 +143,22 @@ public protocol PageItemDisplaying: Identifiable where ID == String {
     /// Help text for the field: the sentence a schema author would put beside
     /// it, shown as a subtitle and as a tooltip where a host has them.
     var description: String? { get }
+
+    // ── what the value points at, for a host that can resolve it ──────────────
+
+    /// The name of what this value references, when the host resolved it to
+    /// something a reader would recognise — a document's title where the value
+    /// is `[2026](id:6tzwsxg)`.
+    ///
+    /// A reference's storage form is for machines: showing it tells the reader
+    /// nothing, and locking it tells them less. A row with a `linkLabel` renders
+    /// as a place to *go* — the resolved name, accented, with a chevron — and
+    /// activating it is still ``PageDriving/pageActivate(_:)``, where the host
+    /// decides what following means. flower learns only that the value goes
+    /// somewhere; where, and how to get there, stay the host's.
+    ///
+    /// `nil` — the default — means the value is what it shows.
+    var linkLabel: String? { get }
 }
 
 public extension PageItemDisplaying {
@@ -153,6 +169,7 @@ public extension PageItemDisplaying {
     var icon: String? { nil }
     var tint: String? { nil }
     var description: String? { nil }
+    var linkLabel: String? { nil }
 }
 
 /// One step of a breadcrumb: what it names, and the id that opens it.

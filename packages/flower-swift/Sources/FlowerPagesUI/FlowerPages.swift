@@ -329,7 +329,27 @@ private enum PaneRole {
     var isInteractive: Bool { self != .preview }
 }
 
-/// One page: its items as a card of settings rows.
+/// The fold, at the same seam flower-core offers it (`Page::partitioned`): a
+/// stable partition on `demoted`, each entry keeping the index it has in the
+/// whole item list — which is what `selected` counts, and what must not shift
+/// when the fold rearranges what is *drawn*.
+///
+/// Stability matters for the same reason core states: demotion is root-scoped,
+/// so a group header and the members inlined under it always land in the same
+/// run, adjacent and in order — the fold can never cut a group in half.
+func partitionDemoted<Item: PageItemDisplaying>(
+    _ items: [Item]
+) -> (promoted: [(index: Int, item: Item)], demoted: [(index: Int, item: Item)]) {
+    var promoted: [(index: Int, item: Item)] = []
+    var demoted: [(index: Int, item: Item)] = []
+    for (i, item) in items.enumerated() {
+        if item.demoted { demoted.append((i, item)) } else { promoted.append((i, item)) }
+    }
+    return (promoted, demoted)
+}
+
+/// One page: its items as a card of settings rows, with the demoted ones folded
+/// behind an "Advanced" disclosure below it.
 private struct PagePane<Model: PageDriving>: View {
     typealias Page = Model.Pages.Page
 
@@ -339,7 +359,19 @@ private struct PagePane<Model: PageDriving>: View {
     let rootLabel: String
     let role: PaneRole
 
+    /// Whether the reader opened the fold. Per-pane and reset by navigation
+    /// (the pane is identity-keyed on its focus), which is the disclosure's
+    /// ordinary lifetime: "advanced" is a default about arriving, not a mode.
+    @State private var advancedOpened = false
+
     var body: some View {
+        let split = partitionDemoted(page.items)
+        // Demotion says these rows sit below the ones a reader came to edit —
+        // so the fold only exists where there are both kinds. A page of nothing
+        // but demoted rows has nothing to protect them from, and a page *under*
+        // a demoted key was opened on purpose (core marks the whole page, so
+        // every run would be the folded one and the page would arrive shut).
+        let folded = !page.demoted && !split.promoted.isEmpty && !split.demoted.isEmpty
         ScrollView {
             VStack(alignment: .leading, spacing: 7) {
                 if role != .cursor {
@@ -355,8 +387,18 @@ private struct PagePane<Model: PageDriving>: View {
                         .foregroundStyle(.tertiary)
                         .padding(.horizontal, 14)
                         .padding(.vertical, 12)
+                } else if folded {
+                    card(split.promoted)
+                    advancedHeader(count: split.demoted.count,
+                                   open: advancedOpen(split.demoted))
+                    if advancedOpen(split.demoted) {
+                        card(split.demoted)
+                    }
                 } else {
-                    card
+                    card(split.promoted + split.demoted)
+                }
+                if role == .cursor, model.canAddChild(pageId: page.focus) {
+                    AddChildRow(pageId: page.focus, model: model)
                 }
             }
             .padding(.horizontal, 14)
@@ -368,22 +410,64 @@ private struct PagePane<Model: PageDriving>: View {
         .allowsHitTesting(role.isInteractive)
     }
 
+    /// Whether the fold is showing: opened by hand, or held open by a cursor,
+    /// edit or rename sitting inside it — a disclosure that could hide the row
+    /// being edited would make the fold a place where state goes to get lost.
+    private func advancedOpen(_ demoted: [(index: Int, item: Page.Item)]) -> Bool {
+        advancedOpened || demoted.contains { entry in
+            (page.selected.map { Int($0) == entry.index } ?? false)
+                || model.editingId == entry.item.id
+                || model.renamingId == entry.item.id
+        }
+    }
+
+    /// The fold's own row: what it is called, and — while shut — how much it
+    /// holds, so closed never reads as empty.
+    private func advancedHeader(count: Int, open: Bool) -> some View {
+        Button {
+            advancedOpened.toggle()
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+                    .rotationEffect(open ? .degrees(90) : .zero)
+                Text("ADVANCED")
+                    .font(.system(size: 11, weight: .semibold))
+                    .tracking(0.5)
+                    .foregroundStyle(.secondary)
+                if !open {
+                    Text("\(count)")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.tertiary)
+                }
+                Spacer()
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .padding(.horizontal, 14)
+        .padding(.top, 9)
+        .accessibilityLabel("Advanced")
+        .accessibilityValue(open ? "expanded, \(count) fields" : "collapsed, \(count) fields")
+    }
+
     private var paneTitle: String {
         guard let last = page.crumbs.last else { return rootLabel }
         return prettify(last.label)
     }
 
-    private var card: some View {
+    private func card(_ entries: [(index: Int, item: Page.Item)]) -> some View {
         VStack(spacing: 0) {
-            ForEach(Array(page.items.enumerated()), id: \.element.id) { i, item in
-                if item.role == "group" {
-                    GroupHeaderRow(item: item, first: i == 0)
+            ForEach(Array(entries.enumerated()), id: \.element.item.id) { pos, entry in
+                if entry.item.role == "group" {
+                    GroupHeaderRow(item: entry.item, first: pos == 0)
                 } else {
-                    if i > 0, page.items[i - 1].role != "group" {
-                        Divider().padding(.leading, 57 + CGFloat(item.inset) * 16)
+                    if pos > 0, entries[pos - 1].item.role != "group" {
+                        Divider().padding(.leading, 57 + CGFloat(entry.item.inset) * 16)
                     }
-                    PageRow(item: item, model: model, theme: theme,
-                            selected: page.selected.map { Int($0) == i } ?? false,
+                    PageRow(item: entry.item, model: model, theme: theme,
+                            selected: page.selected.map { Int($0) == entry.index } ?? false,
                             role: role)
                 }
             }
@@ -402,6 +486,80 @@ private struct PagePane<Model: PageDriving>: View {
         #else
         Color(nsColor: .controlBackgroundColor)
         #endif
+    }
+}
+
+/// The page's own add affordance: a row below the cards, present only where the
+/// host said this page's container takes one (``PageDriving/canAddChild(pageId:)``).
+///
+/// The declared-but-absent fields come first — they are what this document's
+/// schema expects, and without an offer they are unreachable, since rows come
+/// from the document and a field with no value has no row. A field whose
+/// vocabulary is closed opens as a submenu of its terms, because it has to
+/// arrive holding a legal one. A custom key stays available underneath for
+/// anything undeclared.
+private struct AddChildRow<Model: PageDriving>: View {
+    let pageId: String
+    @ObservedObject var model: Model
+
+    var body: some View {
+        Menu {
+            let declared = model.addableChildren(of: pageId)
+            if !declared.isEmpty {
+                Section("Declared") {
+                    ForEach(declared) { field in
+                        if field.terms.isEmpty {
+                            Button {
+                                model.pageAddChild(id: pageId, key: field.key, value: "")
+                            } label: {
+                                label(for: field)
+                            }
+                            .help(field.description ?? "")
+                        } else {
+                            Menu {
+                                ForEach(field.terms, id: \.self) { term in
+                                    Button(term) {
+                                        model.pageAddChild(id: pageId, key: field.key, value: term)
+                                    }
+                                }
+                            } label: {
+                                label(for: field)
+                            }
+                        }
+                    }
+                }
+            }
+            Button {
+                model.pageAddChild(id: pageId)
+            } label: {
+                Label("Custom Field…", systemImage: "character.cursor.ibeam")
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "plus")
+                    .font(.system(size: 12, weight: .medium))
+                Text("Add a Field…")
+                    .font(.system(size: 13))
+            }
+            .foregroundStyle(Color.accentColor)
+            .contentShape(Rectangle())
+        }
+        .menuIndicator(.hidden)
+        .fixedSize()
+        #if os(macOS)
+        .menuStyle(.borderlessButton)
+        #endif
+        .padding(.horizontal, 14)
+        .padding(.top, 2)
+    }
+
+    /// The offer, presented as the row it would become: the schema's name and
+    /// symbol where it gave them, the same inference the row would fall back on
+    /// where it did not.
+    private func label(for field: AddableChild) -> some View {
+        let symbol = field.icon.flatMap(FlowerPalette.symbol(forSemanticIcon:))
+            ?? FlowerPalette.inferredIcon(label: field.key, kind: field.kind ?? "str").symbol
+        return Label(field.title ?? prettify(field.key), systemImage: symbol)
     }
 }
 
@@ -543,6 +701,25 @@ private struct PageRow<Model: PageDriving>: View {
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(.tertiary)
             }
+        } else if let link = item.linkLabel {
+            // A reference the host resolved. The storage form is for machines,
+            // so the row shows where the value *goes* — and drawing it ahead of
+            // `isReadonly` is the point: a relation some other surface owns is
+            // usually maintained too, and the lock would say "nothing for you
+            // here" about the most navigable row on the page.
+            HStack(spacing: 5) {
+                Text(link)
+                    .font(.system(size: 15))
+                    .foregroundStyle(Color.accentColor)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+                    .accessibilityHidden(true)
+            }
+            .accessibilityElement(children: .combine)
+            .accessibilityHint("Opens \(link)")
         } else if item.isReadonly {
             // Maintained by something other than the reader. Shown, because a
             // field visible in the file and absent from the editor reads as data
@@ -768,6 +945,11 @@ private struct PageRowMenu<Model: PageDriving>: View {
     }
 
     var body: some View {
+        // The same intent the tap sends — a link row's default action is going,
+        // and the menu names what tapping does rather than offering a second way.
+        if item.linkLabel != nil {
+            Button("Follow") { model.pageActivate(item) }
+        }
         if canTypeValue {
             Button("Edit Value") { model.beginEdit(item) }
         }

@@ -65,6 +65,7 @@ private struct SchemaItem: PageItemDisplaying {
     var icon: String?
     var tint: String?
     var description: String?
+    var linkLabel: String?
 }
 
 private struct MetaCrumb: CrumbDisplaying {
@@ -125,6 +126,57 @@ private final class MetaModel: PageDriving {
     func pageAddChild(id: String) { sent.append("add:\(id)") }
     func moveItemUp(_ item: MetaItem) { sent.append("up:\(item.id)") }
     func moveItemDown(_ item: MetaItem) { sent.append("down:\(item.id)") }
+}
+
+/// A host whose schema offers declared fields — the add half `MetaModel` above
+/// deliberately leaves defaulted. Conforms directly rather than subclassing:
+/// protocol witnesses bind at the conformance, so a subclass "overriding" a
+/// defaulted requirement would be the dispatch mistake, not a test of one.
+private final class DeclaringModel: PageDriving {
+    @Published var pages: MetaFrame
+    @Published var lastMove: PageMove = .jump
+    @Published var editingId: String?
+    @Published var renamingId: String?
+    @Published var editBuffer: String = ""
+    @Published var renameBuffer: String = ""
+
+    private(set) var sent: [String] = []
+
+    init(_ items: [MetaItem]) {
+        pages = MetaFrame(page: MetaPage(items: items))
+    }
+
+    var canPageBack: Bool { false }
+
+    func showPages() {}
+    func pageOpen(id: String) {}
+    func pageAt(id: String) -> MetaPage { MetaPage(focus: id) }
+    func pageBack() {}
+    func pageActivate(_ item: MetaItem) {}
+    func beginEdit(_ item: MetaItem) {}
+    func commitEdit() {}
+    func cancelEdit() {}
+    func beginRename(_ item: MetaItem) {}
+    func commitRename() {}
+    func cancelRename() {}
+    func setBool(_ item: MetaItem, _ value: Bool) {}
+    func setChoice(_ item: MetaItem, _ value: String) {}
+    func delete(_ item: MetaItem) {}
+    func canAddChild(_ item: MetaItem) -> Bool { item.role != "scalar" }
+    func pageAddChild(id: String) { sent.append("add:\(id)") }
+    func moveItemUp(_ item: MetaItem) {}
+    func moveItemDown(_ item: MetaItem) {}
+
+    func canAddChild(pageId: String) -> Bool { pageId.isEmpty }
+    func addableChildren(of id: String) -> [AddableChild] {
+        guard id.isEmpty else { return [] }
+        return [AddableChild(key: "audience", title: "Audience", kind: "str",
+                             icon: "enum", description: "Who may read this.",
+                             terms: ["public", "private"])]
+    }
+    func pageAddChild(id: String, key: String, value: String) {
+        sent.append("add:\(id):\(key)=\(value)")
+    }
 }
 
 // ── the test ──────────────────────────────────────────────────────────────────
@@ -301,5 +353,75 @@ final class ForeignHostTests: XCTestCase {
                                          icon: "sparkles.rectangle", tint: "chartreuse")
         XCTAssertEqual(unknown.symbol, inferred.symbol)
         XCTAssertEqual(unknown.color, inferred.color)
+    }
+
+    // ── what the value points at ──────────────────────────────────────────────
+
+    /// The bargain every defaulted member strikes: a host that resolves nothing
+    /// says nothing and keeps conforming.
+    func testAHostThatResolvesNothingHasNoLinks() {
+        XCTAssertNil(sample().pages.page.items[0].linkLabel)
+    }
+
+    /// A resolved reference is read through the protocol — with the stored
+    /// property winning over the default even when reached generically, which is
+    /// the dispatch mistake this style of test exists to catch.
+    func testAResolvedReferenceCrossesTheSeam() {
+        func link(of item: some PageItemDisplaying) -> String? { item.linkLabel }
+        let ref = SchemaItem(id: "part_of", label: "part_of",
+                             preview: "[2026](id:6tzwsxg)",
+                             isReadonly: true, linkLabel: "2026")
+        XCTAssertEqual(link(of: ref), "2026")
+        XCTAssertNil(link(of: SchemaItem(id: "title", label: "title", preview: "A Note")))
+    }
+
+    // ── the fold ──────────────────────────────────────────────────────────────
+
+    /// The Swift half of `Page::partitioned`: stable, and each entry keeps the
+    /// index it has in the whole item list — which is what `selected` counts,
+    /// so the fold rearranges what is drawn without renumbering what is meant.
+    func testTheFoldPartitionsStablyAndKeepsDocumentIndices() {
+        let items = [
+            MetaItem(id: "title", label: "title"),
+            MetaItem(id: "updated", label: "updated", demoted: true),
+            MetaItem(id: "audience", label: "audience"),
+            MetaItem(id: "content_hash", label: "content_hash", demoted: true),
+        ]
+        let split = partitionDemoted(items)
+        XCTAssertEqual(split.promoted.map(\.item.id), ["title", "audience"])
+        XCTAssertEqual(split.demoted.map(\.item.id), ["updated", "content_hash"])
+        XCTAssertEqual(split.promoted.map(\.index), [0, 2])
+        XCTAssertEqual(split.demoted.map(\.index), [1, 3])
+    }
+
+    // ── adding what a schema declares ─────────────────────────────────────────
+
+    /// A host that offers nothing keeps exactly the affordances it had: no page
+    /// add row, no declared fields, and a keyed add that forwards to the old
+    /// path rather than swallowing the tap.
+    func testAHostThatOffersNothingKeepsItsOldAddPath() {
+        let model = sample()
+        XCTAssertFalse(model.canAddChild(pageId: ""))
+        XCTAssertTrue(model.addableChildren(of: "").isEmpty)
+        model.pageAddChild(id: "exports", key: "audience", value: "public")
+        XCTAssertEqual(model.sent, ["add:exports"])
+    }
+
+    /// ...and a host that declares fields is read through the protocol: the
+    /// offer carries the key, the name and the terms, and a chosen term arrives
+    /// as the keyed intent — the field lands already legal.
+    func testADeclaredFieldArrivesWithItsKeyAndTerm() {
+        func offers<M: PageDriving>(_ model: M) -> [AddableChild] { model.addableChildren(of: "") }
+        func showsAddRow<M: PageDriving>(_ model: M) -> Bool { model.canAddChild(pageId: "") }
+
+        let model = DeclaringModel([])
+        XCTAssertTrue(showsAddRow(model))
+        let declared = offers(model)
+        XCTAssertEqual(declared.map(\.key), ["audience"])
+        XCTAssertEqual(declared[0].title, "Audience")
+        XCTAssertEqual(declared[0].terms, ["public", "private"])
+
+        model.pageAddChild(id: "", key: "audience", value: "public")
+        XCTAssertEqual(model.sent, ["add::audience=public"])
     }
 }

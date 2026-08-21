@@ -13,8 +13,9 @@
 //! - the **[`tree`]** — every visible node at once, indented by depth
 //!   ([`Model::rows`]). The document as a document.
 //! - the **[`page`]** — one container at a time, pushed and popped
-//!   ([`Model::page`]), with small all-scalar groups inlined. The document as a
-//!   settings menu, and the one that stays legible when it is deep.
+//!   ([`Model::page`]), with containers that fit the [`InlineBudget`] inlined.
+//!   The document as a settings menu, and the one that stays legible when it is
+//!   deep — or, under a generous budget, the whole document on one page.
 
 pub mod backend;
 pub mod format;
@@ -26,7 +27,7 @@ pub mod tree;
 pub use backend::{Backend, BackendError, EditOp, FigBackend};
 pub use format::detect;
 pub use model::{Mode, Model, ViewMode};
-pub use page::{ItemKind, Page, PageItem};
+pub use page::{InlineBudget, ItemKind, Page, PageItem};
 pub use schema::{Constraint, FieldRule, FieldRuleExt, Schema};
 pub use tree::{Row, VKind};
 

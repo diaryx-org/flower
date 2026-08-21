@@ -19,7 +19,7 @@
 //! they inline the small groups and reserve a page for the substantial ones.
 //!
 //! So a container is **inlined** into its parent's page — a titled group, its
-//! members listed underneath — when it is small and made entirely of scalars
+//! members listed underneath — when its whole subtree fits an [`InlineBudget`]
 //! ([`inlines`]); otherwise it becomes a **drill** row that opens a page of its
 //! own. The test is deliberately structural rather than schema-driven: flower has
 //! to be useful on a document nobody has described. A [`Schema`](crate::Schema)
@@ -27,10 +27,19 @@
 //! section — and feed the same renderer, because the shape it produces is the
 //! same.
 //!
-//! Inlining is one level deep by design. A group inlined into a page never itself
-//! contains a group (it is all scalars, by [`inlines`]), so a page is at most two
-//! ranks: its own children, and the members of the groups among them. That bound
-//! is what keeps a page readable without a second indentation scheme.
+//! How much fits is the embedder's call, because it is a fact about the room
+//! rather than about the document: a frontmatter panel showing one small file
+//! wants the whole document on one page, and a deep CI config read in a narrow
+//! pane wants a page per level. The budget's two limits are a row count — the
+//! honest cost of inlining, since every descendant is a row — and a depth, the
+//! number of ranks of nesting a page is willing to draw. The default
+//! ([`InlineBudget::default`]) is the founding rule: at most [`INLINE_MAX`]
+//! members, one rank — a small, all-scalar group and nothing else.
+//!
+//! The decision is per **subtree**, made once at the top: a container either
+//! fits entirely or drills. Nothing inside an inlined subtree drills, so a page
+//! never nests navigation inside itself, and editing one field can only change
+//! how that field's own container renders — never a neighbour's.
 //!
 //! Inlining is a *presentation* default, never a cage: a group header keeps its
 //! own path, so it stays selectable, deletable, and openable as a page like any
@@ -92,7 +101,7 @@ pub use fig_schema::Seg;
 
 use crate::tree::{VKind, key_to_string, preview, value_at};
 
-/// The largest container still inlined into its parent's page.
+/// The row limit of the **default** [`InlineBudget`].
 ///
 /// Six is the point where a group stops reading as a handful of related fields
 /// and starts reading as a list — and where inlining two of them in a row would
@@ -100,6 +109,39 @@ use crate::tree::{VKind, key_to_string, preview, value_at};
 /// constant, not a correctness one: raising it inlines more, lowering it drills
 /// more, and nothing else changes.
 pub const INLINE_MAX: usize = 6;
+
+/// How much of a container's subtree may be inlined into its parent's page
+/// rather than drilled into — the knob that slides the page projection between
+/// its two ancestors.
+///
+/// At the default, a page is a settings menu: small all-scalar groups inline,
+/// everything substantial earns a page. Raised far enough, the root page simply
+/// *is* the whole document — the settings-list rendering, absorbed — and a
+/// small document never asks for a navigation step at all. The embedder picks,
+/// because the right answer is about the room the pages are drawn in, not
+/// about the document.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct InlineBudget {
+    /// The most rows an inlined subtree may contribute to the page. Every
+    /// descendant is a row — nested containers add their headers too — so this
+    /// is the honest cost of saying yes.
+    pub rows: usize,
+    /// The most ranks of nesting an inlined subtree may reach: 1 admits only
+    /// all-scalar groups, 2 lets those groups hold one more rank of groups, and
+    /// so on. Rendered as [`PageItem::inset`], so this bounds the indentation a
+    /// page can ask a frontend to draw.
+    pub depth: usize,
+}
+
+impl Default for InlineBudget {
+    /// The founding rule: at most [`INLINE_MAX`] members, all of them scalars.
+    fn default() -> Self {
+        Self {
+            rows: INLINE_MAX,
+            depth: 1,
+        }
+    }
+}
 
 /// What a [`PageItem`] does when you activate it.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -129,8 +171,10 @@ pub struct PageItem {
     /// A one-line rendering of the value (the scalar text, or `{n}` / `[n]`).
     pub preview: String,
     pub kind: ItemKind,
-    /// 0 for a direct child of the page's focus; 1 for a member of a group inlined
-    /// into it. Never more — see the module docs.
+    /// 0 for a direct child of the page's focus; 1 for a member of a group
+    /// inlined into it, and one more for each further rank the [`InlineBudget`]
+    /// admitted. Bounded by [`InlineBudget::depth`], so the default budget never
+    /// goes past 1.
     pub inset: usize,
     /// A readable stand-in for a sequence item's index — the value of whichever
     /// of its fields best names it ([`title_keys`]). `None` for a mapping entry,
@@ -333,21 +377,36 @@ fn child_count(v: &Value) -> usize {
     }
 }
 
-/// Whether `v` is inlined into its parent's page rather than given one of its own:
-/// a non-empty container of at most [`INLINE_MAX`] children, none of which is
-/// itself a container.
+/// Whether `v` is inlined into its parent's page rather than given one of its
+/// own: a non-empty container whose whole subtree fits `budget` — few enough
+/// rows, and nested no deeper than the budget's rank limit.
 ///
 /// An empty container is excluded deliberately. It has nothing to inline, and a
 /// titled group with no members under it reads as a rendering bug; as a drill row
 /// it stays visible, countable, and somewhere to add the first key.
-pub fn inlines(v: &Value) -> bool {
+pub fn inlines(v: &Value, budget: InlineBudget) -> bool {
+    let (rows, depth) = subtree_shape(v);
+    rows > 0 && rows <= budget.rows && depth <= budget.depth
+}
+
+/// The rendered cost of inlining `v`: how many rows its subtree would put on
+/// the page (every descendant is one — nested containers count their headers
+/// too), and how many ranks of inset the deepest of them would wear.
+/// `(0, 0)` for a scalar; an empty container is `(0, 1)`, which no budget
+/// accepts because there are no rows in it to want.
+fn subtree_shape(v: &Value) -> (usize, usize) {
     let children: Box<dyn Iterator<Item = &Value>> = match v {
         Value::Map(entries) => Box::new(entries.iter().map(|(_, c)| c)),
         Value::Seq(items) => Box::new(items.iter()),
-        _ => return false,
+        _ => return (0, 0),
     };
-    let n = child_count(v);
-    n > 0 && n <= INLINE_MAX && !children.into_iter().any(is_container)
+    let (mut rows, mut depth) = (0, 0);
+    for child in children {
+        let (r, d) = subtree_shape(child);
+        rows += 1 + r;
+        depth = depth.max(d);
+    }
+    (rows, depth + 1)
 }
 
 /// Keys that conventionally name the thing they sit in, best first.
@@ -503,6 +562,7 @@ pub fn build_page(
     focus: &[Seg],
     hidden_top_level: &HashSet<String>,
     demoted_top_level: &HashSet<String>,
+    budget: InlineBudget,
 ) -> Page {
     let mut page = Page {
         focus: focus.to_vec(),
@@ -528,7 +588,7 @@ pub fn build_page(
     // a mix of inlined groups and drill rows reads as what it is.
     let (uniform, ranking) = match node {
         Value::Seq(items) => (
-            Some(items.iter().all(|i| !is_container(i) || inlines(i))),
+            Some(items.iter().all(|i| !is_container(i) || inlines(i, budget))),
             title_keys(items),
         ),
         _ => (None, Vec::new()),
@@ -554,28 +614,8 @@ pub fn build_page(
                 title,
                 demoted,
             ));
-        } else if uniform.unwrap_or(true) && inlines(child) {
-            let count = child_count(child);
-            page.items.push(item(
-                label,
-                path.clone(),
-                child,
-                ItemKind::GroupHeader { count },
-                0,
-                title,
-                demoted,
-            ));
-            for (sub_label, sub_path, sub) in children_of(child, &path) {
-                page.items.push(item(
-                    sub_label,
-                    sub_path,
-                    sub,
-                    ItemKind::Scalar,
-                    1,
-                    None,
-                    demoted,
-                ));
-            }
+        } else if uniform.unwrap_or(true) && inlines(child, budget) {
+            push_inline(&mut page.items, label, path, child, 0, title, demoted);
         } else {
             // A drill row stands for everything between here and the first page
             // that has something to say: `exports` holding only `journal` is one
@@ -584,7 +624,7 @@ pub fn build_page(
             // what it lands on — its count, its summary, its kind — while its
             // path stays the outermost node, so every op still takes it
             // unchanged.
-            let (descend_to, deep) = compress(&path, child);
+            let (descend_to, deep) = compress(&path, child, budget);
             let count = child_count(deep);
             let mut row = item(
                 label,
@@ -602,6 +642,63 @@ pub fn build_page(
     page
 }
 
+/// Emit an inlined container: its header, then its whole subtree, each rank one
+/// inset deeper.
+///
+/// No budget here, deliberately: [`inlines`] measured the entire subtree before
+/// saying yes, so by the time this runs every node under `v` has already been
+/// paid for and nothing inside it can drill. The one thing computed per level is
+/// a sequence's title ranking, so a nested list names its items the way it would
+/// on a page of its own.
+fn push_inline(
+    items: &mut Vec<PageItem>,
+    label: String,
+    path: Vec<Seg>,
+    v: &Value,
+    inset: usize,
+    title: Option<String>,
+    demoted: bool,
+) {
+    let count = child_count(v);
+    items.push(item(
+        label,
+        path.clone(),
+        v,
+        ItemKind::GroupHeader { count },
+        inset,
+        title,
+        demoted,
+    ));
+    let ranking = match v {
+        Value::Seq(members) => title_keys(members),
+        _ => Vec::new(),
+    };
+    for (sub_label, sub_path, sub) in children_of(v, &path) {
+        let sub_title = title_of(&ranking, sub);
+        if is_container(sub) {
+            push_inline(
+                items,
+                sub_label,
+                sub_path,
+                sub,
+                inset + 1,
+                sub_title,
+                demoted,
+            );
+        } else {
+            items.push(item(
+                sub_label,
+                sub_path,
+                sub,
+                ItemKind::Scalar,
+                inset + 1,
+                sub_title,
+                demoted,
+            ));
+        }
+    }
+}
+
 /// The one child `v` holds, when `v` holds exactly one and that child would be a
 /// drill row on `v`'s own page.
 ///
@@ -613,7 +710,7 @@ pub fn build_page(
 /// A sequence is included. Its lone item is a drill by the uniformity rule
 /// (nothing to be uniform with, and it does not inline), and `audiences › [0]`
 /// is exactly as uninformative a page as the mapping case.
-fn lone_drill_child(v: &Value) -> Option<(Seg, &Value)> {
+fn lone_drill_child(v: &Value, budget: InlineBudget) -> Option<(Seg, &Value)> {
     let (seg, child) = match v {
         Value::Map(entries) if entries.len() == 1 => {
             let (k, c) = entries.iter().next()?;
@@ -622,17 +719,17 @@ fn lone_drill_child(v: &Value) -> Option<(Seg, &Value)> {
         Value::Seq(items) if items.len() == 1 => (Seg::Index(0), items.first()?),
         _ => return None,
     };
-    (is_container(child) && !inlines(child)).then_some((seg, child))
+    (is_container(child) && !inlines(child, budget)).then_some((seg, child))
 }
 
 /// Follow [`lone_drill_child`] as far as it goes, from the container at `base`.
 ///
 /// Returns where opening `v` should land and what is actually there. Terminates
 /// because every step is strictly deeper into a finite document.
-fn compress<'v>(base: &[Seg], v: &'v Value) -> (Vec<Seg>, &'v Value) {
+fn compress<'v>(base: &[Seg], v: &'v Value, budget: InlineBudget) -> (Vec<Seg>, &'v Value) {
     let mut descend_to = base.to_vec();
     let mut deep = v;
-    while let Some((seg, next)) = lone_drill_child(deep) {
+    while let Some((seg, next)) = lone_drill_child(deep, budget) {
         descend_to.push(seg);
         deep = next;
     }
@@ -645,8 +742,13 @@ fn compress<'v>(base: &[Seg], v: &'v Value) -> (Vec<Seg>, &'v Value) {
 /// The same condition [`compress`] walks, asked from the other end. A frontend
 /// that skipped this level going in should not be handed it coming out — see
 /// [`Model::parent_page`](crate::Model::parent_page).
-pub fn is_compressed_past(root: &Value, focus: &[Seg], hidden: &HashSet<String>) -> bool {
-    let page = build_page(root, focus, hidden, &HashSet::new());
+pub fn is_compressed_past(
+    root: &Value,
+    focus: &[Seg],
+    hidden: &HashSet<String>,
+    budget: InlineBudget,
+) -> bool {
+    let page = build_page(root, focus, hidden, &HashSet::new(), budget);
     page.items.len() == 1 && page.items[0].is_drill()
 }
 
@@ -755,12 +857,22 @@ timeout = 30.5
     }
 
     fn page_of(root: &Value, focus: &[Seg]) -> Page {
-        build_page(root, focus, &HashSet::new(), &HashSet::new())
+        build_page(
+            root,
+            focus,
+            &HashSet::new(),
+            &HashSet::new(),
+            InlineBudget::default(),
+        )
+    }
+
+    fn budgeted(root: &Value, focus: &[Seg], budget: InlineBudget) -> Page {
+        build_page(root, focus, &HashSet::new(), &HashSet::new(), budget)
     }
 
     fn demoting(root: &Value, focus: &[Seg], demoted: &[&str]) -> Page {
         let set: HashSet<String> = demoted.iter().map(|s| s.to_string()).collect();
-        build_page(root, focus, &HashSet::new(), &set)
+        build_page(root, focus, &HashSet::new(), &set, InlineBudget::default())
     }
 
     fn key(k: &str) -> Seg {
@@ -875,6 +987,144 @@ timeout = 30.5
         );
     }
 
+    // ── the inline budget ─────────────────────────────────────────────────
+
+    #[test]
+    fn a_deeper_budget_inlines_a_nested_container_rank_by_rank() {
+        let root = value_of("{\"a\": {\"b\": {\"c\": 1}}}", Format::Json);
+        // `a`'s subtree reaches two ranks below its header — `b`, then `c`
+        // under it — so a depth of 2 admits the whole chain onto the root page.
+        let page = budgeted(&root, &[], InlineBudget { rows: 6, depth: 2 });
+        assert_eq!(
+            shape(&page),
+            vec![
+                ("a".into(), 0, "group"),
+                ("b".into(), 1, "group"),
+                ("c".into(), 2, "scalar"),
+            ]
+        );
+        // One rank shy and it drills exactly as the default does.
+        let page = budgeted(&root, &[], InlineBudget { rows: 6, depth: 1 });
+        assert_eq!(shape(&page), vec![("a".into(), 0, "drill")]);
+    }
+
+    #[test]
+    fn the_row_limit_counts_the_whole_subtree_headers_included() {
+        let root = value_of(
+            r#"{"outer": {"g": {"x": 1, "y": 2}, "z": 3}}"#,
+            Format::Json,
+        );
+        // `outer` costs four rows: `g`'s header, its two members, and `z`.
+        let fits = InlineBudget { rows: 4, depth: 2 };
+        assert!(matches!(
+            budgeted(&root, &[], fits).items[0].kind,
+            ItemKind::GroupHeader { .. }
+        ));
+        let short = InlineBudget { rows: 3, depth: 2 };
+        assert!(budgeted(&root, &[], short).items[0].is_drill());
+    }
+
+    #[test]
+    fn a_generous_budget_puts_the_whole_document_on_the_root_page() {
+        // The absorbed settings list: raise the budget past the document's size
+        // and the root page simply is the document, ranks drawn as insets.
+        let root = sample();
+        let page = budgeted(&root, &[], InlineBudget { rows: 99, depth: 8 });
+        assert_eq!(
+            shape(&page),
+            vec![
+                ("title".into(), 0, "scalar"),
+                ("version".into(), 0, "scalar"),
+                ("enabled".into(), 0, "scalar"),
+                ("server".into(), 0, "group"),
+                ("host".into(), 1, "scalar"),
+                ("port".into(), 1, "scalar"),
+                ("tags".into(), 1, "group"),
+                ("[0]".into(), 2, "scalar"),
+                ("[1]".into(), 2, "scalar"),
+                ("limits".into(), 1, "group"),
+                ("max_connections".into(), 2, "scalar"),
+                ("timeout".into(), 2, "scalar"),
+            ]
+        );
+        assert!(!page.has_drills(), "nothing left to navigate to");
+    }
+
+    #[test]
+    fn an_inlined_subtree_keeps_every_paths_own_address() {
+        let root = sample();
+        let page = budgeted(&root, &[], InlineBudget { rows: 99, depth: 8 });
+        let timeout = page
+            .items
+            .iter()
+            .find(|i| i.label == "timeout")
+            .expect("timeout inlined onto the root page");
+        assert_eq!(
+            timeout.path,
+            vec![key("server"), key("limits"), key("timeout")]
+        );
+    }
+
+    #[test]
+    fn a_budget_that_admits_a_chain_inlines_it_instead_of_compressing() {
+        let root = value_of(LONE, Format::Json);
+        let page = budgeted(&root, &[], InlineBudget { rows: 99, depth: 8 });
+        let exports = &page.items[0];
+        // Under the default budget this row compresses to `exports › journal`;
+        // with room for the whole subtree there is no page to skip.
+        assert!(matches!(exports.kind, ItemKind::GroupHeader { .. }));
+        assert!(!exports.is_compressed());
+    }
+
+    #[test]
+    fn a_sequence_of_nested_mappings_inlines_uniformly_under_a_deep_budget() {
+        let root = value_of(STEPS, Format::Json);
+        // The third step nests a `with` mapping, which the default budget's one
+        // rank refuses — and uniformity then drills every item. Two ranks admit
+        // it, so the whole list inlines, titles on the item headers.
+        let page = budgeted(&root, &[key("steps")], InlineBudget { rows: 20, depth: 2 });
+        let headers: Vec<_> = page
+            .items
+            .iter()
+            .filter(|i| i.inset == 0)
+            .map(|i| {
+                (
+                    i.title.clone(),
+                    matches!(i.kind, ItemKind::GroupHeader { .. }),
+                )
+            })
+            .collect();
+        assert_eq!(headers.len(), 4);
+        assert!(headers.iter().all(|(_, is_group)| *is_group));
+        assert_eq!(headers[0].0.as_deref(), Some("actions/checkout@v7"));
+        // The nested `with` renders as a group one rank further in.
+        let with = page.items.iter().find(|i| i.label == "with").expect("with");
+        assert_eq!(with.inset, 1);
+        assert!(matches!(with.kind, ItemKind::GroupHeader { .. }));
+    }
+
+    #[test]
+    fn demotion_still_folds_a_deeply_inlined_subtree_in_one_run() {
+        let root = sample();
+        let set: HashSet<String> = ["server".to_string()].into();
+        let page = build_page(
+            &root,
+            &[],
+            &HashSet::new(),
+            &set,
+            InlineBudget { rows: 99, depth: 8 },
+        );
+        let (primary, advanced) = page.partitioned();
+        assert_eq!(
+            primary.iter().map(|i| i.label.as_str()).collect::<Vec<_>>(),
+            ["title", "version", "enabled"]
+        );
+        // The whole inlined subtree is one contiguous demoted run — the fold
+        // cannot cut a group in half however deep the budget let it nest.
+        assert_eq!(advanced.len(), 9);
+        assert!(advanced.iter().all(|i| i.demoted));
+    }
+
     #[test]
     fn an_empty_container_drills_rather_than_inlining_as_a_headless_group() {
         let root = value_of("{\"empty\": {}, \"none\": []}", Format::Json);
@@ -892,7 +1142,13 @@ timeout = 30.5
             Format::Json,
         );
         let hidden = HashSet::from(["id".to_string()]);
-        let rooted = build_page(&root, &[], &hidden, &HashSet::new());
+        let rooted = build_page(
+            &root,
+            &[],
+            &hidden,
+            &HashSet::new(),
+            InlineBudget::default(),
+        );
         assert_eq!(
             shape(&rooted),
             vec![
@@ -903,7 +1159,13 @@ timeout = 30.5
         );
         // The nested `id` shares the name and is untouched — the group inlined
         // into the root page still carries it.
-        let inner = build_page(&root, &[key("inner")], &hidden, &HashSet::new());
+        let inner = build_page(
+            &root,
+            &[key("inner")],
+            &hidden,
+            &HashSet::new(),
+            InlineBudget::default(),
+        );
         assert_eq!(
             shape(&inner),
             vec![("id".into(), 0, "scalar"), ("keep".into(), 0, "scalar")]

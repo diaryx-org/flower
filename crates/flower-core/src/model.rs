@@ -12,7 +12,7 @@ use anyhow::Result;
 use fig::Value;
 
 use crate::backend::{Backend, EditOp};
-use crate::page::{self, Page, PageItem};
+use crate::page::{self, InlineBudget, Page, PageItem};
 use crate::schema::{FieldRule, Schema};
 use crate::tree::{self, Row, Seg};
 use fig_schema::{Issue, SegPat, Validation};
@@ -110,6 +110,11 @@ pub struct Model<B> {
     /// idea how much width the frontend has, and rebuilding the unused one costs
     /// a walk of a tree that was just rebuilt anyway.
     view: ViewMode,
+    /// How much of a container's subtree the page projection inlines rather
+    /// than drills ([`page::InlineBudget`]). The default is the settings-menu
+    /// rule; an embedder that knows its room raises it
+    /// ([`set_inline_budget`](Self::set_inline_budget)).
+    inline_budget: InlineBudget,
     /// The container the page view is currently listing. Empty is the root.
     focus: Vec<Seg>,
     /// The page at [`focus`](Self::focus).
@@ -203,6 +208,7 @@ impl<B: Backend> Model<B> {
             status: String::new(),
             dirty: false,
             view: ViewMode::default(),
+            inline_budget: InlineBudget::default(),
             focus: Vec::new(),
             page: Page::default(),
             root_page: Page::default(),
@@ -231,6 +237,25 @@ impl<B: Backend> Model<B> {
     pub fn set_demoted(&mut self, keys: Vec<String>) {
         self.demoted.extend(keys);
         self.rebuild_pages();
+    }
+
+    /// Set how much of a container's subtree the page projection inlines rather
+    /// than drills.
+    ///
+    /// Out-of-band like [`set_demoted`](Self::set_demoted), and for the same
+    /// reason: the right amount is a fact about the *room* the pages are drawn
+    /// in — a frontmatter panel wants the whole document on one page, a narrow
+    /// pane over a deep config wants a page per level — and only the embedder
+    /// knows which it is. Rebuilds the pages, so the next
+    /// [`page`](Self::page) already reflects it.
+    pub fn set_inline_budget(&mut self, budget: InlineBudget) {
+        self.inline_budget = budget;
+        self.rebuild_pages();
+    }
+
+    /// The inline budget the page projection is currently built with.
+    pub fn inline_budget(&self) -> InlineBudget {
+        self.inline_budget
     }
 
     /// Whether the node at `path` sits under a demoted top-level key — the
@@ -386,11 +411,23 @@ impl<B: Backend> Model<B> {
     /// [`view`](Self::view) for why both projections are kept live.
     fn rebuild_pages(&mut self) {
         self.reanchor_focus();
-        self.root_page = page::build_page(&self.value, &[], &self.hidden, &self.demoted);
+        self.root_page = page::build_page(
+            &self.value,
+            &[],
+            &self.hidden,
+            &self.demoted,
+            self.inline_budget,
+        );
         self.page = if self.focus.is_empty() {
             self.root_page.clone()
         } else {
-            page::build_page(&self.value, &self.focus, &self.hidden, &self.demoted)
+            page::build_page(
+                &self.value,
+                &self.focus,
+                &self.hidden,
+                &self.demoted,
+                self.inline_budget,
+            )
         };
         self.parent_page = if self.focus.is_empty() {
             Page::default()
@@ -404,11 +441,18 @@ impl<B: Backend> Model<B> {
             // spare you. So walk out past every level a row compressed past, and
             // stop at the page that actually lists the row that was tapped.
             let mut parent = &self.focus[..self.focus.len() - 1];
-            while !parent.is_empty() && page::is_compressed_past(&self.value, parent, &self.hidden)
+            while !parent.is_empty()
+                && page::is_compressed_past(&self.value, parent, &self.hidden, self.inline_budget)
             {
                 parent = &parent[..parent.len() - 1];
             }
-            page::build_page(&self.value, parent, &self.hidden, &self.demoted)
+            page::build_page(
+                &self.value,
+                parent,
+                &self.hidden,
+                &self.demoted,
+                self.inline_budget,
+            )
         };
         if self.page_selected >= self.page.items.len() {
             self.page_selected = self.page.items.len().saturating_sub(1);
@@ -666,9 +710,15 @@ impl<B: Backend> Model<B> {
         }
         let mut focus: Vec<Seg> = Vec::new();
         while focus.len() < path.len()
-            && page::build_page(&self.value, &focus, &self.hidden, &self.demoted)
-                .position_of(path)
-                .is_none()
+            && page::build_page(
+                &self.value,
+                &focus,
+                &self.hidden,
+                &self.demoted,
+                self.inline_budget,
+            )
+            .position_of(path)
+            .is_none()
         {
             focus.push(path[focus.len()].clone());
         }
@@ -688,7 +738,13 @@ impl<B: Backend> Model<B> {
     /// Total, like [`build_page`](crate::page::build_page): a path that doesn't
     /// resolve, or that names a scalar, yields an empty page.
     pub fn page_at(&self, path: &[Seg]) -> Page {
-        page::build_page(&self.value, path, &self.hidden, &self.demoted)
+        page::build_page(
+            &self.value,
+            path,
+            &self.hidden,
+            &self.demoted,
+            self.inline_budget,
+        )
     }
 
     /// The page the selected item *would* open.
@@ -794,7 +850,9 @@ impl<B: Backend> Model<B> {
         }
         let child = std::mem::take(&mut self.focus);
         let mut parent = &child[..child.len() - 1];
-        while !parent.is_empty() && page::is_compressed_past(&self.value, parent, &self.hidden) {
+        while !parent.is_empty()
+            && page::is_compressed_past(&self.value, parent, &self.hidden, self.inline_budget)
+        {
             parent = &parent[..parent.len() - 1];
         }
         self.focus = parent.to_vec();
@@ -1958,6 +2016,27 @@ timeout = 30.5
         model.page_enter();
         assert_eq!(model.focus(), &[key("server")]);
         assert_eq!(selected_label(&model), "max_connections");
+    }
+
+    #[test]
+    fn raising_the_inline_budget_turns_the_root_page_into_the_document() {
+        let mut model = paged_model();
+        model.set_inline_budget(InlineBudget { rows: 99, depth: 8 });
+
+        // Everything inlines, so the cursor can stand on the deepest member
+        // without ever leaving the root page…
+        model.focus_on(&[key("server"), key("limits"), key("timeout")]);
+        assert!(model.focus().is_empty());
+        assert_eq!(selected_label(&model), "timeout");
+        assert!(model.page().items.iter().any(|i| i.inset == 2));
+
+        // …and with nothing left to drill into, a second pane has no job.
+        assert!(model.pages_would_degenerate());
+
+        // Back to the default, the same node is reached through its page again.
+        model.set_inline_budget(InlineBudget::default());
+        model.focus_on(&[key("server"), key("limits"), key("timeout")]);
+        assert_eq!(model.focus(), &[key("server")]);
     }
 
     #[test]

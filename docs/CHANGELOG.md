@@ -39,7 +39,26 @@ bucket first. `docs/releasing.md` is how it is cut.
 
 <!-- git-cliff:begin — generated; edits here are overwritten -->
 
-_No commits since the last tag._
+### Added
+
+- **swift** — the page view draws the fold, the reference, and the offer ([`b9b84a6`](https://github.com/diaryx-org/flower/commit/b9b84a614c7942312a09a5c32405ed6ac1834feb))
+- **swift** — every page row is real to accessibility ([`70e8679`](https://github.com/diaryx-org/flower/commit/70e86790f057064cddeec8113ba1d498a9809e6a))
+- **swift** — the offer to add a field sits above the fold, not under it ([`b839060`](https://github.com/diaryx-org/flower/commit/b8390604d204703e69d2890905843d498cd306dc))
+
+### Uncategorised — triage before release
+
+- Update CHANGELOG.md ([`74483a6`](https://github.com/diaryx-org/flower/commit/74483a6f963b5b77a308e9933ee96aad482208b3))
+
+### Behavioural changes
+
+- a page holding both ordinary and demoted rows now renders
+the demoted run behind a collapsed "Advanced" disclosure below the card,
+instead of inline in document order.
+
+- On a page that draws the Advanced fold, the "Add a
+Field…" row moves from the bottom of the pane to directly under the promoted
+rows, above the fold's header. A host driving the pane by row order — a UI
+test walking the accessibility tree, say — will find it in a new position.
 
 <!-- git-cliff:end -->
 

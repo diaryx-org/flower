@@ -56,10 +56,16 @@
 //! reads `exports › journal` removes the whole chain, which is what it says it
 //! is, and leaves no empty `exports` behind. Only opening reads `descend_to`.
 //!
-//! Backing out stays granular: [`Model::page_back`](crate::Model::page_back)
-//! pops one level, so the page a row compressed past is still somewhere you can
-//! stand, and the container it named is still a row there with every op that
-//! implies. Compression makes a page cheaper to reach, never unreachable.
+//! Backing out retraces it: [`Model::page_back`](crate::Model::page_back) walks
+//! out past every level a row compressed past, so leaving costs the step that
+//! arriving cost. Popping one raw segment instead would land on the page the
+//! compression existed to skip — one row, naming the place you just left — and
+//! make the way out twice as long as the way in.
+//!
+//! The container the row named keeps every op regardless, because the row keeps
+//! its [`path`](PageItem::path): renaming, deleting or adding to `exports` are
+//! that row's ops on the page you land on. Compression makes a page cheaper to
+//! reach and its container no harder to operate.
 //!
 //! ## Demotion
 //!

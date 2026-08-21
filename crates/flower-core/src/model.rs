@@ -760,8 +760,22 @@ impl<B: Backend> Model<B> {
         self.rebuild_pages();
     }
 
-    /// `h`/`Esc` in the page view: pop back to the parent page, restoring the
-    /// cursor to the container you came out of.
+    /// `h`/`Esc` in the page view: pop back to the page that *listed* the row you
+    /// opened, restoring the cursor to it.
+    ///
+    /// One level out is the wrong answer once a row can compress, for the same
+    /// reason it is the wrong left pane
+    /// ([`rebuild_pages`](Self::rebuild_pages)): opening `exports › journal`
+    /// deliberately skips the `exports` page because it holds nothing but that
+    /// one row, and handing it back on the way out makes leaving cost two steps
+    /// where arriving cost one — on a page whose only row is the name of the
+    /// place you just left. So this walks out past every level a row compressed
+    /// past, and lands where the row was tapped.
+    ///
+    /// Nothing becomes unreachable by it. A compressed row's
+    /// [`path`](PageItem::path) is the outermost container, so renaming,
+    /// deleting, reordering and adding to `exports` are all still that row's ops
+    /// on the page this lands on — the skipped page never held anything else.
     pub fn page_back(&mut self) {
         // Page vocabulary: assert the projection this cursor belongs to.
         self.set_view(ViewMode::Pages);
@@ -770,7 +784,11 @@ impl<B: Backend> Model<B> {
             return;
         }
         let child = std::mem::take(&mut self.focus);
-        self.focus = child[..child.len() - 1].to_vec();
+        let mut parent = &child[..child.len() - 1];
+        while !parent.is_empty() && page::is_compressed_past(&self.value, parent, &self.hidden) {
+            parent = &parent[..parent.len() - 1];
+        }
+        self.focus = parent.to_vec();
         self.rebuild_pages();
         // Prefer re-finding the child: an index it holds is correct after edits
         // that shifted the page, which a remembered index would not be. The
@@ -2102,19 +2120,18 @@ b = 2
             "the trail still shows what was skipped"
         );
 
-        // Backing out is granular, so the level the row compressed past is still
-        // a page you can stand on — and `journal` is still a row there, with
-        // every op that takes one.
-        model.page_back();
-        assert_eq!(model.focus(), &[key("exports")]);
-        assert_eq!(
-            model.page_item().map(|i| i.label.clone()),
-            Some("journal".into())
-        );
-        assert!(model.page_item().unwrap().can_rename());
-
+        // Backing out retraces the step: one tap in was two levels, so one tap
+        // out is two levels, and it lands on the page that listed the row rather
+        // than on the page the compression existed to skip.
         model.page_back();
         assert!(model.focus().is_empty());
+        // The cursor is on the row that was opened, which still addresses
+        // `exports` and still renames it.
+        assert_eq!(
+            model.page_item().map(|i| i.label.clone()),
+            Some("exports".into())
+        );
+        assert!(model.page_item().unwrap().can_rename());
     }
 
     #[test]
@@ -2144,10 +2161,11 @@ b = 2
             .expect("marked");
         assert_eq!(model.parent_page().items[marked].label, "exports");
 
-        // Backing out is still granular, so `exports` remains a page you can
-        // stand on — it is skipped as a *pane*, not made unreachable.
+        // And backing out agrees with the pane: `exports` is skipped both ways,
+        // so the page on the left is the page you land on.
         model.page_back();
-        assert_eq!(model.focus(), &[key("exports")]);
+        assert!(model.focus().is_empty());
+        assert_eq!(model.focus(), model.parent_page().focus);
     }
 
     #[test]
@@ -2235,6 +2253,54 @@ b = 2
         model.page_back();
         assert!(model.focus().is_empty());
         assert_eq!(model.page_selected(), 0);
+    }
+
+    /// Arriving and leaving cost the same number of steps.
+    ///
+    /// `views` holds only `date`, so its row compresses and `page_enter` lands
+    /// straight on `views.date`. Popping one raw segment would put you on the
+    /// `views` page — one row, named `date`, which is the page compression
+    /// exists to skip — and make the way out twice as long as the way in.
+    #[test]
+    fn backing_out_retraces_what_entering_skipped() {
+        let backend = FigBackend::open(
+            br#"{"views": {"date": {"icon": "calendar", "group": ["created"], "by": "year"}}, "fixity": "all"}"#,
+            Format::Json,
+        )
+        .expect("open");
+        let mut model = Model::new(backend).expect("model");
+        model.set_view(ViewMode::Pages);
+
+        // One step in, past `views`, to the first page with more on it than the
+        // name that was tapped.
+        model.page_enter();
+        assert_eq!(model.focus(), &[key("views"), key("date")]);
+
+        // One step out, to the page that listed the row — not to `views`.
+        model.page_back();
+        assert!(model.focus().is_empty());
+        // And the cursor is back on the row that was opened: a compressed row
+        // answers for its whole chain, so the child path finds it.
+        assert_eq!(model.page_selected(), 0);
+    }
+
+    /// The skipped page held nothing but the chain, so skipping it takes no
+    /// operation away: the row on the page we land on still addresses `views`.
+    #[test]
+    fn the_skipped_level_is_still_operable_from_the_row() {
+        let backend = FigBackend::open(
+            br#"{"views": {"date": {"icon": "calendar", "group": ["created"], "by": "year"}}, "fixity": "all"}"#,
+            Format::Json,
+        )
+        .expect("open");
+        let mut model = Model::new(backend).expect("model");
+        model.set_view(ViewMode::Pages);
+
+        model.page_enter();
+        model.page_back();
+        let row = model.page_item().expect("a row under the cursor");
+        assert_eq!(row.path, vec![key("views")]);
+        assert_eq!(row.descend_to, vec![key("views"), key("date")]);
     }
 
     #[test]

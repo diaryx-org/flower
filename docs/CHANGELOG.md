@@ -44,6 +44,10 @@ bucket first. `docs/releasing.md` is how it is cut.
 - **swift** — the page view draws the fold, the reference, and the offer ([`b9b84a6`](https://github.com/diaryx-org/flower/commit/b9b84a614c7942312a09a5c32405ed6ac1834feb))
 - **swift** — every page row is real to accessibility ([`70e8679`](https://github.com/diaryx-org/flower/commit/70e86790f057064cddeec8113ba1d498a9809e6a))
 - **swift** — the offer to add a field sits above the fold, not under it ([`b839060`](https://github.com/diaryx-org/flower/commit/b8390604d204703e69d2890905843d498cd306dc))
+- **page** — an inline budget decides what earns a page ([`2a7da3d`](https://github.com/diaryx-org/flower/commit/2a7da3df45c97a2777bd9c72e56170567dfe967c))
+- **ffi** — hosts set the inline budget over the FFI ([`7d10f04`](https://github.com/diaryx-org/flower/commit/7d10f0470d6716519aa7b6f34ea979e8fc400f67))
+- **swift** — the page view absorbs the settings-list surface ([`b4166a1`](https://github.com/diaryx-org/flower/commit/b4166a1787c4bba716d63bdd232ceed6abb45084))
+- **editor** — the demo hosts pages alone, with the budget on a knob ([`ba5542e`](https://github.com/diaryx-org/flower/commit/ba5542e0b8cdb0775e3c3686f3315ae65529c9d0))
 
 ### Uncategorised — triage before release
 
@@ -59,6 +63,18 @@ instead of inline in document order.
 Field…" row moves from the bottom of the pane to directly under the promoted
 rows, above the fold's header. A host driving the pane by row order — a UI
 test walking the accessibility tree, say — will find it in a new position.
+
+- PageItemView::inset was documented as never
+exceeding 1; a host that calls set_inline_budget with depth > 1 will
+receive deeper insets. Hosts that never call it see no change.
+
+- FlowerEditor, FlowerProjection, and FlowerModel's
+tree-facing API (state, projection, selectedRow, select, toggle, the
+row-index navigation and edit methods, showTree, addRootChild) no longer
+exist; FlowerModel drives only the page projection. On a page, rank-0
+groups now draw as titled cards outside the row list and scalar
+sequences as chips, so a host walking the accessibility tree will find
+those rows restructured.
 
 <!-- git-cliff:end -->
 

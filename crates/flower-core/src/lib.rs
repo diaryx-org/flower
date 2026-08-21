@@ -50,5 +50,6 @@ pub use tree::{Row, VKind};
 // additive and passes, while remaining unreachable through this list. Adding a
 // fig-schema type is two edits, and this is the second.
 pub use fig_schema::{
-    Cardinality, FieldType, Icon, PathPat, Presentation, Seg, SegPat, Term, Tint, Validation,
+    Cardinality, Consequence, FieldType, Icon, PathPat, Presentation, Seg, SegPat, Severity, Term,
+    Tint, Validation, guards_without_terms,
 };

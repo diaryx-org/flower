@@ -26,7 +26,7 @@ readme = "README.md"
 # Zig-backed config AST + lossless editor.
 fig = "3"
 # The generic, prov-agnostic schema engine
-fig-schema = "0.2.0"
+fig-schema = "0.2.1"
 ratatui = "0.29"
 anyhow = "1"
 # Internal crates.

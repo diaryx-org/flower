@@ -95,22 +95,24 @@ fig (Zig) → fig-sys (FFI, libfig.a) → fig crate (Editor/Document/Value)
 | widget | [`crates/flower-ratatui`](crates/flower-ratatui) | a `draw(frame, &Model, header)` ratatui widget. |
 | binding | [`crates/flower-ffi`](crates/flower-ffi) | the **UniFFI C-ABI binding** — wraps the filesystem-free `Model` so a native Apple app can drive it. The native-Apple peer of the ratatui widget. |
 | app | [`crates/flower-tui`](crates/flower-tui) | the terminal app (binary `flower`) — file I/O + event loop. |
-| Swift SDK | [`packages/flower-swift`](packages/flower-swift) | the Swift Package. `FlowerPagesUI` is the page view (`FlowerPages`) written against protocols, with **no binding behind it**; `FlowerUI` is the settings-list view (`FlowerEditor`) plus `FlowerModel` over the UniFFI `flower-ffi` binding, and the conformances that let the page view render its records. `import FlowerUI` re-exports both. |
+| Swift SDK | [`packages/flower-swift`](packages/flower-swift) | the Swift Package. `FlowerPagesUI` is the page view (`FlowerPages`) written against protocols, with **no binding behind it**; `FlowerUI` is `FlowerModel` over the UniFFI `flower-ffi` binding, and the conformances that let the page view render its records. `import FlowerUI` re-exports both. |
 | Swift app | [`apps/flower-editor`](apps/flower-editor) | the cross-platform (macOS + iOS) SwiftUI example, consuming `packages/flower-swift`. |
 
 The Swift frontend keeps the same contract as the TUI: **core owns the model**
-(the tree, selection, and every lossless edit), the frontend only renders the
-visible rows and forwards navigation / edit intents by row index. Every call
-across the FFI returns a `DocView` — the flat visible-row list plus selection,
-dirty, and status — one crossing that both mutates and repaints.
+(the projection, selection, and every lossless edit), the frontend only renders
+the frame and forwards navigation / edit intents. Every page call across the FFI
+returns a `PagesView` — the page you are on, the page it came out of, and the
+page the cursor would open, plus dirty and status — one crossing that both
+mutates and repaints, so a two-pane host repaints whole from any edit.
 
-Both projections cross it. `showPages()` switches to the page view and returns a
-`PagesView` — the page you are on, the page it came out of, and the page the
-cursor would open, so a two-pane host also repaints from one crossing. The page
-methods address nodes by the dotted path a row already carries rather than by
-index, because a page item need not be a visible *row* at all (its ancestors may
-be folded away in the tree). Switching carries the cursor, so the two surfaces
-are two ways of looking at one position.
+Both projections cross the FFI: the tree's `DocView` (the flat visible-row list,
+driven by row index) remains for a custom renderer, but the packaged Swift
+surface is the page view alone. The page methods address nodes by the dotted
+path a row already carries rather than by index, because a page item need not be
+a visible *row* at all. How much of the document one page holds is the host's
+`setInlineBudget(rows:depth:)` — at the default, small all-scalar groups inline
+and everything else drills; raised past the document's size, the root page is
+the whole document, which is how the old settings-list surface was absorbed.
 
 `FlowerPages` draws that frame two ways. Wide, it is the same sliding pair of
 panes the TUI draws, moving along the trail in the direction you went. Narrow —
@@ -147,8 +149,12 @@ does not need it.
     `fig` path (a `Vec<Seg>` of `Key`/`Index`) — exactly what `fig::Editor` ops
     take — honoring a collapsed-set.
   - `page.rs` — the other projection: one container's children as a `Page`, with
-    a small all-scalar container inlined into its parent's page as a titled group
-    rather than given one of its own. Same paths, so the same edits. A sequence's
+    a container whose subtree fits the **inline budget** (`InlineBudget` — a row
+    count and a rank depth, default: small and all-scalar) inlined into its
+    parent's page as a titled group rather than given one of its own. Raised
+    past the document's size, the root page *is* the whole document — the
+    settings-list rendering, from the same projection. Same paths, so the same
+    edits. A sequence's
     items render alike (a list where some rows are expanded and others collapsed
     reads as a fault), and are titled by whichever of their fields best names
     them — `title_keys` scores coverage, distinctness, and convention, so a

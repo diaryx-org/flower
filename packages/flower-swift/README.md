@@ -9,22 +9,23 @@ so a SwiftUI app can be a first-class flower frontend.
 ```
 ┌──────────────┐   C ABI (UniFFI)   ┌───────────────────┐    SwiftUI     ┌──────────────┐
 │ flower-core  │ ◀───────────────── │    flower-ffi     │ ◀───────────── │   FlowerUI   │
-│ Model        │  DocView  / cmds   │ FlowerDoc (Mutex) │  DocView       │ FlowerEditor │
-│ tree ‖ pages │  PagesView / cmds  │                   │  PagesView     │ FlowerPages  │
+│ Model        │  PagesView / cmds  │ FlowerDoc (Mutex) │  PagesView     │ FlowerModel  │
+│ tree ‖ pages │  DocView  / cmds   │                   │                │ FlowerPages  │
 └──────────────┘                    └───────────────────┘                └──────────────┘
 ```
 
 ## The contract (same as every flower/leaf frontend)
 
-- **Core owns the model.** The tree, collapsed set, selection, and every edit
-  live in `flower-core`; edits splice losslessly through `fig::Editor`, so
-  comments, key order, and formatting survive.
-- **The boundary is *visible rows*.** Every call returns a `DocView`: the flat
-  list of currently-visible `RowView`s plus selection/dirty/status — one crossing
-  both edits and repaints. The page methods return a `PagesView` — three panes'
-  worth of items plus the same chrome — on the same one-crossing rule.
-- **Core owns the model; Swift owns the widgets.** Swift drives the model by row
-  index (what a `List` selection speaks) and picks the affordance.
+- **Core owns the model.** The projection, selection, and every edit live in
+  `flower-core`; edits splice losslessly through `fig::Editor`, so comments,
+  key order, and formatting survive.
+- **The boundary is one frame.** Every page method returns a `PagesView` — the
+  page you are on, the page it came out of, and the page the cursor would open,
+  plus dirty/status — one crossing that both edits and repaints. (The tree's
+  `DocView`/row-index API still crosses too, for a custom renderer; the
+  packaged surface is the page view.)
+- **Core owns the model; Swift owns the widgets.** Swift drives the model by the
+  dotted-path id every node carries and picks the affordance.
 - **No filesystem.** The host persists `source()` its own way and calls `markSaved()`.
 
 ## Build
@@ -38,14 +39,17 @@ staticlib and rebuilds it on every Xcode build, so ordinary Rust edits need only
 `Package.swift` exposes two library products (add this directory as a local
 package, `.package(path: "…/packages/flower-swift")`):
 
-- **`FlowerFFI`** — the low-level binding: `FlowerDoc` + the `DocView`/`RowView`
-  value types (generated).
-- **`FlowerUI`** — the reusable **SwiftUI editor surfaces** built on it
-  (`Sources/FlowerUI/`, committed): `FlowerEditor`, the whole document as a
-  settings list, and `FlowerPages`, one container at a time. Use these unless
-  you're writing your own view.
+- **`FlowerFFI`** — the low-level binding: `FlowerDoc` + the
+  `PagesView`/`DocView` value types (generated).
+- **`FlowerUI`** — the reusable **SwiftUI editor** built on it
+  (`Sources/FlowerUI/`, committed): `FlowerModel`, the observable owner of a
+  document, plus the conformances that let `FlowerPages` (from `FlowerPagesUI`,
+  re-exported) render its records. Use this unless you're writing your own view.
 
-## Native editor (`FlowerUI`)
+## The editor (`FlowerPages`)
+
+One container at a time, pushed and popped, the way a settings app renders a
+preference pane.
 
 ```swift
 import SwiftUI
@@ -62,36 +66,28 @@ struct ContentView: View {
                 if model.isDirty { Circle().frame(width: 6, height: 6) }
                 Button("Save") { /* write model.source() to disk */ model.markSaved() }
             }.padding(6)
-            FlowerEditor(model: model)   // the structural tree surface
+            FlowerPages(model: model, rootLabel: "config.toml")
         }
     }
 }
 ```
 
-`FlowerModel` exposes navigation (`moveUp`/`moveDown`/`expandOrEnter`/
-`collapseOrLeave`), structural editing (`toggle`, `beginEdit`/`commitEdit`,
-`delete`), and `source()` / `markSaved()` for persistence, plus a `@Published
-state` (rows, selection, dirty, status). `FlowerEditor` renders the tree: tap a
-container to fold it, tap a scalar to edit it in place, right-click to delete.
-Customise fonts/colours via `FlowerTheme`.
-
-## The page view (`FlowerPages`)
-
-The other surface over the same model: one container at a time, pushed and
-popped, the way a settings app renders a preference pane.
-
-```swift
-FlowerPages(model: model, rootLabel: "ci.yaml")
-```
-
 A document nested twelve deep renders exactly as wide as one nested twice —
 depth costs a navigation step instead of a column of indentation, which is what
-keeps a CI workflow or a deep app config legible. Small all-scalar groups are
-inlined into the page they sit on, so a two-key group doesn't cost a whole page;
-a container short enough to fit shows its contents in flow form
+keeps a CI workflow or a deep app config legible. Containers whose subtree fits
+the **inline budget** are inlined into the page they sit on, so a two-key group
+doesn't cost a whole page; the page lays them out as a grouped settings screen —
+top-rank groups as titled section cards, scalar sequences as removable chips.
+A container short enough to fit shows its contents in flow form
 (`{branches: [master]}`) rather than a `1 field ›` count; and a sequence of
 mappings is titled by whichever field best names each item, so steps read as
 `actions/checkout@v4`, not `[0]`.
+
+The budget is the host's knob (`model.setInlineBudget(rows:depth:)`). The
+default — at most 6 rows, one rank, i.e. small all-scalar groups — is the
+settings-menu rule; raised past the document's size, the root page simply *is*
+the whole document, which is how the old settings-list surface (`FlowerEditor`)
+was absorbed into this one.
 
 It draws two panes when the document has somewhere to drill and the window has
 room — consecutive levels of one lineage, so the left pane is always the page the
@@ -104,19 +100,18 @@ Narrow — a small window, a phone — is one column, and one column pushed and
 popped *is* a `NavigationStack`, so it gets one: the OS's push animation, its
 back button, and on iOS the swipe-back gesture. The stack's path mirrors the
 model's focus and is re-derived whenever either side moves, because focus travels
-for reasons no tap caused (deleting the container you are inside pops it; a
-switch from the tree lands wherever the cursor was). A stack asks for the screen
-at an arbitrary path element rather than being told, so those come from
-`pageAt(id:)`, which builds a page without navigating to it.
+for reasons no tap caused (deleting the container you are inside pops it). A
+stack asks for the screen at an arbitrary path element rather than being told,
+so those come from `pageAt(id:)`, which builds a page without navigating to it.
 
 The two-pane layout is deliberately not a `NavigationSplitView`, whose sidebar is
 *fixed*: it would put the root's list beside a page five levels away, which is the
 arrangement the sliding window replaced.
 
-`FlowerModel` drives it with `showPages()` / `showTree()` (the cursor carries
-across), `pageOpen(id:)` / `pageBack()`, and the same editing verbs the tree uses,
-overloaded on `PageItemView`. Both frames stay live: every command refreshes
-`state` *and* `pages`, so switching surfaces never shows a stale one.
+`FlowerModel` drives it with `pageOpen(id:)` / `pageBack()` and editing verbs on
+`PageItemView` (`beginEdit`/`commitEdit`, `setBool`, `delete`, `beginRename`,
+`pageAddChild`, reorder). Every command replaces the whole `pages` frame, so a
+host never repaints from a stale one.
 
 ## Using `FlowerFFI` directly (custom renderer)
 
@@ -124,26 +119,27 @@ overloaded on `PageItemView`. Both frames stay live: every command refreshes
 import FlowerFFI
 
 let doc = try FlowerDoc(source: "port = 8080\n", format: "toml")
-var frame = doc.view()                    // DocView — render frame.rows
 
-frame = doc.toggle(index: 0)              // fold/unfold a container
-frame = doc.setValue(index: 0, text: "9090")   // commit a scalar, losslessly
-frame = doc.delete(index: 0)              // remove an entry
-
-for row in frame.rows {
-    // indent by row.depth; row.isContainer → twisty; row.kind → value colour;
-    // row.preview → the value text (or {n}/[n] for a container)
-}
-
-var pages = doc.showPages()               // PagesView — the other projection
+var pages = doc.showPages()               // PagesView — the packaged projection
 pages = doc.pageOpen(id: "jobs.test")     // push a page (also: pageBack())
 pages = doc.pageSetValue(id: "jobs.test.timeout_minutes", text: "45")
+pages = doc.setInlineBudget(rows: 99, depth: 8)   // the whole doc on one page
 
 let ancestor = doc.pageAt(id: "jobs")     // render a level without going there
 
 for item in pages.page.items {
-    // item.role → "scalar" | "drill" | "group"; item.inset → 0 or 1 (a group
-    // member); item.summary ?? item.count → what a container's row says
+    // item.role → "scalar" | "drill" | "group"; item.inset → the rank of an
+    // inlined member (bounded by the budget's depth);
+    // item.summary ?? item.count → what a container's row says
+}
+
+var frame = doc.view()                    // DocView — the tree, for a custom renderer
+frame = doc.toggle(index: 0)              // fold/unfold a container
+frame = doc.setValue(index: 0, text: "9090")   // commit a scalar, losslessly
+
+for row in frame.rows {
+    // indent by row.depth; row.isContainer → twisty; row.kind → value colour;
+    // row.preview → the value text (or {n}/[n] for a container)
 }
 ```
 

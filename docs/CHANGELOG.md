@@ -39,6 +39,12 @@ bucket first. `docs/releasing.md` is how it is cut.
 
 <!-- git-cliff:begin — generated; edits here are overwritten -->
 
+_No commits since the last tag._
+
+<!-- git-cliff:end -->
+
+## v0.3.0 — 2026-08-21
+
 ### Added
 
 - **swift** — the page view draws the fold, the reference, and the offer ([`b9b84a6`](https://github.com/diaryx-org/flower/commit/b9b84a614c7942312a09a5c32405ed6ac1834feb))
@@ -76,7 +82,6 @@ groups now draw as titled cards outside the row list and scalar
 sequences as chips, so a host walking the accessibility tree will find
 those rows restructured.
 
-<!-- git-cliff:end -->
 
 ## v0.2.1 — 2026-08-20
 

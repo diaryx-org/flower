@@ -39,6 +39,12 @@ bucket first. `docs/releasing.md` is how it is cut.
 
 <!-- git-cliff:begin — generated; edits here are overwritten -->
 
+_No commits since the last tag._
+
+<!-- git-cliff:end -->
+
+## v0.2.1 — 2026-08-20
+
 ### Added
 
 - **core** — the consequence vocabulary, reachable through flower ([`41767ba`](https://github.com/diaryx-org/flower/commit/41767ba6c3da7f40d5234f90f0f4af77e285d8d8))
@@ -48,8 +54,6 @@ bucket first. `docs/releasing.md` is how it is cut.
 - `flower_core` re-exports `Consequence`, `Severity` and
   `guards_without_terms`. A host that already reached them through a direct
   `fig-schema` dependency is unaffected; one that could not name them now can.
-
-<!-- git-cliff:end -->
 
 ## v0.2.0 — 2026-08-20
 

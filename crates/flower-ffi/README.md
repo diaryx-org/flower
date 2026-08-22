@@ -10,7 +10,7 @@ The Swift side built on top of it lives elsewhere:
 
 | Piece | Location | What it is |
 |-------|----------|------------|
-| Swift SDK | [`packages/flower-swift`](../../packages/flower-swift) | `Package.swift` + `Sources/FlowerUI` (the SwiftUI tree editor) + the UniFFI-`generated/` Swift. The importable Swift package. |
+| Swift SDK | [`packages/flower-swift`](../../packages/flower-swift) | `Sources/FlowerUI` (the SwiftUI tree editor) + the committed `uniffi-generated/` Swift, exposed by the `Package.swift` at the repo root. The importable Swift package. |
 | Demo app | [`apps/flower-editor`](../../apps/flower-editor) | The runnable example (`bootstrap.sh`, xcodegen `project.yml`). |
 
 ## The contract (same as every flower/leaf frontend)
@@ -30,12 +30,17 @@ The Swift side built on top of it lives elsewhere:
 ## Build
 
 The Swift bindings are (re)generated from this crate by
-`apps/flower-editor/bootstrap.sh` (dev) or `scripts/build-xcframework.sh`
-(distributable xcframework), both writing into `packages/flower-swift/generated/`.
+`scripts/gen-bindings.sh` into `packages/flower-swift/uniffi-generated/`, which
+is **committed** — the Swift package is consumed by version from a bare git
+checkout, so the binding must build as-is. CI's `bindings` job diffs the
+committed binding against this crate on every push; regenerate and commit after
+changing the FFI surface.
 
 ```sh
 # Regenerate the binding after changing this crate's public FFI surface:
-apps/flower-editor/bootstrap.sh
+scripts/gen-bindings.sh
+# What CI runs — fails if the committed binding is stale:
+scripts/gen-bindings.sh --check
 ```
 
 ## The one `unsafe`

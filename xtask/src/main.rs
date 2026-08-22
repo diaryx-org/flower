@@ -17,10 +17,13 @@
 //! it can start, so its build time is paid several times over per push.
 //!
 //! The Swift half of flower — `packages/flower-swift`, and the AppKit app in
-//! `apps/flower-editor` — is not in this table. Both need macOS and an Xcode
-//! toolchain; `scripts/check-swift.sh` and `scripts/test-swift.sh` are run by
-//! hand on a Mac until CI grows a macOS runner, at which point they become two
-//! more rows below.
+//! `apps/flower-editor` — is mostly not in this table. Compiling and testing it
+//! needs macOS and an Xcode toolchain; `scripts/check-swift.sh` and
+//! `scripts/test-swift.sh` are run by hand on a Mac until CI grows a macOS
+//! runner, at which point they become two more rows below. The one exception is
+//! `bindings`: the committed UniFFI Swift binding is generated *from Rust*
+//! metadata, so a Linux runner can regenerate and diff it without compiling any
+//! Swift.
 
 mod release;
 
@@ -89,6 +92,14 @@ const JOBS: &[Job] = &[
         run: package_isolation,
     },
     Job {
+        id: "bindings",
+        name: "Swift bindings",
+        components: "",
+        builds: true,
+        about: "the committed UniFFI Swift binding matches crates/flower-ffi",
+        run: bindings,
+    },
+    Job {
         id: "msrv",
         name: "MSRV",
         components: "",
@@ -145,6 +156,16 @@ fn package_isolation(sh: &Sh) -> Result<()> {
         sh.cargo(&args)?;
     }
     Ok(())
+}
+
+/// The Swift package is consumed by version from a bare git checkout, so its
+/// UniFFI binding under `packages/flower-swift/uniffi-generated/` is committed —
+/// and can therefore go stale against `crates/flower-ffi`. The script
+/// regenerates from the crate's embedded metadata and diffs; the output is
+/// arch-neutral source, which is what lets this row run on a Linux runner while
+/// the rest of the Swift half waits for a macOS one.
+fn bindings(sh: &Sh) -> Result<()> {
+    sh.run("bash", &["scripts/gen-bindings.sh", "--check"])
 }
 
 /// Build on the crate's declared minimum supported Rust version. A build, not a

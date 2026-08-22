@@ -19,5 +19,6 @@ STATIC="$ROOT/target/debug/libflower_ffi.a"
 [ -f "$STATIC" ] || { echo "missing $STATIC"; exit 1; }
 
 echo "▸ swift test (FlowerUI)…"
-swift test --package-path "$ROOT/packages/flower-swift" \
+# The package manifest lives at the repo root (see Package.swift).
+swift test --package-path "$ROOT" \
   -Xlinker -force_load -Xlinker "$STATIC" "$@"

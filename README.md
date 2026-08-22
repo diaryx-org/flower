@@ -95,7 +95,7 @@ fig (Zig) → fig-sys (FFI, libfig.a) → fig crate (Editor/Document/Value)
 | widget | [`crates/flower-ratatui`](crates/flower-ratatui) | a `draw(frame, &Model, header)` ratatui widget. |
 | binding | [`crates/flower-ffi`](crates/flower-ffi) | the **UniFFI C-ABI binding** — wraps the filesystem-free `Model` so a native Apple app can drive it. The native-Apple peer of the ratatui widget. |
 | app | [`crates/flower-tui`](crates/flower-tui) | the terminal app (binary `flower`) — file I/O + event loop. |
-| Swift SDK | [`packages/flower-swift`](packages/flower-swift) | the Swift Package. `FlowerPagesUI` is the page view (`FlowerPages`) written against protocols, with **no binding behind it**; `FlowerUI` is `FlowerModel` over the UniFFI `flower-ffi` binding, and the conformances that let the page view render its records. `import FlowerUI` re-exports both. |
+| Swift SDK | [`packages/flower-swift`](packages/flower-swift) | the Swift Package (manifest at the repo root, so SwiftPM can resolve it by version). `FlowerPagesUI` is the page view (`FlowerPages`) written against protocols, with **no binding behind it**; `FlowerUI` is `FlowerModel` over the UniFFI `flower-ffi` binding, and the conformances that let the page view render its records. `import FlowerUI` re-exports both. |
 | Swift app | [`apps/flower-editor`](apps/flower-editor) | the cross-platform (macOS + iOS) SwiftUI example, consuming `packages/flower-swift`. |
 
 The Swift frontend keeps the same contract as the TUI: **core owns the model**

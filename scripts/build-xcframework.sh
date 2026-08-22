@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 #
-# Build FlowerFFI.xcframework from crates/flower-ffi and generate the Swift
-# bindings alongside it — the distributable artifact a macOS/iOS app links to
-# drive flower-core. (For day-to-day dev the app rebuilds the staticlib itself via
-# a pre-build step; see apps/flower-editor/project.yml. This script is for a
-# prebuilt, shippable framework.)
+# Build FlowerFFI.xcframework from crates/flower-ffi — the distributable
+# prebuilt binary for a consumer who doesn't build Rust. (For day-to-day dev the
+# app rebuilds the staticlib itself via a pre-build step; see
+# apps/flower-editor/project.yml.) The Swift package itself no longer involves
+# it: the committed binding under packages/flower-swift/uniffi-generated/ (kept
+# fresh here via gen-bindings.sh) is what the root Package.swift compiles.
 #
-# Output (under packages/flower-swift/generated/, git-ignored):
+# Output (under target/xcframework/, git-ignored):
 #   FlowerFFI.xcframework/    the static libs for every built slice + C headers
-#   Sources/FlowerFFI/        the generated Swift (flower_ffi.swift)
 #
 # fig-sys ships a prebuilt static lib for macos-arm64 today; the other Apple
 # slices (macos-x64, ios, ios-sim) build fig from source via Zig cross-compiling.
@@ -27,7 +27,8 @@ if [[ "${1:-}" == "--debug" ]]; then
 fi
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-OUT="$ROOT/packages/flower-swift/generated"
+OUT="$ROOT/target/xcframework"
+GEN="$ROOT/packages/flower-swift/uniffi-generated"
 LIB_BASENAME="libflower_ffi.a"
 TARGET_DIR="$ROOT/target"
 
@@ -42,17 +43,11 @@ for target in "${MACOS_ARCHES[@]}"; do
   cargo build -p flower-ffi $CARGO_PROFILE_FLAG --target "$target"
 done
 
-echo "▸ Generating Swift bindings…"
+# Refresh the committed binding so the xcframework's headers and the package's
+# Swift are one generator run — a drift here is what CI's `bindings` job catches.
+"$ROOT/scripts/gen-bindings.sh"
 rm -rf "$OUT"
-mkdir -p "$OUT/Sources/FlowerFFI" "$OUT/headers"
-LIB_FOR_GEN="$TARGET_DIR/${MACOS_ARCHES[0]}/$PROFILE/$LIB_BASENAME"
-cargo run -q -p flower-ffi --bin uniffi-bindgen -- \
-  generate --library "$LIB_FOR_GEN" --language swift --out-dir "$OUT/gen-tmp"
-
-mv "$OUT/gen-tmp/flower_ffi.swift" "$OUT/Sources/FlowerFFI/flower_ffi.swift"
-cp "$OUT/gen-tmp"/flower_ffiFFI.h "$OUT/headers/"
-cp "$OUT/gen-tmp"/flower_ffiFFI.modulemap "$OUT/headers/module.modulemap"
-rm -rf "$OUT/gen-tmp"
+mkdir -p "$OUT"
 
 echo "▸ Fattening the macOS slice with lipo…"
 mkdir -p "$OUT/lipo/macos"
@@ -62,10 +57,11 @@ lipo -create -output "$OUT/lipo/macos/$LIB_BASENAME" \
 echo "▸ Assembling xcframework…"
 rm -rf "$OUT/FlowerFFI.xcframework"
 xcodebuild -create-xcframework \
-  -library "$OUT/lipo/macos/$LIB_BASENAME" -headers "$OUT/headers" \
+  -library "$OUT/lipo/macos/$LIB_BASENAME" -headers "$GEN/headers" \
   -output "$OUT/FlowerFFI.xcframework"
 
-rm -rf "$OUT/lipo" "$OUT/headers"
+rm -rf "$OUT/lipo"
 echo "✓ Done:"
 echo "    $OUT/FlowerFFI.xcframework"
-echo "    $OUT/Sources/FlowerFFI/flower_ffi.swift"
+echo "  The Swift package (root Package.swift) is consumed separately; the"
+echo "  xcframework is only for consumers who don't build the Rust staticlib."

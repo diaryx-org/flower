@@ -1,0 +1,4 @@
+module flower_ffiFFI {
+    header "flower_ffiFFI.h"
+    export *
+}

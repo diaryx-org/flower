@@ -13,8 +13,10 @@ name: CI
 # build.rs runs `zig build`.
 #
 # The Swift half of flower (`packages/flower-swift`, `apps/flower-editor`) is not
-# built here: it needs macOS and Xcode. `scripts/check-swift.sh` and
-# `scripts/test-swift.sh` are run by hand on a Mac.
+# compiled here: that needs macOS and Xcode. `scripts/check-swift.sh` and
+# `scripts/test-swift.sh` are run by hand on a Mac. The `bindings` job is the
+# exception that fits a Linux runner: it regenerates the committed UniFFI Swift
+# binding from crates/flower-ffi and diffs — no Swift is compiled.
 on:
   push: { branches: [master] }
   pull_request: null

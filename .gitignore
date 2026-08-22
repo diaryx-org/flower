@@ -1,9 +1,11 @@
 /target
 
-# Build products of apps/flower-editor/bootstrap.sh and
-# scripts/build-xcframework.sh — the UniFFI-generated Swift + the xcframework are
-# regenerated from crates/flower-ffi, never committed.
-/packages/flower-swift/generated/
+# SwiftPM/Xcode build dirs for the Swift package, whose manifest lives at the
+# repo root. The UniFFI binding under packages/flower-swift/uniffi-generated/ is
+# COMMITTED (a version-resolved clone runs no generators) — regenerate it with
+# scripts/gen-bindings.sh; CI's `bindings` job diffs it against crates/flower-ffi.
+/.build/
+/.swiftpm/
 /packages/flower-swift/.build/
 packages/flower-swift/.swiftpm/xcode/xcuserdata/
 

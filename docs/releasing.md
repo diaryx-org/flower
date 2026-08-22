@@ -166,8 +166,11 @@ Adding or renaming a job is an edit to `xtask/src/main.rs` and nothing else — 
 workflow reads the table from `cargo xtask ci-matrix`. Renaming one renames the
 required status check, so branch protection has to follow.
 
-The Swift half (`packages/flower-swift`, `apps/flower-editor`) is not in that
-table: both need macOS and Xcode. `scripts/check-swift.sh` type-checks FlowerUI
-against the generated binding, and `scripts/test-swift.sh` runs its XCTest
-bundle; run them on a Mac. They become two more rows in `JOBS` the day CI grows a
-macOS runner.
+The Swift half (`packages/flower-swift`, `apps/flower-editor`) is mostly not in
+that table: compiling it needs macOS and Xcode. `scripts/check-swift.sh`
+type-checks FlowerUI against the generated binding, and `scripts/test-swift.sh`
+runs its XCTest bundle; run them on a Mac. They become two more rows in `JOBS`
+the day CI grows a macOS runner. The exception is the `bindings` row, which
+regenerates the *committed* UniFFI binding under
+`packages/flower-swift/uniffi-generated/` from `crates/flower-ffi` and diffs —
+Rust-only work that fits the Linux runner.

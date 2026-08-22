@@ -43,6 +43,21 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## v0.3.1 — 2026-08-22
+
+### Breaking
+
+- **swift** — move the package manifest to the repo root and commit the UniFFI binding ([`56f2944`](https://github.com/diaryx-org/flower/commit/56f2944198b24ab47aab3f1b2486a92f1ba33baa))
+
+### Behavioural changes
+
+- the Swift package manifest moved from
+  packages/flower-swift/ to the repository root and the binding directory from
+  the git-ignored generated/ to the committed uniffi-generated/. A consumer
+  adding the package by path must point at the flower checkout root, not
+  packages/flower-swift/; swift build/test now run from the repo root too.
+
+
 ## v0.3.0 — 2026-08-21
 
 ### Added

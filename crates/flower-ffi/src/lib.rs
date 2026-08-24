@@ -173,7 +173,7 @@ pub struct PageItemView {
     /// A one-line rendering of the value (the scalar text, or `{n}` / `[n]`). For
     /// a scalar this is also the seed text an inline editor opens with.
     pub preview: String,
-    /// A container's whole contents in flow form (`{branches: [master]}`), when
+    /// A container's whole contents in flow form (`{branches: [main]}`), when
     /// they are short enough to be worth showing instead of counting. A renderer
     /// prefers this over `count` whenever the row has room for it — `1 field ›`
     /// is strictly less than the document says when the field is right there.
@@ -1264,7 +1264,7 @@ jobs:
     #[test]
     fn a_small_container_shows_its_contents_rather_than_a_count() {
         let d = FlowerDoc::new(
-            "[on.push]\nbranches = [\"master\"]\n".to_string(),
+            "[on.push]\nbranches = [\"main\"]\n".to_string(),
             "toml".to_string(),
             Vec::new(),
         )
@@ -1274,7 +1274,7 @@ jobs:
         // `on` holds only `push`, so the row names the chain and describes what
         // opening it lands on rather than the level it starts at.
         assert_eq!(on.chain, ["on", "push"]);
-        assert_eq!(on.summary.as_deref(), Some("{branches: [master]}"));
+        assert_eq!(on.summary.as_deref(), Some("{branches: [main]}"));
         // The id is still the outermost node, and that is what every op takes.
         assert_eq!(on.id, "on");
     }
@@ -1282,7 +1282,7 @@ jobs:
     #[test]
     fn the_parent_pane_skips_the_page_the_compression_skipped() {
         let d = FlowerDoc::new(
-            "[on.push]\nbranches = [\"master\"]\ntags = [\"v*\"]\n\n[other]\nx = 1\n".to_string(),
+            "[on.push]\nbranches = [\"main\"]\ntags = [\"v*\"]\n\n[other]\nx = 1\n".to_string(),
             "toml".to_string(),
             Vec::new(),
         )
@@ -1310,7 +1310,7 @@ jobs:
     #[test]
     fn opening_a_compressed_row_lands_at_the_far_end_of_the_chain() {
         let d = FlowerDoc::new(
-            "[on.push]\nbranches = [\"master\"]\ntags = [\"v*\"]\n".to_string(),
+            "[on.push]\nbranches = [\"main\"]\ntags = [\"v*\"]\n".to_string(),
             "toml".to_string(),
             Vec::new(),
         )

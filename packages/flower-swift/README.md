@@ -81,7 +81,7 @@ the **inline budget** are inlined into the page they sit on, so a two-key group
 doesn't cost a whole page; the page lays them out as a grouped settings screen —
 top-rank groups as titled section cards, scalar sequences as removable chips.
 A container short enough to fit shows its contents in flow form
-(`{branches: [master]}`) rather than a `1 field ›` count; and a sequence of
+(`{branches: [main]}`) rather than a `1 field ›` count; and a sequence of
 mappings is titled by whichever field best names each item, so steps read as
 `actions/checkout@v4`, not `[0]`.
 

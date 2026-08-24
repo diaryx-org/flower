@@ -187,7 +187,7 @@ final class ForeignHostTests: XCTestCase {
             MetaItem(id: "title", label: "title", preview: "A Note"),
             MetaItem(id: "audience", label: "audience", kind: "str", preview: "public"),
             MetaItem(id: "exports", label: "exports", kind: "map", role: "drill",
-                     summary: "{branches: [master]}", fieldCount: 2,
+                     summary: "{branches: [main]}", fieldCount: 2,
                      chain: ["exports", "journal"]),
             MetaItem(id: "content_hash", label: "content_hash",
                      preview: "ab12", canRename: false, demoted: true),
@@ -545,8 +545,8 @@ final class ForeignHostTests: XCTestCase {
         XCTAssertEqual(
             rowAccessibilityValue(MetaItem(id: "exports", label: "exports",
                                            kind: "map", role: "drill",
-                                           summary: "{branches: [master]}")),
-            "{branches: [master]}")
+                                           summary: "{branches: [main]}")),
+            "{branches: [main]}")
         XCTAssertEqual(
             rowAccessibilityValue(MetaItem(id: "tags", label: "tags",
                                            kind: "seq", role: "drill", fieldCount: 2)),

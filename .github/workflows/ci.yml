@@ -18,7 +18,7 @@ name: CI
 # exception that fits a Linux runner: it regenerates the committed UniFFI Swift
 # binding from crates/flower-ffi and diffs — no Swift is compiled.
 on:
-  push: { branches: [master] }
+  push: { branches: [main] }
   pull_request: null
   workflow_dispatch: null
 

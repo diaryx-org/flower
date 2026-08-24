@@ -210,7 +210,7 @@ pub struct PageItem {
     /// scanning for the field they meant to change should not have to read past
     /// this one to find it.
     pub demoted: bool,
-    /// A container's entire contents in flow form (`{branches: [master]}`), when
+    /// A container's entire contents in flow form (`{branches: [main]}`), when
     /// they are short enough to be worth showing instead of counting.
     ///
     /// `1 field ›` is strictly less than the document says: the field is right
@@ -510,7 +510,7 @@ pub const SUMMARY_BUDGET: usize = 72;
 /// past `budget`.
 ///
 /// Flow form because that is how the formats themselves write a small container
-/// — `{branches: [master]}` is valid YAML, JSON, and (near enough) TOML — so it
+/// — `{branches: [main]}` is valid YAML, JSON, and (near enough) TOML — so it
 /// reads as the document rather than as a rendering of it.
 pub fn flow(v: &Value, budget: usize) -> Option<String> {
     let rendered = match v {
@@ -1343,7 +1343,7 @@ timeout = 30.5
     #[test]
     fn a_container_that_fits_on_the_row_shows_its_contents_not_a_count() {
         let root = value_of(
-            r#"{"on": {"push": {"branches": ["master"]}, "pull_request": null}}"#,
+            r#"{"on": {"push": {"branches": ["main"]}, "pull_request": null}}"#,
             Format::Json,
         );
         let page = page_of(&root, &[key("on")]);
@@ -1351,7 +1351,7 @@ timeout = 30.5
         // It has one field, and the field is right there: counting it to `1 field`
         // would say strictly less than the document does in the same room.
         assert!(matches!(push.kind, ItemKind::Drill { count: 1 }));
-        assert_eq!(push.summary.as_deref(), Some("{branches: [master]}"));
+        assert_eq!(push.summary.as_deref(), Some("{branches: [main]}"));
     }
 
     #[test]

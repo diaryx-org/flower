@@ -224,9 +224,9 @@ private let sampleWorkflow = """
 name: CI
 on:
   push:
-    branches: [master]
+    branches: [main]
   pull_request:
-    branches: [master]
+    branches: [main]
 concurrency:
   group: ci-${{ github.ref }}
   cancel_in_progress: true

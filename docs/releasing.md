@@ -54,7 +54,7 @@ step that spends a version number. Without `--push` the command prints the two
 ## What `release` checks first
 
 `cargo xtask release` refuses before it writes anything if the working tree is
-dirty, the branch is not `master`, `master` is behind `origin/master`, the tag
+dirty, the branch is not `main`, `main` is behind `origin/main`, the tag
 already exists locally or on origin, git-cliff is not installed, or **any crate
 is already on crates.io at the target version**. That last one asks the registry
 rather than the tag list, because a crate can go up from a laptop without ever

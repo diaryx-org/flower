@@ -1527,7 +1527,7 @@ public struct PageItemView {
      */
     public var preview: String
     /**
-     * A container's whole contents in flow form (`{branches: [master]}`), when
+     * A container's whole contents in flow form (`{branches: [main]}`), when
      * they are short enough to be worth showing instead of counting. A renderer
      * prefers this over `count` whenever the row has room for it — `1 field ›`
      * is strictly less than the document says when the field is right there.
@@ -1599,7 +1599,7 @@ public struct PageItemView {
          * a scalar this is also the seed text an inline editor opens with.
          */preview: String, 
         /**
-         * A container's whole contents in flow form (`{branches: [master]}`), when
+         * A container's whole contents in flow form (`{branches: [main]}`), when
          * they are short enough to be worth showing instead of counting. A renderer
          * prefers this over `count` whenever the row has room for it — `1 field ›`
          * is strictly less than the document says when the field is right there.

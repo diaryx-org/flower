@@ -555,7 +555,7 @@ timeout = 30.5
     #[test]
     fn a_small_container_shows_its_contents_on_the_row() {
         let backend = FigBackend::open(
-            br#"{"on": {"push": {"branches": ["master"]}, "jobs": {"a": {"b": {"c": 1}}}}}"#,
+            br#"{"on": {"push": {"branches": ["main"]}, "jobs": {"a": {"b": {"c": 1}}}}}"#,
             fig::Format::Json,
         )
         .expect("open");
@@ -564,7 +564,7 @@ timeout = 30.5
         m.focus_on(&[Seg::Key("on".into())]);
         m.page_enter();
         let out = render(&m, 100, 10);
-        assert!(out.contains("{branches: [master]} ›"), "{out}");
+        assert!(out.contains("{branches: [main]} ›"), "{out}");
         assert!(!out.contains("1 field ›"), "{out}");
     }
 }

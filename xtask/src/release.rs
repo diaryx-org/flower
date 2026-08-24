@@ -33,10 +33,10 @@ use crate::{Result, Sh};
 const CHANGELOG: &str = "docs/CHANGELOG.md";
 const CLIFF_CONFIG: &str = ".config/cliff.toml";
 
-/// The branch a release is cut from. flower's default branch is `master`, not
+/// The branch a release is cut from. flower's default branch is `main`, not
 /// `main` — it differs per repo across the org, so it is stated rather than
 /// assumed.
-const RELEASE_BRANCH: &str = "master";
+const RELEASE_BRANCH: &str = "main";
 
 /// The generated region inside `## Unreleased`. Only the bytes between these
 /// two lines are ever rewritten; a handwritten release intro lives below the

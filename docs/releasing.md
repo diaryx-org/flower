@@ -4,9 +4,17 @@ The whole workspace shares one version number, one tag, and one changelog. A
 release is therefore one command:
 
 ```console
-$ cargo xtask release minor          # bump, changelog, commit, tag
-$ cargo xtask release minor --push   # …and push, which publishes
+$ release release minor          # bump, changelog, commit, tag
+$ release release minor --push   # …and push, which publishes
 ```
+
+`release` is the shared tooling in [diaryx-org/devtools][devtools], which
+flower, prov, twig, leaf, and the historica repos all cut releases with. What
+makes flower flower is `.config/release.toml` and nothing else; the behaviour
+lives there. It used to be `cargo xtask release`, one of five copies of the same
+program.
+
+[devtools]: https://github.com/diaryx-org/devtools
 
 Everything below is what that command does, and what it deliberately refuses to
 do on its own.
@@ -33,8 +41,8 @@ Two crates:
 
 They still move with the workspace version, and still appear in the changelog —
 publishing is the only thing they are out of. To publish one, delete its
-`publish = false`: `cargo xtask publish` derives the list and the order from the
-manifests, so nothing else needs editing.
+`publish = false`: `cargo publish --workspace` derives the list and the order
+from the manifests, so nothing else needs editing.
 
 **`flower-core` 0.1.0 is already on crates.io**, published by hand on
 2026-08-17 with no matching tag. It cannot be reused; releases start at 0.2.0,
@@ -42,8 +50,8 @@ which is also where `flower-ffi` first uploads.
 
 ## What a tag starts
 
-Pushing `vX.Y.Z` starts **`publish.yml`**, which runs `cargo xtask publish` and
-uploads every publishable crate the registry is missing, in dependency order. A
+Pushing `vX.Y.Z` starts **`publish.yml`**, which runs `cargo publish
+--workspace` and uploads every publishable crate, in dependency order. A
 crates.io version number can be yanked but never reused.
 
 That is why `release` stops at the local tag unless it is given `--push`: every
@@ -53,7 +61,7 @@ step that spends a version number. Without `--push` the command prints the two
 
 ## What `release` checks first
 
-`cargo xtask release` refuses before it writes anything if the working tree is
+`release release` refuses before it writes anything if the working tree is
 dirty, the branch is not `main`, `main` is behind `origin/main`, the tag
 already exists locally or on origin, git-cliff is not installed, or **any crate
 is already on crates.io at the target version**. That last one asks the registry
@@ -67,25 +75,27 @@ Then it runs the whole of CI (`cargo xtask ci`), the same jobs the workflow runs
 
 | Command | What it does |
 |---|---|
-| `cargo xtask version` | print the workspace version |
-| `cargo xtask bump <patch\|minor\|major\|x.y.z>` | move `[workspace.package]`, every internal `path`+`version` dependency, and the lockfile |
-| `cargo xtask changelog` | print the generated region |
-| `cargo xtask changelog --write` | splice it into `docs/CHANGELOG.md` |
-| `cargo xtask changelog --check` | fail if that region is stale |
-| `cargo xtask publish --list` | the publish order, derived from the manifests |
-| `cargo xtask publish` | publish every crate crates.io is missing |
-| `cargo xtask release-notes [tag]` | that release's changelog section, as a GitHub release body |
+| `release version` | print the workspace version |
+| `release bump <patch\|minor\|major\|x.y.z\|as-is>` | move `[workspace.package]`, every internal `path`+`version` dependency, and the lockfile |
+| `release changelog` | print the generated region |
+| `release changelog --write` | splice it into `docs/CHANGELOG.md` |
+| `release changelog --check` | fail if that region is stale |
+| `cargo publish --workspace --dry-run` | the publish order, derived from the manifests |
+| `cargo publish --workspace` | publish every publishable crate |
+| `release release-notes [tag]` | that release's changelog section, as a GitHub release body |
 
-`publish` is idempotent per crate — it asks the registry before each upload — so
-a release that died halfway is finished by running it again, locally or by
-re-running the workflow.
+`cargo publish --workspace` has no way to skip a version already on the index,
+which the hand-rolled loop it replaced did. So a release that died halfway is
+finished by naming what already went up — `cargo publish --workspace --exclude
+flower-core` — and a re-run of a tag that fully published fails on its first
+crate rather than doing nothing.
 
 Auth is the `CARGO_REGISTRY_TOKEN` secret on the repo, as in fig, twig, moid, and
 prov. **flower has never published, so its first release needs a token carrying
 `publish-new`** as well as `publish-update`, with no crate restriction — a token
 missing either fails at the first upload with `403 … token is not valid for crate
-flower-core`. `cargo xtask publish` says so when it hits that 403. The secret is
-not set on this repo yet; setting it is a prerequisite for the first tag.
+flower-core`. The secret is not set on this repo yet; setting it is a
+prerequisite for the first tag.
 
 ## The changelog
 

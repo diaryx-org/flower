@@ -24,8 +24,11 @@
 //! `bindings`: the committed UniFFI Swift binding is generated *from Rust*
 //! metadata, so a Linux runner can regenerate and diff it without compiling any
 //! Swift.
-
-mod release;
+//!
+//! Cutting a release does not live here. It is `release <command>`, from
+//! diaryx-org/devtools, configured by `.config/release.toml` — the same tool
+//! flower, prov, twig, leaf, and the historica repos all cut releases with,
+//! because five copies of one program is five places for it to drift.
 
 use std::env;
 use std::path::{Path, PathBuf};
@@ -217,16 +220,15 @@ fn main() -> ExitCode {
             println!("{}", ci_matrix());
             Ok(())
         }
-        ["version"] => release::print_version(&sh),
-        ["bump", spec] => release::bump(&sh, spec),
-        ["changelog", ref rest @ ..] => release::changelog(&sh, rest),
-        ["publish", ref rest @ ..] => release::publish(&sh, rest),
-        ["release-notes"] => release::release_notes(&sh, None),
-        ["release-notes", tag] => release::release_notes(&sh, Some(tag)),
-        ["release", spec, ref rest @ ..] => release::release(&sh, spec, rest),
-        // Both take a version, and neither should guess one.
-        [command @ ("bump" | "release")] => Err(format!(
-            "`{command}` needs a version: patch, minor, major, or x.y.z\n\n{}",
+        // These moved to the shared tool rather than being retired, and a
+        // muscle-memory `cargo xtask release` should say where they went.
+        [
+            command @ ("version" | "bump" | "changelog" | "publish" | "release" | "release-notes"),
+            ..,
+        ] => Err(format!(
+            "releasing moved out of xtask: `cargo xtask {command}` is now \
+                 `release {command}`,\nthe shared tooling this repo configures in \
+                 .config/release.toml.\n\n{}",
             usage()
         )),
         [id] => match JOBS.iter().find(|job| job.id == id) {
@@ -291,41 +293,86 @@ fn usage() -> String {
         "  {:<18}{}\n",
         "ci-matrix", "the job table as JSON, for the workflow matrix"
     ));
-    // Releasing is not CI, so it is not in the table above — these are run by
-    // hand (and `publish` by the release workflow), not by every push.
-    out.push_str("\nreleasing:\n\n");
-    for (command, about) in RELEASE_COMMANDS {
-        out.push_str(&format!("  {command:<20}{about}\n"));
-    }
+    // Releasing is not CI and is not here: it is one shared tool across the
+    // org, so that the changelog contract has one implementation rather than
+    // five that agree until they don't.
+    out.push_str(
+        "\nreleasing:  release <command>   (diaryx-org/devtools; see .config/release.toml)\n",
+    );
     out
 }
-
-/// The release commands, for `cargo xtask` with no arguments. See
-/// [`release`] for what each one does and why the push is opt-in.
-const RELEASE_COMMANDS: &[(&str, &str)] = &[
-    ("version", "the workspace version"),
-    ("bump <spec>", "move to patch | minor | major | x.y.z"),
-    (
-        "changelog",
-        "regenerate the unreleased region (--write, --check)",
-    ),
-    (
-        "release <spec>",
-        "bump, changelog, commit, tag — and push only with --push",
-    ),
-    (
-        "publish",
-        "publish every crate crates.io is missing (--list)",
-    ),
-    (
-        "release-notes [tag]",
-        "that release's changelog section, for the GitHub release body",
-    ),
-];
 
 // ---------------------------------------------------------------------------
 // Running things
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// The workspace
+// ---------------------------------------------------------------------------
+//
+// This came across from `release.rs` when releasing moved to the shared tooling.
+// Only the isolation test still asks the question, and it is a CI question: a
+// crate added to the workspace and left out of `ISOLATED` is built by
+// `--workspace` and by nothing alone.
+
+#[cfg(test)]
+/// A workspace member: where its manifest lives, and what the registry calls it.
+///
+/// flower keeps its crates under `crates/`, so a member's path and its package
+/// name are two different strings — `crates/flower-core` is read, `flower-core`
+/// is what `cargo publish -p` and crates.io are asked about. Conflating them is
+/// how a publish ends up looking for a crate named after a directory.
+struct Member {
+    path: String,
+    name: String,
+    /// `publish = false` in the member's `[package]` table.
+    publishable: bool,
+}
+
+#[cfg(test)]
+/// The workspace members, in manifest order.
+///
+/// The `members` array is read across however many lines it spans, from the key
+/// to the closing bracket, so the list can stay one-per-line and commented.
+fn members(sh: &Sh) -> Result<Vec<Member>> {
+    let manifest = sh.read("Cargo.toml")?;
+    let start = manifest
+        .find("members")
+        .ok_or_else(|| "no `members` in [workspace]".to_string())?;
+    let rest = &manifest[start..];
+    let end = rest
+        .find(']')
+        .ok_or_else(|| "unterminated `members` array in [workspace]".to_string())?;
+
+    let mut out = Vec::new();
+    for path in rest[..end].split('"').skip(1).step_by(2) {
+        let text = sh.read(&format!("{path}/Cargo.toml"))?;
+        let name = package_name(&text)
+            .ok_or_else(|| format!("no `name` in {path}/Cargo.toml's [package] table"))?;
+        let publishable = !text.lines().any(|line| {
+            let line = line.trim();
+            line.starts_with("publish") && line.contains("false")
+        });
+        out.push(Member {
+            path: path.to_string(),
+            name,
+            publishable,
+        });
+    }
+    Ok(out)
+}
+
+#[cfg(test)]
+/// `name = "flower-core"` from a member manifest. The first such line: a
+/// `[dependencies]` entry is `flower-core = …`, never `name = …`, so nothing
+/// below `[package]` can be mistaken for it.
+fn package_name(manifest: &str) -> Option<String> {
+    manifest
+        .lines()
+        .find(|line| line.trim_start().starts_with("name = \""))
+        .and_then(|line| line.split('"').nth(1))
+        .map(str::to_owned)
+}
 
 /// A shell rooted at the workspace, so a job never has to think about where it
 /// was invoked from.
@@ -374,51 +421,14 @@ impl Sh {
         }
     }
 
-    /// Run a command and hand back its stdout, for the answers a job needs to
-    /// act on rather than show — an HTTP status, a branch name, a tag list. The
-    /// command is not echoed: these are questions, and a log of them reads as
-    /// noise between the commands that actually did something.
-    fn capture(&self, program: &str, args: &[&str]) -> Result<String> {
-        let output = Command::new(program)
-            .args(args)
-            .current_dir(&self.root)
-            .output()
-            .map_err(|e| format!("could not run `{program}`: {e}"))?;
-        if !output.status.success() {
-            return Err(format!(
-                "`{program} {}` failed ({})\n{}",
-                args.join(" "),
-                output.status,
-                String::from_utf8_lossy(&output.stderr).trim(),
-            ));
-        }
-        Ok(String::from_utf8_lossy(&output.stdout).into_owned())
-    }
-
-    /// Fail early, and with the install line, when a tool the task needs is
-    /// missing — rather than halfway through a release, with the version
-    /// already bumped.
-    fn require(&self, program: &str, hint: &str) -> Result<()> {
-        Command::new(program)
-            .arg("--version")
-            .current_dir(&self.root)
-            .output()
-            .map(|_| ())
-            .map_err(|_| format!("`{program}` not found on PATH\nhint: {hint}"))
-    }
-
-    /// Read a workspace file, by its path from the root.
+    /// Read a workspace file, by its path from the root. Test-only since
+    /// releasing moved out: the isolation test reads the manifests, and no job
+    /// touches a file directly.
+    #[cfg(test)]
     fn read(&self, path: &str) -> Result<String> {
         let path = self.root.join(path);
         std::fs::read_to_string(&path)
             .map_err(|e| format!("could not read {}: {e}", path.display()))
-    }
-
-    /// Write a workspace file, by its path from the root.
-    fn write(&self, path: &str, contents: &str) -> Result<()> {
-        let path = self.root.join(path);
-        std::fs::write(&path, contents)
-            .map_err(|e| format!("could not write {}: {e}", path.display()))
     }
 
     /// `workspace.package.rust-version`, the single source of truth for the MSRV.
@@ -478,7 +488,7 @@ mod tests {
     #[test]
     fn package_isolation_covers_every_member() {
         let sh = Sh::new();
-        for member in release::members(&sh).unwrap() {
+        for member in members(&sh).unwrap() {
             if member.name == "xtask" {
                 continue;
             }
@@ -490,6 +500,46 @@ mod tests {
                 member.name,
             );
         }
+    }
+
+    /// A member's path and its package name are different strings here, so the
+    /// name has to come from the manifest rather than from the directory.
+    #[test]
+    fn package_names_come_from_the_manifest() {
+        assert_eq!(
+            package_name("[package]\nname = \"flower-core\"\nedition.workspace = true\n")
+                .as_deref(),
+            Some("flower-core")
+        );
+        assert_eq!(package_name("[workspace]\nresolver = \"3\"\n"), None);
+    }
+
+    /// The real workspace: every member found, named, and read. The `members`
+    /// array spans several lines here, which is the case a `find`-to-newline
+    /// reader gets wrong and this one does not.
+    #[test]
+    fn members_are_read_across_the_whole_array() {
+        let found = members(&Sh::new()).unwrap();
+        assert!(
+            found.iter().any(|m| m.path == "crates/flower-core"
+                && m.name == "flower-core"
+                && m.publishable)
+        );
+        // The binding crate publishes too: its view projection is generic over
+        // the backend, so an embedder with its own needs to depend on it.
+        assert!(
+            found
+                .iter()
+                .any(|m| m.name == "flower-ffi" && m.publishable),
+        );
+        assert!(
+            found
+                .iter()
+                .any(|m| m.name == "flower-ratatui" && !m.publishable),
+            "flower-ratatui is publish = false",
+        );
+        assert!(found.iter().any(|m| m.name == "xtask" && !m.publishable));
+        assert!(found.len() >= 5, "the array spans several lines");
     }
 
     /// The MSRV job reads this; if the parse breaks, the job silently pins the

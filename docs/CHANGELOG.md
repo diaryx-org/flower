@@ -43,6 +43,7 @@ bucket first. `docs/releasing.md` is how it is cut.
 
 - **git** — change default branch to main ([`41d1926`](https://github.com/diaryx-org/flower/commit/41d192670ae9c51c034b2425236b2d77436720c0))
 - **xtask** — cut releases with the shared tooling, not a fifth copy ([`bba359b`](https://github.com/diaryx-org/flower/commit/bba359ba1682945ff9ea8f2131b681a5aa2f02b9))
+- **release** — read the shared cliff config, not a local copy ([`1c43a2f`](https://github.com/diaryx-org/flower/commit/1c43a2fff08e92a4fcc24b8780430d81490823ef))
 
 ### Behavioural changes
 
@@ -50,6 +51,10 @@ bucket first. `docs/releasing.md` is how it is cut.
   `release`, and `release-notes` no longer exist. Each now exits non-zero
   naming its replacement — `release <command>`, from diaryx-org/devtools, which
   must be on PATH. `cargo xtask ci` and the individual CI jobs are unchanged.
+
+- releasing this repository needs diaryx-org/devtools on PATH
+  for its git-cliff config as well as for `release` itself. Nothing in the tree
+  configures git-cliff any more.
 
 <!-- git-cliff:end -->
 

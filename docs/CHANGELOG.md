@@ -39,7 +39,17 @@ bucket first. `docs/releasing.md` is how it is cut.
 
 <!-- git-cliff:begin — generated; edits here are overwritten -->
 
-_No commits since the last tag._
+### Changed
+
+- **git** — change default branch to main ([`41d1926`](https://github.com/diaryx-org/flower/commit/41d192670ae9c51c034b2425236b2d77436720c0))
+- **xtask** — cut releases with the shared tooling, not a fifth copy ([`bba359b`](https://github.com/diaryx-org/flower/commit/bba359ba1682945ff9ea8f2131b681a5aa2f02b9))
+
+### Behavioural changes
+
+- `cargo xtask version`, `bump`, `changelog`, `publish`,
+  `release`, and `release-notes` no longer exist. Each now exits non-zero
+  naming its replacement — `release <command>`, from diaryx-org/devtools, which
+  must be on PATH. `cargo xtask ci` and the individual CI jobs are unchanged.
 
 <!-- git-cliff:end -->
 

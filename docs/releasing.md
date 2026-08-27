@@ -107,11 +107,11 @@ prerequisite for the first tag.
 ```
 
 inside `## Unreleased`. git-cliff fills it from the commits since the last tag
-through `.config/cliff.toml`; `release` renders it one last time, moves it into a
-`## vX.Y.Z — date` section, and empties the region. Edits inside the markers are
-lost on the next write. A release **intro** — for a release that wants a
-narrative rather than a list — goes in the released section below the end marker,
-where regeneration cannot reach it.
+through the shared `cliff.toml` in diaryx-org/devtools; `release` renders it one
+last time, moves it into a `## vX.Y.Z — date` section, and empties the region.
+Edits inside the markers are lost on the next write. A release **intro** — for a
+release that wants a narrative rather than a list — goes in the released section
+below the end marker, where regeneration cannot reach it.
 
 `--write` also answers to the tag list, not just to the region: any `v*` tag with
 no `## <tag> —` section of its own gets one, generated from its commit range and
@@ -132,8 +132,9 @@ Two conventions carry straight into the changelog.
 lacks`, not `add(model) offer …`. Much of flower's log drops it, and
 git-conventional then cannot tell where the subject ends — the whole commit body
 lands in the bullet and the trailers below it are never parsed as trailers. A
-preprocessor in `.config/cliff.toml` puts the colon back for the known types so
-the existing history still reads, but it is a rescue, not a licence.
+preprocessor in the shared `cliff.toml` in diaryx-org/devtools puts the colon
+back for the known types so the existing history still reads, but it is a rescue,
+not a licence.
 
 `add` is the house spelling of `feat`; `polish` and `move` ride with `refactor`.
 `docs`, `chore`, `test`, `ci`, `build`, and `style` are skipped entirely, and

@@ -39,6 +39,18 @@ bucket first. `docs/releasing.md` is how it is cut.
 
 <!-- git-cliff:begin — generated; edits here are overwritten -->
 
+_No commits since the last tag._
+
+<!-- git-cliff:end -->
+
+## v0.3.2 — 2026-08-28
+
+### Added
+
+- **tui** — answer --version and --help before reading a config ([`ac36cd3`](https://github.com/diaryx-org/flower/commit/ac36cd3cdb2484a3445db424b1546af03a4039ae))
+- **release** — ship the flower CLI through the Homebrew tap ([`2b19715`](https://github.com/diaryx-org/flower/commit/2b19715365f56af91823e0a537adc8fb6bb21fb8))
+- **nix** — a dev shell and a packaged CLI ([`0c2536c`](https://github.com/diaryx-org/flower/commit/0c2536c6130da57596767926a8ffc1f332db3fc3))
+
 ### Changed
 
 - **git** — change default branch to main ([`41d1926`](https://github.com/diaryx-org/flower/commit/41d192670ae9c51c034b2425236b2d77436720c0))
@@ -56,7 +68,10 @@ bucket first. `docs/releasing.md` is how it is cut.
   for its git-cliff config as well as for `release` itself. Nothing in the tree
   configures git-cliff any more.
 
-<!-- git-cliff:end -->
+- `flower --version` / `-V` now prints `flower <version>` and
+ exits 0; `flower --help` / `-h` prints the usage line and exits 0. All four
+ previously exited non-zero having failed to read a file by that name.
+
 
 ## v0.3.1 — 2026-08-22
 

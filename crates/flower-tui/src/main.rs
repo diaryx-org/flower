@@ -10,14 +10,41 @@ use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
 
 use flower_core::{FigBackend, Mode, Model, ViewMode};
 
+/// The one-line usage, shared by the no-argument error and `--help` so the two
+/// can never drift apart.
+const USAGE: &str = "usage: flower <config-file>";
+
 fn main() -> Result<()> {
-    let path = match std::env::args_os().nth(1) {
-        Some(p) => PathBuf::from(p),
+    let arg = match std::env::args_os().nth(1) {
+        Some(p) => p,
         None => {
-            eprintln!("usage: flower <config-file>");
+            eprintln!("{USAGE}");
             std::process::exit(2);
         }
     };
+
+    // `--version` and `--help` are answered before the file is read or the
+    // terminal is entered. Homebrew's formula test is `flower --version` on a
+    // machine with no config file to hand, and every argument below this point
+    // is treated as a path — so a flag that fell through would be rejected by
+    // `detect` as an unrecognized extension and exit non-zero. Printing the
+    // crate version is also what makes that test meaningful: it is what `brew`
+    // matches the formula's version against, which catches a mis-tagged release.
+    if let Some(flag) = arg.to_str() {
+        match flag {
+            "--version" | "-V" => {
+                println!("flower {}", env!("CARGO_PKG_VERSION"));
+                return Ok(());
+            }
+            "--help" | "-h" => {
+                println!("{USAGE}");
+                return Ok(());
+            }
+            _ => {}
+        }
+    }
+
+    let path = PathBuf::from(arg);
 
     let fmt = flower_core::detect(&path).with_context(|| {
         format!(

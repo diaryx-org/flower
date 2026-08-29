@@ -13,3 +13,7 @@ verify = "cargo xtask ci"
 [[tag_starts]]
 workflow = "publish.yml"
 does = "uploads every publishable crate to crates.io"
+
+[[tag_starts]]
+workflow = "homebrew.yml"
+does = "builds the `flower` CLI binaries and writes the tap formula"

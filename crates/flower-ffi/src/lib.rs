@@ -554,12 +554,15 @@ impl FlowerDoc {
     /// settings-list rendering, without a second surface. The host picks,
     /// because the right amount is a fact about the room the pages are drawn
     /// in, not about the document.
+    ///
+    /// A page's own row limit comes with it
+    /// ([`InlineBudget::new`](flower_core::InlineBudget::new)): a list of items
+    /// that each fit `rows` is still drilled when there are enough of them to
+    /// bury the page, and asking for more rows per subtree asks for a page that
+    /// can hold them.
     pub fn set_inline_budget(&self, rows: u32, depth: u32) -> PagesView {
         let mut m = self.lock();
-        m.set_inline_budget(InlineBudget {
-            rows: rows as usize,
-            depth: depth as usize,
-        });
+        m.set_inline_budget(InlineBudget::new(rows as usize, depth as usize));
         pages_of(&m)
     }
 

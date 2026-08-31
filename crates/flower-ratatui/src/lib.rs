@@ -12,6 +12,13 @@
 //! decision, not a mode: the model holds one page state and this decides how much
 //! of it fits.
 //!
+//! How much a page inlines is a fact about the room, so the app is expected to
+//! keep the model's budget sized to the terminal — [`page_room`] is the height
+//! this crate's chrome leaves for it, and
+//! [`Model::fit_to_room`](flower_core::Model::fit_to_room) is what reads it. A
+//! document that fits the terminal is then drawn whole, with no navigation at
+//! all, and the same document in a short one goes back to a page per level.
+//!
 //! It is the only projection drawn here. flower-core still offers the indented
 //! tree, and an embedder that drives the model by row index still wants it, but a
 //! terminal does not: depth costs an indent column the tree keeps paying on every
@@ -31,6 +38,26 @@ use flower_core::{Backend, ItemKind, Mode, Model, Page, PageItem, VKind};
 /// collapses to the single-pane (push/pop) layout — the same interaction, one
 /// column, which is all a narrow terminal or a phone ever had room for.
 const TWO_PANE_MIN_WIDTH: u16 = 64;
+
+/// The rows [`draw`] spends on something other than a page's items: the header,
+/// the footer, and the pane's own breadcrumb.
+///
+/// Subtracted from the terminal's height to get the room a page actually has,
+/// which is what an inline budget wants to be measured against
+/// ([`page_room`]).
+const CHROME_ROWS: u16 = 3;
+
+/// How many rows of items a page has, in a terminal `height` rows tall.
+///
+/// The app calls this to size the model's inline budget
+/// ([`Model::fit_to_room`](flower_core::Model::fit_to_room)) — how much a page
+/// inlines is a fact about the room, and this crate is what knows how much of
+/// the room the chrome took. It is arithmetic on a layout constant rather than
+/// on a measured `Rect` because the app needs the answer *before* the frame it
+/// applies to, and the chrome is a fixed height either way.
+pub fn page_room(height: u16) -> usize {
+    height.saturating_sub(CHROME_ROWS) as usize
+}
 
 /// Kept clear on the right so a value never touches the pane's edge.
 const RIGHT_GUTTER: usize = 1;
@@ -91,8 +118,8 @@ fn draw_header<B: Backend>(f: &mut Frame, model: &Model<B>, header: &str, area: 
 
 // ── the page projection ──────────────────────────────────────────────────────
 
-/// Two panes when the terminal is wide enough *and* the document has somewhere to
-/// drill; one otherwise.
+/// Two panes when the terminal is wide enough *and* there is something for the
+/// second pane to hold; one otherwise.
 ///
 /// Both conditions matter. A flat document has no categories to put in a sidebar,
 /// so splitting would spend half the width drawing an empty box next to the only
@@ -109,19 +136,14 @@ fn draw_pages<B: Backend>(f: &mut Frame, model: &Model<B>, area: Rect) {
     let cols =
         Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).split(area);
 
-    // Exactly one pane owns the cursor: the left while you are still choosing on
-    // the outer page, the right once you have opened something. That is what makes
-    // `h` and `l` unambiguous without a focus-switch key.
-    if model.focus().is_empty() {
-        draw_page_pane(
-            f,
-            model.root_page(),
-            Some(model.page_selected()),
-            true,
-            cols[0],
-        );
-        // Nothing has been opened yet, so the right pane previews what the cursor
-        // would open. Without it the split would start half empty.
+    // Exactly one pane owns the cursor: the left while the page you are choosing
+    // on leads the split, the right once there is an outer page worth drawing
+    // beside it. That is what makes `h` and `l` unambiguous without a
+    // focus-switch key.
+    if model.page_leads_the_split() {
+        draw_page_pane(f, model.page(), Some(model.page_selected()), true, cols[0]);
+        // Nothing worth drawing behind this page, so the right pane previews what
+        // the cursor would open. Without it the split would start half empty.
         match model.peek_page() {
             Some(peek) => draw_page_pane(f, &peek, None, false, cols[1]),
             None => draw_empty_detail(f, cols[1]),
@@ -469,6 +491,70 @@ timeout = 30.5
         assert!(out.contains("alpha"), "{out}");
         // No sidebar/detail split, so no second breadcrumb.
         assert_eq!(out.matches("‹document›").count(), 1, "{out}");
+    }
+
+    /// The `repos.figl` shape: one key holding a list of small entries, too
+    /// many of them to inline.
+    fn list_model() -> Model<FigBackend> {
+        let items: Vec<String> = (0..22)
+            .map(|i| format!(r#"{{"name": "r{i}", "lang": "rust"}}"#))
+            .collect();
+        let src = format!(r#"{{"repo": [{}]}}"#, items.join(", "));
+        let backend = FigBackend::open(src.as_bytes(), fig::Format::Json).expect("open");
+        let mut model = Model::new(backend).expect("model");
+        model.set_view(ViewMode::Pages);
+        model.fit_to_room(page_room(24));
+        model.enter_document();
+        model
+    }
+
+    #[test]
+    fn a_list_of_entries_is_a_list_of_rows_not_a_wall_of_groups() {
+        let out = render(&list_model(), 100, 24);
+        // One row per entry, each named by its `name` field and showing the
+        // rest of itself — not a titled rule and two indented rows apiece.
+        assert!(out.contains("[0] r0"), "{out}");
+        assert!(out.contains("[20] r20"), "{out}");
+        assert!(!out.contains("──"), "{out}");
+        // The title is not repeated inside the summary that follows it.
+        assert!(out.contains("{lang: rust} ›"), "{out}");
+        assert!(!out.contains("name: r0"), "{out}");
+    }
+
+    #[test]
+    fn a_document_that_is_one_list_spends_neither_pane_on_naming_itself() {
+        let out = render(&list_model(), 100, 24);
+        // Left: the entries, with the cursor. Right: the first one's fields.
+        // Neither pane is the root page, whose only row named the file.
+        let crumbs = out.lines().nth(1).expect("breadcrumb row");
+        assert!(crumbs.contains("repo"), "{crumbs:?}");
+        assert!(!crumbs.contains(ROOT_LABEL), "{crumbs:?}");
+        assert!(out.contains("r0"), "{out}");
+        // The preview pane holds the selected entry's own fields.
+        assert!(out.contains("lang"), "{out}");
+    }
+
+    #[test]
+    fn a_document_that_fits_the_room_is_drawn_whole_on_one_pane() {
+        let mut model = model();
+        model.fit_to_room(page_room(20));
+        let out = render(&model, 100, 20);
+        // Every value on screen, no drill affordance, and no second pane to
+        // navigate with — the whole file, at full width.
+        assert!(out.contains("localhost") && out.contains("30.5"), "{out}");
+        // No drill affordance: the chevron always trails a space, where the
+        // one in `‹document›` trails a letter.
+        assert!(!out.contains(" ›"), "{out}");
+        assert_eq!(out.matches(ROOT_LABEL).count(), 1, "{out}");
+    }
+
+    #[test]
+    fn the_same_document_in_a_short_terminal_goes_back_to_drilling() {
+        let mut model = model();
+        model.fit_to_room(page_room(9));
+        let out = render(&model, 100, 9);
+        assert!(!out.contains("localhost"), "{out}");
+        assert!(out.contains("server"), "{out}");
     }
 
     #[test]

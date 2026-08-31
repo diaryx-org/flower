@@ -80,7 +80,18 @@ fn run(
         .unwrap_or_else(|| path.display().to_string());
     let name = format!("{file}  [{fmt:?}]");
 
+    // How much a page inlines is a fact about the room, so the room is measured
+    // before the first frame rather than after it — and again on every frame,
+    // because a terminal can be resized under us and the model rebuilds only
+    // when the answer actually moves.
+    fit(model, terminal)?;
+    // Only now: where the document opens depends on what the budget put on the
+    // root page. A document small enough to fit entirely has no lone drill row
+    // to start past, and asking before the budget was known would have found one.
+    model.enter_document();
+
     loop {
+        fit(model, terminal)?;
         terminal.draw(|f| flower_ratatui::draw(f, model, &name))?;
 
         let Event::Key(key) = event::read()? else {
@@ -99,6 +110,13 @@ fn run(
             Mode::Editing { .. } => handle_editing(model, key.code),
         }
     }
+}
+
+/// Size the model's inline budget to the terminal it is being drawn in.
+fn fit(model: &mut Model<FigBackend>, terminal: &ratatui::DefaultTerminal) -> Result<()> {
+    let height = terminal.size().context("terminal size")?.height;
+    model.fit_to_room(flower_ratatui::page_room(height));
+    Ok(())
 }
 
 /// Returns `true` when the app should quit.

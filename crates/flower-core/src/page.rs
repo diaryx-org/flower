@@ -30,9 +30,9 @@
 //! How much fits is the embedder's call, because it is a fact about the room
 //! rather than about the document: a frontmatter panel showing one small file
 //! wants the whole document on one page, and a deep CI config read in a narrow
-//! pane wants a page per level. The budget's two limits are a row count — the
-//! honest cost of inlining, since every descendant is a row — and a depth, the
-//! number of ranks of nesting a page is willing to draw. The default
+//! pane wants a page per level. The budget's per-subtree limits are a row count
+//! — the honest cost of inlining, since every descendant is a row — and a
+//! depth, the number of ranks of nesting a page is willing to draw. The default
 //! ([`InlineBudget::default`]) is the founding rule: at most [`INLINE_MAX`]
 //! members, one rank — a small, all-scalar group and nothing else.
 //!
@@ -40,6 +40,33 @@
 //! fits entirely or drills. Nothing inside an inlined subtree drills, so a page
 //! never nests navigation inside itself, and editing one field can only change
 //! how that field's own container renders — never a neighbour's.
+//!
+//! ## What the page can afford
+//!
+//! A per-subtree budget is blind to how many subtrees there are, and a list is
+//! where that blindness shows. Twenty-two entries of three scalars each pass it
+//! twenty-two times over and put eighty rows on one page: four screens of group
+//! rules, where the thing a list is *for* — reading one entry against the next —
+//! needed one. Every individual yes was right and the page is still wrong.
+//!
+//! So a sequence is asked a second question, once for all of it
+//! ([`InlineBudget::page_rows`]): do the rows its items would contribute fit the
+//! room a page has? When they don't, the list is a list — one titled, summarised
+//! row per entry, which is the rendering that makes entries comparable anyway.
+//! Only sequences are held to it. Their answer is already all-or-nothing
+//! ([`seq_inlines`]), where a mapping's children are decided one at a time and a
+//! running total would inline whichever key happened to be written first.
+//!
+//! ## Fitting the room
+//!
+//! Both limits above are constants, and a constant cannot be right about a room
+//! it has never seen. [`InlineBudget::fitting`] asks the document and the room
+//! instead: a document that fits entirely is *drawn* entirely, so a file nobody
+//! needs to navigate costs no navigation, and one that doesn't falls back to the
+//! founding rule with the page's limit set to the room. That is the general form
+//! of the observation that a file which is only one array belongs on one page —
+//! the shape of the document is not what settles it, the size of it against the
+//! room is.
 //!
 //! Inlining is a *presentation* default, never a cage: a group header keeps its
 //! own path, so it stays selectable, deletable, and openable as a page like any
@@ -110,6 +137,23 @@ use crate::tree::{VKind, key_to_string, preview, value_at};
 /// more, and nothing else changes.
 pub const INLINE_MAX: usize = 6;
 
+/// The row limit of the **default** [`InlineBudget`]'s *page*.
+///
+/// Twenty is about a short terminal's body: the point past which a list has
+/// stopped being something you read one entry of against the next, and become
+/// something you scroll. It bounds what [`INLINE_MAX`] cannot — a list of
+/// entries each small enough to inline and numerous enough that inlining all of
+/// them buries the page.
+pub const PAGE_INLINE_MAX: usize = 20;
+
+/// The deepest document [`InlineBudget::fitting`] will pour onto one page.
+///
+/// Rows are not the only thing a page spends: every rank of nesting is two more
+/// columns of inset on every row below it. A document that fits vertically and
+/// runs eight ranks deep fits by the row count and not by the eye, so past this
+/// it drills however short it is.
+pub const FIT_MAX_DEPTH: usize = 3;
+
 /// How much of a container's subtree may be inlined into its parent's page
 /// rather than drilled into — the knob that slides the page projection between
 /// its two ancestors.
@@ -131,15 +175,73 @@ pub struct InlineBudget {
     /// so on. Rendered as [`PageItem::inset`], so this bounds the indentation a
     /// page can ask a frontend to draw.
     pub depth: usize,
+    /// The most rows one page will spend on the items of a sequence it inlines
+    /// ([`seq_inlines`]) — the limit [`rows`](Self::rows) cannot express,
+    /// because that one is asked once per item and this one once per page.
+    ///
+    /// Twenty-two entries of three scalars each pass a per-item budget
+    /// individually and put eighty rows on one page between them. Every
+    /// individual yes was right and the page is still wrong, so the page gets a
+    /// say of its own.
+    pub page_rows: usize,
+}
+
+impl InlineBudget {
+    /// A budget from the two per-subtree limits, with a page limit at least as
+    /// generous as [`PAGE_INLINE_MAX`].
+    ///
+    /// Raising `rows` past it raises the page's limit with it: a caller asking
+    /// for a hundred rows of subtree is asking for a page that can hold them,
+    /// and a page cap left at the default would refuse what the caller just
+    /// paid for.
+    pub fn new(rows: usize, depth: usize) -> Self {
+        Self {
+            rows,
+            depth,
+            page_rows: rows.max(PAGE_INLINE_MAX),
+        }
+    }
+
+    /// The budget that shows as much of `root` as `room` rows allow.
+    ///
+    /// The founding rule is a constant, and a constant cannot be right about a
+    /// room it has never seen: six rows and one rank is a wise default over a
+    /// deep CI config in a narrow pane, and a needless navigation step over a
+    /// document that would have fit on screen whole. This asks the document and
+    /// the room instead.
+    ///
+    /// Two answers. If the whole document fits — few enough rows, and shallow
+    /// enough ([`FIT_MAX_DEPTH`]) that the insets stay readable — the budget is
+    /// the document's own size and the root page simply *is* the document: no
+    /// navigation at all for a file that never needed any, which is the general
+    /// form of "a file that is only one array belongs on one page". Otherwise it
+    /// is the founding rule with the page limit set to the room, so a taller
+    /// terminal inlines a longer list and a short one does not.
+    ///
+    /// Measured over the whole document, hidden keys included: they are the
+    /// embedder's few reserved names, and counting them costs at most a row of
+    /// slack in a heuristic that is choosing between two roundings anyway.
+    pub fn fitting(root: &Value, room: usize) -> Self {
+        let (rows, depth) = subtree_shape(root);
+        if rows > 0 && rows <= room && depth <= FIT_MAX_DEPTH {
+            return Self {
+                rows,
+                depth,
+                page_rows: rows,
+            };
+        }
+        Self {
+            page_rows: room.max(INLINE_MAX),
+            ..Self::default()
+        }
+    }
 }
 
 impl Default for InlineBudget {
-    /// The founding rule: at most [`INLINE_MAX`] members, all of them scalars.
+    /// The founding rule: at most [`INLINE_MAX`] members, all of them scalars,
+    /// and at most [`PAGE_INLINE_MAX`] rows of them on any one page.
     fn default() -> Self {
-        Self {
-            rows: INLINE_MAX,
-            depth: 1,
-        }
+        Self::new(INLINE_MAX, 1)
     }
 }
 
@@ -326,6 +428,15 @@ impl Page {
         self.items.iter().any(PageItem::is_drill)
     }
 
+    /// Whether this page offers a choice — two rows or more.
+    ///
+    /// What a pane full of it would be *for*. A frontend drawing a sidebar reads
+    /// it to find out whether there is anything to select between: one row is a
+    /// label, not a menu, and half a screen is a lot to spend on a label.
+    pub fn has_choice(&self) -> bool {
+        self.items.len() >= 2
+    }
+
     /// The page's items in two stable runs: the ones a reader came to edit, then
     /// the demoted ones.
     ///
@@ -387,6 +498,43 @@ fn child_count(v: &Value) -> usize {
 pub fn inlines(v: &Value, budget: InlineBudget) -> bool {
     let (rows, depth) = subtree_shape(v);
     rows > 0 && rows <= budget.rows && depth <= budget.depth
+}
+
+/// Whether a sequence's items are inlined into its page — all of them, or none.
+///
+/// Two tests, and a list has to pass both. Every item must fit `budget` on its
+/// own (the founding rule, applied item by item), *and* the rows they would
+/// contribute between them must fit [`InlineBudget::page_rows`].
+///
+/// The second is the one a list needs and the per-item test cannot give it,
+/// because a per-item test is blind to how many items there are. Twenty-two
+/// entries of three scalars each say yes twenty-two times and put eighty rows on
+/// one page: four screens of group rules, where the thing a list is *for* —
+/// reading one entry against the next — needed one. Drilled instead, the same
+/// twenty-two are twenty-two rows, each titled and summarised, and the
+/// comparison is back on screen.
+///
+/// A mapping is under no such rule. Its children have distinct names and are
+/// decided one at a time, so a running total would inline whichever happened to
+/// be written first and drill the rest — a page whose shape depends on key
+/// order, which is not a fact about the document. A sequence can be held to a
+/// total precisely because its answer is already all-or-nothing.
+fn seq_inlines(items: &[Value], budget: InlineBudget) -> bool {
+    let mut rows = 0usize;
+    for item in items {
+        if is_container(item) {
+            if !inlines(item, budget) {
+                return false;
+            }
+            // The header, then everything under it.
+            rows += 1 + subtree_shape(item).0;
+        } else {
+            // A scalar item is one row whatever is decided here — it has no
+            // subtree to inline — but it is still a row this page has to draw.
+            rows += 1;
+        }
+    }
+    rows <= budget.page_rows
 }
 
 /// The rendered cost of inlining `v`: how many rows its subtree would put on
@@ -488,13 +636,22 @@ pub fn title_keys(items: &[Value]) -> Vec<String> {
 /// The title `item` takes from a ranking: the value of the best-ranked key it
 /// actually has. `None` for a non-mapping, or one with none of the keys.
 pub fn title_of(ranking: &[String], item: &Value) -> Option<String> {
+    title_entry_of(ranking, item).map(|(_, title)| title)
+}
+
+/// [`title_of`], and the key the title came out of.
+///
+/// The key matters to whoever is about to describe the same mapping a second
+/// time on the same row: a summary that repeats the field the title is already
+/// showing spends the row's width saying it twice ([`flow_without`]).
+pub fn title_entry_of<'r>(ranking: &'r [String], item: &Value) -> Option<(&'r str, String)> {
     let Value::Map(entries) = item else {
         return None;
     };
     ranking.iter().find_map(|want| {
-        entries
-            .iter()
-            .find_map(|(k, v)| (!is_container(v) && key_to_string(k) == *want).then(|| preview(v)))
+        entries.iter().find_map(|(k, v)| {
+            (!is_container(v) && key_to_string(k) == *want).then(|| (want.as_str(), preview(v)))
+        })
     })
 }
 
@@ -530,6 +687,32 @@ pub fn flow(v: &Value, budget: usize) -> Option<String> {
         }
         scalar => preview(scalar),
     };
+    (rendered.chars().count() <= budget).then_some(rendered)
+}
+
+/// [`flow`], with one top-level key left out — the one a row is already showing
+/// as its title.
+///
+/// `[0] · diaryx  {name: diaryx, public: false, lang: rust+swift}` says `diaryx`
+/// twice in a row that has room for neither, and the copy it drops is the one
+/// the eye already read. An elision, like every summary: the field is on the
+/// page the row opens, and the row's count still counts it.
+///
+/// `None` when nothing is left — a mapping whose only field is its own name has
+/// no contents to show beyond the title, and the count says the rest.
+fn flow_without(v: &Value, budget: usize, omit: &str) -> Option<String> {
+    let Value::Map(entries) = v else {
+        return flow(v, budget);
+    };
+    let parts = entries
+        .iter()
+        .filter(|(k, _)| key_to_string(k) != omit)
+        .map(|(k, val)| Some(format!("{}: {}", key_to_string(k), flow(val, budget)?)))
+        .collect::<Option<Vec<_>>>()?;
+    if parts.is_empty() {
+        return None;
+    }
+    let rendered = format!("{{{}}}", parts.join(", "));
     (rendered.chars().count() <= budget).then_some(rendered)
 }
 
@@ -581,16 +764,14 @@ pub fn build_page(
     // be small and collapse the rest — a list where some rows are three lines and
     // others are one, which reads as a rendering fault rather than as a list. It
     // also destroys the one comparison a list is for: entry against entry. So a
-    // sequence inlines every mapping item or none, and "none" is the answer as
-    // soon as one item is too big or too nested to inline.
+    // sequence inlines every mapping item or none ([`seq_inlines`]), and "none"
+    // is the answer as soon as one item is too big or too nested to inline — or
+    // as soon as there are too many of them to be worth a page between them.
     //
     // A mapping's children are under no such rule: they have distinct names, so
     // a mix of inlined groups and drill rows reads as what it is.
     let (uniform, ranking) = match node {
-        Value::Seq(items) => (
-            Some(items.iter().all(|i| !is_container(i) || inlines(i, budget))),
-            title_keys(items),
-        ),
+        Value::Seq(items) => (Some(seq_inlines(items, budget)), title_keys(items)),
         _ => (None, Vec::new()),
     };
 
@@ -635,6 +816,17 @@ pub fn build_page(
                 title,
                 demoted,
             );
+            // A titled row would otherwise describe itself twice — the title
+            // and the summary's first field are the same field — in a row that
+            // has room for neither.
+            //
+            // `child`, not `deep`, and the two are the same whenever this fires:
+            // compression needs a container whose *only* child is a container,
+            // and a title needs a scalar field, so a row can have one or the
+            // other and never both (`compression_and_a_title_cannot_meet`).
+            if let Some((key, _)) = title_entry_of(&ranking, child) {
+                row.summary = flow_without(child, SUMMARY_BUDGET, key);
+            }
             row.descend_to = descend_to;
             page.items.push(row);
         }
@@ -987,6 +1179,160 @@ timeout = 30.5
         );
     }
 
+    // ── the page's own row limit ──────────────────────────────────────────
+
+    /// A list of entries that each inline comfortably and are numerous enough
+    /// that inlining all of them buries the page — the `repos.figl` shape.
+    fn list_of(n: usize) -> Value {
+        let items: Vec<String> = (0..n)
+            .map(|i| format!(r#"{{"name": "r{i}", "lang": "rust"}}"#))
+            .collect();
+        value_of(
+            &format!(r#"{{"repo": [{}]}}"#, items.join(", ")),
+            Format::Json,
+        )
+    }
+
+    #[test]
+    fn a_list_long_enough_to_bury_the_page_is_listed_rather_than_expanded() {
+        // Every item passes the per-item budget: two scalars, one rank. The
+        // page still refuses them, because eight of them are twenty-four rows.
+        let root = list_of(8);
+        assert!(inlines(
+            &value_of(r#"{"name": "r0", "lang": "rust"}"#, Format::Json),
+            InlineBudget::default()
+        ));
+        let page = page_of(&root, &[key("repo")]);
+        assert!(
+            page.items.iter().all(PageItem::is_drill),
+            "{:?}",
+            shape(&page)
+        );
+        assert_eq!(page.items.len(), 8);
+    }
+
+    #[test]
+    fn the_page_limit_is_asked_once_per_page_not_once_per_item() {
+        let root = list_of(8);
+        // Room for all twenty-four rows — a header and two fields apiece — and
+        // the same list inlines. Nothing about the items changed, only what the
+        // page can afford.
+        let roomy = InlineBudget {
+            page_rows: 24,
+            ..InlineBudget::default()
+        };
+        let page = budgeted(&root, &[key("repo")], roomy);
+        assert_eq!(page.items.iter().filter(|i| i.inset == 0).count(), 8);
+        assert!(!page.has_drills(), "{:?}", shape(&page));
+
+        // One row short of the total is a no, and it is a no for every item:
+        // a list renders uniformly or not at all.
+        let tight = InlineBudget {
+            page_rows: 23,
+            ..InlineBudget::default()
+        };
+        let page = budgeted(&root, &[key("repo")], tight);
+        assert!(page.items.iter().all(PageItem::is_drill));
+    }
+
+    #[test]
+    fn a_mapping_is_not_held_to_the_page_limit() {
+        // Two groups of three, under a page limit that a sequence of the same
+        // size would fail. A mapping's children are decided one at a time, so
+        // holding them to a running total would inline whichever key came
+        // first — a page whose shape depends on key order.
+        let root = value_of(
+            r#"{"a": {"x": 1, "y": 2, "z": 3}, "b": {"x": 1, "y": 2, "z": 3}}"#,
+            Format::Json,
+        );
+        let page = budgeted(
+            &root,
+            &[],
+            InlineBudget {
+                page_rows: 4,
+                ..InlineBudget::default()
+            },
+        );
+        assert!(!page.has_drills(), "{:?}", shape(&page));
+    }
+
+    #[test]
+    fn a_long_list_of_scalars_is_still_just_its_items() {
+        // The page limit governs what a list *expands*; a sequence of scalars
+        // has nothing to expand, and one row each is the only rendering there
+        // is however many of them there are.
+        let items: Vec<String> = (0..40).map(|i| i.to_string()).collect();
+        let root = value_of(&format!("{{\"ns\": [{}]}}", items.join(", ")), Format::Json);
+        let page = page_of(&root, &[key("ns")]);
+        assert_eq!(page.items.len(), 40);
+        assert!(page.items.iter().all(PageItem::is_scalar));
+    }
+
+    // ── fitting a budget to the room ──────────────────────────────────────
+
+    #[test]
+    fn a_document_that_fits_the_room_needs_no_navigation_at_all() {
+        let root = sample();
+        // Twelve rows of document. Given twelve rows of room, the root page is
+        // the document and there is nothing left to open.
+        let page = budgeted(&root, &[], InlineBudget::fitting(&root, 12));
+        assert_eq!(page.items.len(), 12);
+        assert!(!page.has_drills(), "{:?}", shape(&page));
+    }
+
+    #[test]
+    fn a_document_one_row_too_big_falls_back_to_the_founding_rule() {
+        let root = sample();
+        let budget = InlineBudget::fitting(&root, 11);
+        assert_eq!(budget.rows, INLINE_MAX);
+        assert_eq!(budget.depth, 1);
+        // The room still sets the page's own limit, so a taller terminal
+        // inlines a longer list and a short one does not.
+        assert_eq!(budget.page_rows, 11);
+        assert!(budgeted(&root, &[], budget).has_drills());
+    }
+
+    #[test]
+    fn a_document_too_deep_to_read_drills_however_short_it_is() {
+        // Four rows and four ranks. It fits the room by the row count and not
+        // by the eye: inlining it would draw eight columns of inset.
+        let root = value_of(r#"{"a": {"b": {"c": {"d": 1}}}}"#, Format::Json);
+        let budget = InlineBudget::fitting(&root, 100);
+        assert_eq!(budget.depth, 1);
+        assert!(budgeted(&root, &[], budget).has_drills());
+    }
+
+    #[test]
+    fn a_room_of_nothing_still_leaves_the_founding_rule_intact() {
+        // A terminal too short to draw anything is not a reason to stop
+        // inlining the small groups the founding rule was written for.
+        let budget = InlineBudget::fitting(&sample(), 0);
+        assert_eq!(budget.page_rows, INLINE_MAX);
+        assert_eq!(
+            shape(&budgeted(&sample(), &[key("server")], budget)),
+            shape(&page_of(&sample(), &[key("server")]))
+        );
+    }
+
+    #[test]
+    fn raising_the_subtree_limit_raises_the_page_limit_with_it() {
+        // A caller asking for a hundred rows of subtree is asking for a page
+        // that can hold them.
+        assert_eq!(InlineBudget::new(99, 8).page_rows, 99);
+        // And one asking for less than a page's worth does not lower it.
+        assert_eq!(InlineBudget::new(2, 1).page_rows, PAGE_INLINE_MAX);
+    }
+
+    #[test]
+    fn a_page_of_one_row_is_a_label_rather_than_a_choice() {
+        let root = value_of(
+            r#"{"repo": [{"a": 1, "b": 2, "c": 3, "d": 4}]}"#,
+            Format::Json,
+        );
+        assert!(!page_of(&root, &[]).has_choice());
+        assert!(page_of(&root, &[key("repo"), Seg::Index(0)]).has_choice());
+    }
+
     // ── the inline budget ─────────────────────────────────────────────────
 
     #[test]
@@ -994,7 +1340,7 @@ timeout = 30.5
         let root = value_of("{\"a\": {\"b\": {\"c\": 1}}}", Format::Json);
         // `a`'s subtree reaches two ranks below its header — `b`, then `c`
         // under it — so a depth of 2 admits the whole chain onto the root page.
-        let page = budgeted(&root, &[], InlineBudget { rows: 6, depth: 2 });
+        let page = budgeted(&root, &[], InlineBudget::new(6, 2));
         assert_eq!(
             shape(&page),
             vec![
@@ -1004,7 +1350,7 @@ timeout = 30.5
             ]
         );
         // One rank shy and it drills exactly as the default does.
-        let page = budgeted(&root, &[], InlineBudget { rows: 6, depth: 1 });
+        let page = budgeted(&root, &[], InlineBudget::new(6, 1));
         assert_eq!(shape(&page), vec![("a".into(), 0, "drill")]);
     }
 
@@ -1015,12 +1361,12 @@ timeout = 30.5
             Format::Json,
         );
         // `outer` costs four rows: `g`'s header, its two members, and `z`.
-        let fits = InlineBudget { rows: 4, depth: 2 };
+        let fits = InlineBudget::new(4, 2);
         assert!(matches!(
             budgeted(&root, &[], fits).items[0].kind,
             ItemKind::GroupHeader { .. }
         ));
-        let short = InlineBudget { rows: 3, depth: 2 };
+        let short = InlineBudget::new(3, 2);
         assert!(budgeted(&root, &[], short).items[0].is_drill());
     }
 
@@ -1029,7 +1375,7 @@ timeout = 30.5
         // The absorbed settings list: raise the budget past the document's size
         // and the root page simply is the document, ranks drawn as insets.
         let root = sample();
-        let page = budgeted(&root, &[], InlineBudget { rows: 99, depth: 8 });
+        let page = budgeted(&root, &[], InlineBudget::new(99, 8));
         assert_eq!(
             shape(&page),
             vec![
@@ -1053,7 +1399,7 @@ timeout = 30.5
     #[test]
     fn an_inlined_subtree_keeps_every_paths_own_address() {
         let root = sample();
-        let page = budgeted(&root, &[], InlineBudget { rows: 99, depth: 8 });
+        let page = budgeted(&root, &[], InlineBudget::new(99, 8));
         let timeout = page
             .items
             .iter()
@@ -1068,7 +1414,7 @@ timeout = 30.5
     #[test]
     fn a_budget_that_admits_a_chain_inlines_it_instead_of_compressing() {
         let root = value_of(LONE, Format::Json);
-        let page = budgeted(&root, &[], InlineBudget { rows: 99, depth: 8 });
+        let page = budgeted(&root, &[], InlineBudget::new(99, 8));
         let exports = &page.items[0];
         // Under the default budget this row compresses to `exports › journal`;
         // with room for the whole subtree there is no page to skip.
@@ -1082,7 +1428,7 @@ timeout = 30.5
         // The third step nests a `with` mapping, which the default budget's one
         // rank refuses — and uniformity then drills every item. Two ranks admit
         // it, so the whole list inlines, titles on the item headers.
-        let page = budgeted(&root, &[key("steps")], InlineBudget { rows: 20, depth: 2 });
+        let page = budgeted(&root, &[key("steps")], InlineBudget::new(20, 2));
         let headers: Vec<_> = page
             .items
             .iter()
@@ -1107,13 +1453,7 @@ timeout = 30.5
     fn demotion_still_folds_a_deeply_inlined_subtree_in_one_run() {
         let root = sample();
         let set: HashSet<String> = ["server".to_string()].into();
-        let page = build_page(
-            &root,
-            &[],
-            &HashSet::new(),
-            &set,
-            InlineBudget { rows: 99, depth: 8 },
-        );
+        let page = build_page(&root, &[], &HashSet::new(), &set, InlineBudget::new(99, 8));
         let (primary, advanced) = page.partitioned();
         assert_eq!(
             primary.iter().map(|i| i.label.as_str()).collect::<Vec<_>>(),
@@ -1369,6 +1709,95 @@ timeout = 30.5
         assert_eq!(
             page_of(&root, &[key("outer")]).items[0].summary.as_deref(),
             Some("{b: x}")
+        );
+    }
+
+    #[test]
+    fn a_titled_row_does_not_spend_its_width_saying_its_title_twice() {
+        let root = list_of(8);
+        let page = page_of(&root, &[key("repo")]);
+        let first = &page.items[0];
+        // The row already reads `[0] · r0`; a summary opening `name: r0` would
+        // say it again in the same line.
+        assert_eq!(first.title.as_deref(), Some("r0"));
+        assert_eq!(first.summary.as_deref(), Some("{lang: rust}"));
+        // Elided from the summary, not from the document: the count still
+        // counts it, and it is on the page the row opens.
+        assert!(matches!(first.kind, ItemKind::Drill { count: 2 }));
+        assert_eq!(
+            page_of(&root, &[key("repo"), Seg::Index(0)])
+                .items
+                .iter()
+                .map(|i| i.label.as_str())
+                .collect::<Vec<_>>(),
+            ["name", "lang"]
+        );
+    }
+
+    #[test]
+    fn a_row_whose_only_field_is_its_title_falls_back_to_being_counted() {
+        // Nothing left once the title is elided, and `{}` would be a lie about
+        // a mapping that has a field in it. The count says the rest.
+        let items: Vec<String> = (0..8).map(|i| format!(r#"{{"name": "r{i}"}}"#)).collect();
+        let root = value_of(
+            &format!(r#"{{"repo": [{}]}}"#, items.join(", ")),
+            Format::Json,
+        );
+        let page = budgeted(
+            &root,
+            &[key("repo")],
+            InlineBudget {
+                page_rows: 4,
+                ..InlineBudget::default()
+            },
+        );
+        assert_eq!(page.items[0].title.as_deref(), Some("r0"));
+        assert!(page.items[0].summary.is_none());
+        assert!(matches!(page.items[0].kind, ItemKind::Drill { count: 1 }));
+    }
+
+    #[test]
+    fn compression_and_a_title_cannot_meet() {
+        // What lets the elision summarise `child` without checking whether the
+        // row compressed past it. Compression needs a container holding one
+        // container and nothing else; a title needs a scalar field. A row can
+        // have either and never both — so a compressed row's summary is of the
+        // node its title would have come from, vacuously.
+        let root = value_of(
+            r#"{"repo": [{"only": {"name": "inner", "lang": "rust", "a": 1,
+                                   "b": 2, "c": 3, "d": 4, "e": 5}}]}"#,
+            Format::Json,
+        );
+        let row = &page_of(&root, &[key("repo")]).items[0];
+        assert!(row.is_compressed(), "{:?}", row.chain_labels());
+        assert_eq!(row.chain_labels(), ["[0]", "only"]);
+        // Nothing elided, because there was no title to elide.
+        assert!(row.title.is_none());
+        assert!(
+            row.summary
+                .as_deref()
+                .is_some_and(|f| f.starts_with("{name: inner")),
+            "{:?}",
+            row.summary
+        );
+    }
+
+    #[test]
+    fn a_mapping_entry_summarises_whole_because_nothing_titled_it() {
+        // Only a sequence item takes a title, so only a sequence item has one
+        // to elide. A `name` under a key is just a field.
+        let root = value_of(r#"{"a": {"name": "x", "lang": "rust"}}"#, Format::Json);
+        let page = budgeted(
+            &root,
+            &[],
+            InlineBudget {
+                rows: 1,
+                ..InlineBudget::default()
+            },
+        );
+        assert_eq!(
+            page.items[0].summary.as_deref(),
+            Some("{name: x, lang: rust}")
         );
     }
 

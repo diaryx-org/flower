@@ -672,6 +672,12 @@ public protocol FlowerDocProtocol : AnyObject {
      * settings-list rendering, without a second surface. The host picks,
      * because the right amount is a fact about the room the pages are drawn
      * in, not about the document.
+     *
+     * A page's own row limit comes with it
+     * ([`InlineBudget::new`](flower_core::InlineBudget::new)): a list of items
+     * that each fit `rows` is still drilled when there are enough of them to
+     * bury the page, and asking for more rows per subtree asks for a page that
+     * can hold them.
      */
     func setInlineBudget(rows: UInt32, depth: UInt32)  -> PagesView
     
@@ -1139,6 +1145,12 @@ open func select(index: UInt32) -> DocView {
      * settings-list rendering, without a second surface. The host picks,
      * because the right amount is a fact about the room the pages are drawn
      * in, not about the document.
+     *
+     * A page's own row limit comes with it
+     * ([`InlineBudget::new`](flower_core::InlineBudget::new)): a list of items
+     * that each fit `rows` is still drilled when there are enough of them to
+     * bury the page, and asking for more rows per subtree asks for a page that
+     * can hold them.
      */
 open func setInlineBudget(rows: UInt32, depth: UInt32) -> PagesView {
     return try!  FfiConverterTypePagesView.lift(try! rustCall() {
@@ -2568,7 +2580,7 @@ private var initializationResult: InitializationResult = {
     if (uniffi_flower_ffi_checksum_method_flowerdoc_select() != 42705) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_flower_ffi_checksum_method_flowerdoc_set_inline_budget() != 16840) {
+    if (uniffi_flower_ffi_checksum_method_flowerdoc_set_inline_budget() != 12151) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_flower_ffi_checksum_method_flowerdoc_set_value() != 43208) {

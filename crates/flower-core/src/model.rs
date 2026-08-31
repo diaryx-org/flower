@@ -248,14 +248,65 @@ impl<B: Backend> Model<B> {
     /// pane over a deep config wants a page per level — and only the embedder
     /// knows which it is. Rebuilds the pages, so the next
     /// [`page`](Self::page) already reflects it.
+    ///
+    /// The cursor stays on the row it was on, by path rather than by index — a
+    /// budget is the one setting that changes how many rows a page has, so the
+    /// index under the cursor is exactly what it invalidates. Raising the budget
+    /// far enough turns row three of a list into the third field of its first
+    /// entry, and a reader who resized a window did not ask to be moved.
     pub fn set_inline_budget(&mut self, budget: InlineBudget) {
+        let was_on = self.page_item().map(|i| i.path.clone());
         self.inline_budget = budget;
         self.rebuild_pages();
+        if let Some(path) = was_on
+            && let Some(i) = self.page.position_of(&path)
+        {
+            self.page_selected = i;
+        }
     }
 
     /// The inline budget the page projection is currently built with.
     pub fn inline_budget(&self) -> InlineBudget {
         self.inline_budget
+    }
+
+    /// Set the inline budget from the room a page actually has
+    /// ([`InlineBudget::fitting`]) — `room` being how many rows a frontend can
+    /// draw items into, once its own chrome has taken what it needs.
+    ///
+    /// [`set_inline_budget`](Self::set_inline_budget) is the embedder deciding;
+    /// this is the embedder *measuring*, which is the same decision made against
+    /// the one fact that turns out to settle it. A frontend that can be resized
+    /// calls this whenever the room changes, which is cheap to do every frame:
+    /// the pages are rebuilt only when the answer moves.
+    pub fn fit_to_room(&mut self, room: usize) {
+        let budget = InlineBudget::fitting(&self.value, room);
+        if budget != self.inline_budget {
+            self.set_inline_budget(budget);
+        }
+    }
+
+    /// Open the document at the first page that says something.
+    ///
+    /// A document whose root holds one container — `{repo: [...]}`, and every
+    /// file that is one list under one key — has a root page with a single drill
+    /// row on it, naming the thing you are obviously about to open. That is the
+    /// same page [`PageItem::descend_to`] exists to skip, arrived at from
+    /// outside rather than from a row, and the reasons match: it costs a
+    /// navigation step to be told the name of the file you just opened.
+    ///
+    /// Called once, by the frontend, after the budget is set — it is a decision
+    /// about where to *start*, not a property of the projection, and re-running
+    /// it on every rebuild would take the root page away from a reader who had
+    /// pressed `h` to reach it. Nothing is lost either way: the root page is one
+    /// step out, and the row's own ops are the ops of the container this lands
+    /// in.
+    pub fn enter_document(&mut self) {
+        while self.page.items.len() == 1 && self.page.items[0].is_drill() {
+            self.focus = self.page.items[0].descend_to.clone();
+            self.page_selected = 0;
+            self.rebuild_pages();
+        }
     }
 
     /// Whether the node at `path` sits under a demoted top-level key — the
@@ -684,11 +735,36 @@ impl<B: Backend> Model<B> {
     /// Whether a two-pane layout would waste one pane on this document.
     ///
     /// A document whose root has nothing to drill into — a flat list of keys, a
-    /// sequence of scalars — has no navigation to put in a sidebar, and splitting
-    /// the width for it would cost half the room and buy nothing. A frontend
-    /// checks this to fall back to a single full-width pane.
+    /// sequence of scalars, anything a generous budget has poured onto one page
+    /// — has no navigation to put in a sidebar, and splitting the width for it
+    /// would cost half the room and buy nothing. A frontend checks this to fall
+    /// back to a single full-width pane.
+    ///
+    /// The second case is the same waste one level along: when the page the
+    /// cursor is on is the one that leads the split
+    /// ([`page_leads_the_split`](Self::page_leads_the_split)), the right pane is
+    /// a preview of what the cursor would open, and a page with nothing to open
+    /// has no preview to put there.
     pub fn pages_would_degenerate(&self) -> bool {
-        !self.root_page.has_drills()
+        if !self.root_page.has_drills() {
+            return true;
+        }
+        self.page_leads_the_split() && !self.page.has_drills()
+    }
+
+    /// Whether the page the cursor is on belongs in the *left* pane, with the
+    /// right one previewing what the cursor would open.
+    ///
+    /// Two panes are two consecutive levels of one lineage, and the left one is
+    /// the outermost that offers a choice. Usually that is the page the current
+    /// one was opened from. But a page can be opened from one that has a single
+    /// row on it — the root of `{repo: [...]}`, or any level
+    /// [`enter_document`](Self::enter_document) started past — and drawing that
+    /// on the left spends half the width on a row nobody can choose between.
+    /// Then this page leads instead, and the pane that would have repeated its
+    /// parent previews its child.
+    pub fn page_leads_the_split(&self) -> bool {
+        self.focus.is_empty() || !self.parent_page.has_choice()
     }
 
     /// Point the page view at whichever page *lists* `path`, with the cursor on
@@ -2021,7 +2097,7 @@ timeout = 30.5
     #[test]
     fn raising_the_inline_budget_turns_the_root_page_into_the_document() {
         let mut model = paged_model();
-        model.set_inline_budget(InlineBudget { rows: 99, depth: 8 });
+        model.set_inline_budget(InlineBudget::new(99, 8));
 
         // Everything inlines, so the cursor can stand on the deepest member
         // without ever leaving the root page…
@@ -2135,6 +2211,106 @@ timeout = 30.5
             model.rows[model.selected].path,
             vec![key("server"), key("host")]
         );
+    }
+
+    /// The `repos.figl` shape: one key, holding a list too long to inline.
+    fn list_model() -> Model<FigBackend> {
+        let items: Vec<String> = (0..22)
+            .map(|i| format!(r#"{{"name": "r{i}", "lang": "rust"}}"#))
+            .collect();
+        let src = format!(r#"{{"repo": [{}]}}"#, items.join(", "));
+        let backend = FigBackend::open(src.as_bytes(), Format::Json).expect("open");
+        let mut model = Model::new(backend).expect("model");
+        model.set_view(ViewMode::Pages);
+        model
+    }
+
+    #[test]
+    fn a_document_that_is_one_list_opens_on_the_list() {
+        let mut model = list_model();
+        // Before: a root page whose one row names the file you just opened.
+        assert_eq!(page_labels(&model), ["repo"]);
+
+        model.enter_document();
+        assert_eq!(model.focus(), &[Seg::Key("repo".into())]);
+        assert_eq!(model.page().items.len(), 22);
+        assert_eq!(model.page_selected(), 0);
+        // The page it skipped is one step out, not gone: `repo` still renames,
+        // deletes and takes an append there.
+        model.page_back();
+        assert_eq!(page_labels(&model), ["repo"]);
+    }
+
+    #[test]
+    fn a_root_page_with_something_to_say_is_opened_where_it_is() {
+        let mut model = paged_model();
+        model.enter_document();
+        assert!(model.focus().is_empty());
+        assert_eq!(selected_label(&model), "title");
+    }
+
+    #[test]
+    fn the_page_leads_the_split_when_the_one_behind_it_holds_a_single_row() {
+        let mut model = list_model();
+        model.enter_document();
+        // The root page holds one row, so drawing it beside this one would
+        // spend half the width on something nobody can choose between. This
+        // page leads instead, and the other pane previews what it opens.
+        assert!(model.page_leads_the_split());
+        assert!(!model.pages_would_degenerate());
+        assert_eq!(model.peek_page().expect("the first repo").items.len(), 2);
+
+        // A root page with four rows on it is worth a pane, so it keeps one.
+        let mut model = paged_model();
+        model.focus_on(&[Seg::Key("server".into())]);
+        model.page_enter();
+        assert!(!model.page_leads_the_split());
+    }
+
+    #[test]
+    fn fitting_the_room_puts_a_document_that_fits_on_one_page() {
+        let mut model = paged_model();
+        assert!(model.page().has_drills());
+
+        // Twelve rows of document, and room for them.
+        model.fit_to_room(12);
+        assert!(!model.page().has_drills());
+        assert!(model.pages_would_degenerate());
+        assert_eq!(page_labels(&model).len(), 12);
+
+        // One row short and the founding rule is back.
+        model.fit_to_room(11);
+        assert!(model.page().has_drills());
+        assert_eq!(
+            page_labels(&model),
+            ["title", "version", "enabled", "server"]
+        );
+    }
+
+    #[test]
+    fn fitting_the_room_leaves_the_cursor_and_the_focus_where_they_were() {
+        // A resize is not a navigation. It changes how much of the document a
+        // page shows, and nothing about where the reader is in it.
+        let mut model = list_model();
+        model.enter_document();
+        model.page_move_down();
+        model.page_move_down();
+        let (focus, at) = (model.focus().to_vec(), selected_label(&model));
+        model.fit_to_room(80);
+        assert_eq!(model.focus(), focus.as_slice());
+        assert_eq!(selected_label(&model), at);
+    }
+
+    #[test]
+    fn a_document_poured_onto_one_page_wastes_a_second_pane_wherever_you_are() {
+        // Nothing to navigate to from the root, so there is no lineage to put
+        // two panes on — even standing one level in, where a parent page and a
+        // page would otherwise be two halves that repeat each other.
+        let mut model = list_model();
+        model.enter_document();
+        model.set_inline_budget(InlineBudget::new(99, 8));
+        assert!(!model.focus().is_empty());
+        assert!(model.pages_would_degenerate());
     }
 
     #[test]

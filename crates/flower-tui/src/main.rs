@@ -56,6 +56,11 @@ fn main() -> Result<()> {
     let bytes = std::fs::read(&path).with_context(|| format!("reading {}", path.display()))?;
     let backend = FigBackend::open(&bytes, fmt)?;
     let mut model = Model::new(backend)?;
+    // The page projection is the only one this app draws. The model routes the
+    // node keys (`e`, `x`) through whichever view is active, so say it once here
+    // rather than leaving the first edit before any movement to resolve against
+    // a tree cursor nothing on screen came from.
+    model.set_view(ViewMode::Pages);
 
     let mut terminal = ratatui::init();
     let result = run(&mut terminal, &mut model, &path, fmt);
@@ -98,36 +103,22 @@ fn run(
 
 /// Returns `true` when the app should quit.
 ///
-/// The keys that operate on a *node* — edit, delete, save, quit — are the same in
-/// both views, because the model resolves them against whichever selection is
-/// active. Only the movement keys differ, and only in what they mean: in the tree
-/// `h`/`l` fold, in the page view they pop and push a page.
+/// One projection, so one flat table: `j`/`k` walk the page, `l`/`h` push and pop
+/// one, and the keys that operate on a *node* — edit, delete, save, quit —
+/// resolve against the page cursor.
 fn handle_normal(model: &mut Model<FigBackend>, code: KeyCode, path: &Path) -> bool {
     match code {
         KeyCode::Char('q') => return true,
-        KeyCode::Char('v') => model.toggle_view(),
         KeyCode::Char('e') => model.begin_edit(),
         KeyCode::Char('x') => model.delete_selected(),
         KeyCode::Char('s') => save(model, path),
-        _ => match model.view() {
-            ViewMode::Tree => match code {
-                KeyCode::Char('j') | KeyCode::Down => model.move_down(),
-                KeyCode::Char('k') | KeyCode::Up => model.move_up(),
-                KeyCode::Char('l') | KeyCode::Right => model.expand_or_enter(),
-                KeyCode::Char('h') | KeyCode::Left => model.collapse_or_leave(),
-                KeyCode::Enter | KeyCode::Char(' ') => model.activate(),
-                _ => {}
-            },
-            ViewMode::Pages => match code {
-                KeyCode::Char('j') | KeyCode::Down => model.page_move_down(),
-                KeyCode::Char('k') | KeyCode::Up => model.page_move_up(),
-                KeyCode::Char('l') | KeyCode::Right | KeyCode::Enter | KeyCode::Char(' ') => {
-                    model.page_enter()
-                }
-                KeyCode::Char('h') | KeyCode::Left | KeyCode::Esc => model.page_back(),
-                _ => {}
-            },
-        },
+        KeyCode::Char('j') | KeyCode::Down => model.page_move_down(),
+        KeyCode::Char('k') | KeyCode::Up => model.page_move_up(),
+        KeyCode::Char('l') | KeyCode::Right | KeyCode::Enter | KeyCode::Char(' ') => {
+            model.page_enter()
+        }
+        KeyCode::Char('h') | KeyCode::Left | KeyCode::Esc => model.page_back(),
+        _ => {}
     }
     false
 }

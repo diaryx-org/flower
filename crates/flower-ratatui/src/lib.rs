@@ -6,12 +6,18 @@
 //! the app wants to name the document (e.g. a file name) — flower-core has no
 //! filesystem concept of its own.
 //!
-//! The body renders whichever projection the model is in
-//! ([`ViewMode`](flower_core::ViewMode)): the indented tree, or the page view —
-//! a settings-menu layout that is two panes when there is width and depth to
+//! The body is the **page** projection ([`Model::page`](flower_core::Model::page))
+//! — a settings-menu layout that is two panes when there is width and depth to
 //! justify them, and one pane when there isn't. That fallback is a rendering
 //! decision, not a mode: the model holds one page state and this decides how much
 //! of it fits.
+//!
+//! It is the only projection drawn here. flower-core still offers the indented
+//! tree, and an embedder that drives the model by row index still wants it, but a
+//! terminal does not: depth costs an indent column the tree keeps paying on every
+//! row below it, where a page spends it once on a breadcrumb. The app is expected
+//! to hold the model in [`ViewMode::Pages`](flower_core::ViewMode::Pages), which
+//! is what makes an edit resolve against the cursor this draws.
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
@@ -19,7 +25,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState};
 
-use flower_core::{Backend, ItemKind, Mode, Model, Page, PageItem, VKind, ViewMode};
+use flower_core::{Backend, ItemKind, Mode, Model, Page, PageItem, VKind};
 
 /// Below this width a two-pane split leaves neither pane usable, so the page view
 /// collapses to the single-pane (push/pop) layout — the same interaction, one
@@ -66,10 +72,7 @@ pub fn draw<B: Backend>(f: &mut Frame, model: &Model<B>, header: &str) {
     .split(f.area());
 
     draw_header(f, model, header, chunks[0]);
-    match model.view() {
-        ViewMode::Tree => draw_tree(f, model, chunks[1]),
-        ViewMode::Pages => draw_pages(f, model, chunks[1]),
-    }
+    draw_pages(f, model, chunks[1]);
     draw_footer(f, model, chunks[2]);
 }
 
@@ -84,42 +87,6 @@ fn draw_header<B: Backend>(f: &mut Frame, model: &Model<B>, header: &str, area: 
             .add_modifier(Modifier::BOLD),
     ));
     f.render_widget(line, area);
-}
-
-// ── the tree projection ──────────────────────────────────────────────────────
-
-fn draw_tree<B: Backend>(f: &mut Frame, model: &Model<B>, area: Rect) {
-    let items: Vec<ListItem> = model
-        .rows
-        .iter()
-        .map(|row| {
-            let indent = "  ".repeat(row.depth);
-
-            // A twisty for containers, a bullet for leaves.
-            let marker = if row.is_container() {
-                if row.expanded { "▾ " } else { "▸ " }
-            } else {
-                "· "
-            };
-
-            let mut spans = vec![
-                Span::raw(indent),
-                Span::styled(marker, dim()),
-                Span::styled(row.label.clone(), key_style()),
-            ];
-
-            if row.is_container() {
-                spans.push(Span::styled(format!(" {}", row.preview), dim()));
-            } else {
-                spans.push(Span::raw(" = "));
-                spans.push(Span::styled(row.preview.clone(), value_style(row.vkind)));
-            }
-
-            ListItem::new(Line::from(spans))
-        })
-        .collect();
-
-    render_list(f, items, Some(model.selected()), area);
 }
 
 // ── the page projection ──────────────────────────────────────────────────────
@@ -355,10 +322,7 @@ fn render_list(f: &mut Frame, items: Vec<ListItem>, selected: Option<usize>, are
 
 fn draw_footer<B: Backend>(f: &mut Frame, model: &Model<B>, area: Rect) {
     // Kept short enough to survive an 80-column terminal alongside the status.
-    let hints = match model.view() {
-        ViewMode::Tree => "  j/k · h/l fold · Enter edit · x del · v pages · s save · q quit",
-        ViewMode::Pages => "  j/k · l/h in/out · e edit · x del · v tree · s save · q quit",
-    };
+    let hints = "  j/k · l/h in/out · e edit · x del · s save · q quit";
     let line = match &model.mode {
         Mode::Editing { buffer, .. } => Line::from(vec![
             Span::styled(
@@ -392,7 +356,11 @@ fn draw_footer<B: Backend>(f: &mut Frame, model: &Model<B>, area: Rect) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use flower_core::{FigBackend, Seg};
+    // The app holds the model in the page projection (see the module docs), so
+    // the tests set it up the same way — rendering reads the page state either
+    // way, but an edit routed from a test model should route where the app's
+    // would.
+    use flower_core::{FigBackend, Seg, ViewMode};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
@@ -450,6 +418,22 @@ timeout = 30.5
         assert!(out.contains("max_connections"), "{out}");
         // Values are flushed right, not written as `key = value`.
         assert!(!out.contains("host = "), "{out}");
+    }
+
+    /// There is one projection here, and no key to ask for another.
+    #[test]
+    fn the_page_is_drawn_whatever_view_the_model_is_in() {
+        let mut model = model();
+        // Deliberately the *other* view: flower-core still has a tree, and this
+        // is what says the widget no longer has a renderer to fall into.
+        model.set_view(ViewMode::Tree);
+        let out = render(&model, 76, 14);
+        // A page — a breadcrumb, and values flushed right rather than `key = value`
+        // rows under expand twisties.
+        assert!(out.contains("‹document›"), "{out}");
+        assert!(!out.contains("host = "), "{out}");
+        assert!(!out.contains("▾ "), "{out}");
+        assert!(!out.contains("v pages") && !out.contains("v tree"), "{out}");
     }
 
     #[test]

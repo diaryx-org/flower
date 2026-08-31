@@ -18,17 +18,15 @@ editing spends most of its keystrokes in states the parser refuses to hold.)
 
 Early prototype. Working today:
 
-- Open a file (format detected from extension), render its structure as an
-  indented, type-colored tree.
-- Navigate structurally: move between siblings, into children, out to parents;
-  expand/collapse containers.
-- Read it as a **settings menu** instead (`v`): one container per page, small
-  all-scalar groups inlined, and a container short enough to fit shown in flow
-  form (`push  {branches: [main]}`) rather than counted. Two panes when there's
-  width and depth to use them — consecutive levels of one lineage, so the left is
-  always the page the right came out of — and one when there isn't. Depth costs a
-  page rather than a column, so a deeply nested document stays as legible as a
-  shallow one.
+- Open a file (format detected from extension) and read it as a **settings
+  menu**: one container per page, small all-scalar groups inlined, and a
+  container short enough to fit shown in flow form (`push  {branches: [main]}`)
+  rather than counted. Two panes when there's width and depth to use them —
+  consecutive levels of one lineage, so the left is always the page the right
+  came out of — and one when there isn't. Depth costs a page rather than a
+  column, so a deeply nested document stays as legible as a shallow one.
+- Navigate structurally: along a page's items, into a container, back out to the
+  page that listed it.
 - Sink the fields nobody types in (a recomputed hash, a relation another pane
   owns) below the ones they do, subtree and all, without hiding them.
 - Edit a scalar in place (typed: `true`/`42`/`3.14`/`null`/text) — committed via
@@ -40,21 +38,21 @@ Deliberately not here yet — see the roadmap.
 
 ## Keys
 
-| Key | Tree view | Page view |
-|-----|-----------|-----------|
-| `j` / `k` (or ↓/↑) | next / previous row | next / previous item |
-| `l` (or →) | expand container, or step into first child | open the container as a page |
-| `h` (or ←) | collapse container, or step out to parent | back to the parent page |
-| `Enter` / `Space` | toggle a container / edit a scalar | open a container / edit a scalar |
-| `v` | switch to the page view | switch to the tree |
-| `e` | edit the selected scalar | ← same |
-| `x` | delete the selected entry or item | ← same |
-| `s` | save to disk | ← same |
-| `q` | quit | ← same |
+| Key | What it does |
+|-----|--------------|
+| `j` / `k` (or ↓/↑) | next / previous item on the page |
+| `l` (or →) | open the container as a page; on a scalar, edit it |
+| `h` (or ← / `Esc`) | back to the page that listed the container you opened |
+| `Enter` / `Space` | ← same as `l` |
+| `e` | edit the selected scalar |
+| `x` | delete the selected entry or item |
+| `s` | save to disk |
+| `q` | quit |
 
-`v` carries the cursor across, so the node you were on in one view is the node
-you land on in the other. The keys that operate on a *node* mean the same thing
-in both views — an edit is a path and a value, and neither view owns it.
+One projection, so one table. flower-core still offers the indented tree it
+started as, and an embedder driving the model by row index still uses it — the
+terminal doesn't, because depth there costs an indent column every row below
+pays for, where a page spends it once on a breadcrumb.
 
 In edit mode: type to change the value, `Enter` to commit, `Esc` to cancel.
 
@@ -92,7 +90,7 @@ fig (Zig) → fig-sys (FFI, libfig.a) → fig crate (Editor/Document/Value)
 | Tier | Path | What it is |
 |------|------|------------|
 | core | [`crates/flower-core`](crates/flower-core) | the frontend-neutral model — the navigable `Row` tree + path-addressed lossless edits over fig. No UI, no fs. |
-| widget | [`crates/flower-ratatui`](crates/flower-ratatui) | a `draw(frame, &Model, header)` ratatui widget. |
+| widget | [`crates/flower-ratatui`](crates/flower-ratatui) | a `draw(frame, &Model, header)` ratatui widget, drawing the page view. |
 | binding | [`crates/flower-ffi`](crates/flower-ffi) | the **UniFFI C-ABI binding** — wraps the filesystem-free `Model` so a native Apple app can drive it. The native-Apple peer of the ratatui widget. |
 | app | [`crates/flower-tui`](crates/flower-tui) | the terminal app (binary `flower`) — file I/O + event loop. |
 | Swift SDK | [`packages/flower-swift`](packages/flower-swift) | the Swift Package (manifest at the repo root, so SwiftPM can resolve it by version). `FlowerPagesUI` is the page view (`FlowerPages`) written against protocols, with **no binding behind it**; `FlowerUI` is `FlowerModel` over the UniFFI `flower-ffi` binding, and the conformances that let the page view render its records. `import FlowerUI` re-exports both. |
@@ -106,10 +104,11 @@ page the cursor would open, plus dirty and status — one crossing that both
 mutates and repaints, so a two-pane host repaints whole from any edit.
 
 Both projections cross the FFI: the tree's `DocView` (the flat visible-row list,
-driven by row index) remains for a custom renderer, but the packaged Swift
-surface is the page view alone. The page methods address nodes by the dotted
-path a row already carries rather than by index, because a page item need not be
-a visible *row* at all. How much of the document one page holds is the host's
+driven by row index) remains for a custom renderer, but every surface this repo
+packages — the ratatui widget, the Swift `FlowerPagesUI` — is the page view
+alone. The page methods address nodes by the dotted path a row already carries
+rather than by index, because a page item need not be a visible *row* at all.
+How much of the document one page holds is the host's
 `setInlineBudget(rows:depth:)` — at the default, small all-scalar groups inline
 and everything else drills; raised past the document's size, the root page is
 the whole document, which is how the old settings-list surface was absorbed.
@@ -166,8 +165,8 @@ does not need it.
   - `model.rs` — `Model`: owns the `fig::Editor` (source of truth), the derived
     `Value`/rows, selection, and the edit ops. Constructed from bytes; the
     embedder owns the file.
-- **`crates/flower-ratatui`** — a `draw(frame, &Model, header)` widget. Depends
-  on `flower-core` + `ratatui`.
+- **`crates/flower-ratatui`** — a `draw(frame, &Model, header)` widget, drawing
+  the page projection. Depends on `flower-core` + `ratatui`.
 - **`crates/flower-tui`** — the terminal app (binary `flower`): reads the file,
   runs the event loop, writes on save. Depends on both.
 

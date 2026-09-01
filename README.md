@@ -90,7 +90,7 @@ fig (Zig) → fig-sys (FFI, libfig.a) → fig crate (Editor/Document/Value)
 | Tier | Path | What it is |
 |------|------|------------|
 | core | [`crates/flower-core`](crates/flower-core) | the frontend-neutral model — the navigable `Row` tree + path-addressed lossless edits over fig. No UI, no fs. |
-| widget | [`crates/flower-ratatui`](crates/flower-ratatui) | a `draw(frame, &Model, header)` ratatui widget, drawing the page view. |
+| widget | [`crates/flower-ratatui`](crates/flower-ratatui) | the ratatui widget: `draw(frame, &Model, header)` draws the page view, `handle_key(&mut Model, KeyEvent)` drives it and returns an `Outcome` naming what the host must do (quit, save) — the same division as `leaf-ratatui`. |
 | binding | [`crates/flower-ffi`](crates/flower-ffi) | the **UniFFI C-ABI binding** — wraps the filesystem-free `Model` so a native Apple app can drive it. The native-Apple peer of the ratatui widget. |
 | app | [`crates/flower-tui`](crates/flower-tui) | the terminal app (binary `flower`) — file I/O + event loop. |
 | Swift SDK | [`packages/flower-swift`](packages/flower-swift) | the Swift Package (manifest at the repo root, so SwiftPM can resolve it by version). `FlowerPagesUI` is the page view (`FlowerPages`) written against protocols, with **no binding behind it**; `FlowerUI` is `FlowerModel` over the UniFFI `flower-ffi` binding, and the conformances that let the page view render its records. `import FlowerUI` re-exports both. |
@@ -165,10 +165,16 @@ does not need it.
   - `model.rs` — `Model`: owns the `fig::Editor` (source of truth), the derived
     `Value`/rows, selection, and the edit ops. Constructed from bytes; the
     embedder owns the file.
-- **`crates/flower-ratatui`** — a `draw(frame, &Model, header)` widget, drawing
-  the page projection. Depends on `flower-core` + `ratatui`.
+- **`crates/flower-ratatui`** — the widget: `draw(frame, &Model, header)` draws
+  the page projection, and `handle_key(&mut Model, KeyEvent) -> Outcome` owns the
+  key table for both modes — navigation and edits happen in the widget, while the
+  keys it cannot answer for itself come back as `Outcome::Quit` / `Outcome::Save`
+  for the host, which is the only party with a terminal and a file. A
+  third-party TUI can therefore embed flower as a pane without reimplementing
+  the app's event loop. Depends on `flower-core` + `ratatui`.
 - **`crates/flower-tui`** — the terminal app (binary `flower`): reads the file,
-  runs the event loop, writes on save. Depends on both.
+  runs the event loop, forwards each key to the widget, and writes on
+  `Outcome::Save`. Depends on both.
 
 The read path is `fig::Document::to_value()` (a semantic `Value` tree); the write
 path is `fig::Editor`'s path-addressed ops. After every edit the model re-derives

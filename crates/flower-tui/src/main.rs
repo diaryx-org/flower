@@ -1,14 +1,18 @@
 //! flower — a structural TUI editor for config files, built on flower-core.
 //!
 //! This binary owns the two things flower-core deliberately does not: the file
-//! (read on open, written on save) and the terminal event loop.
+//! (read on open, written on save) and the terminal event loop. The keys
+//! themselves belong to `flower-ratatui` — this host forwards an event and acts
+//! on the [`flower_ratatui::Outcome`] that comes back, so an app embedding the
+//! widget gets exactly the interaction this binary has.
 
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use ratatui::crossterm::event::{self, Event, KeyCode, KeyEventKind};
+use ratatui::crossterm::event::{self, Event, KeyEventKind};
 
-use flower_core::{FigBackend, Mode, Model, ViewMode};
+use flower_core::{FigBackend, Model, ViewMode};
+use flower_ratatui::Outcome;
 
 /// The one-line usage, shared by the no-argument error and `--help` so the two
 /// can never drift apart.
@@ -97,17 +101,17 @@ fn run(
         let Event::Key(key) = event::read()? else {
             continue;
         };
+        // A Windows console reports releases and repeats as well as presses, and
+        // the widget takes whatever it is given — so the filter is here, where
+        // the events are read.
         if key.kind != KeyEventKind::Press {
             continue;
         }
 
-        match &model.mode {
-            Mode::Normal => {
-                if handle_normal(model, key.code, path) {
-                    return Ok(());
-                }
-            }
-            Mode::Editing { .. } => handle_editing(model, key.code),
+        match flower_ratatui::handle_key(model, key) {
+            Outcome::Continue => {}
+            Outcome::Quit => return Ok(()),
+            Outcome::Save => save(model, path),
         }
     }
 }
@@ -119,38 +123,7 @@ fn fit(model: &mut Model<FigBackend>, terminal: &ratatui::DefaultTerminal) -> Re
     Ok(())
 }
 
-/// Returns `true` when the app should quit.
-///
-/// One projection, so one flat table: `j`/`k` walk the page, `l`/`h` push and pop
-/// one, and the keys that operate on a *node* — edit, delete, save, quit —
-/// resolve against the page cursor.
-fn handle_normal(model: &mut Model<FigBackend>, code: KeyCode, path: &Path) -> bool {
-    match code {
-        KeyCode::Char('q') => return true,
-        KeyCode::Char('e') => model.begin_edit(),
-        KeyCode::Char('x') => model.delete_selected(),
-        KeyCode::Char('s') => save(model, path),
-        KeyCode::Char('j') | KeyCode::Down => model.page_move_down(),
-        KeyCode::Char('k') | KeyCode::Up => model.page_move_up(),
-        KeyCode::Char('l') | KeyCode::Right | KeyCode::Enter | KeyCode::Char(' ') => {
-            model.page_enter()
-        }
-        KeyCode::Char('h') | KeyCode::Left | KeyCode::Esc => model.page_back(),
-        _ => {}
-    }
-    false
-}
-
-fn handle_editing(model: &mut Model<FigBackend>, code: KeyCode) {
-    match code {
-        KeyCode::Char(c) => model.edit_push(c),
-        KeyCode::Backspace => model.edit_backspace(),
-        KeyCode::Enter => model.edit_commit(),
-        KeyCode::Esc => model.edit_cancel(),
-        _ => {}
-    }
-}
-
+/// [`Outcome::Save`], performed: the file is this binary's, not the widget's.
 fn save(model: &mut Model<FigBackend>, path: &Path) {
     match std::fs::write(path, model.source_snapshot()) {
         Ok(()) => {

@@ -1,10 +1,16 @@
-//! A ratatui view over a [`flower_core::Model`]: a header line, the document
-//! body, and a footer that doubles as the edit line.
+//! A ratatui **widget** over a [`flower_core::Model`]: a header line, the
+//! document body, and a footer that doubles as the edit line — plus the keys
+//! that drive them.
 //!
-//! The embedding app owns the terminal and event loop; it calls [`draw`] each
-//! frame and forwards key events to the model's methods. `header` is whatever
-//! the app wants to name the document (e.g. a file name) — flower-core has no
-//! filesystem concept of its own.
+//! The embedding app owns the terminal and the event loop; it calls [`draw`]
+//! each frame and forwards key events to [`handle_key`], which performs the
+//! navigation or edit the key implies and returns an [`Outcome`] naming what the
+//! *host* must do (quit, save) about the ones the widget deliberately leaves
+//! alone. That is the same division as `leaf-ratatui`'s, and for the same
+//! reason: a third-party TUI embedding flower as a pane should get flower's key
+//! table by forwarding an event, not by re-implementing the app's event loop.
+//! `header` is whatever the app wants to name the document (e.g. a file name) —
+//! flower-core has no filesystem concept of its own.
 //!
 //! The body is the **page** projection ([`Model::page`](flower_core::Model::page))
 //! — a settings-menu layout that is two panes when there is width and depth to
@@ -25,6 +31,10 @@
 //! row below it, where a page spends it once on a breadcrumb. The app is expected
 //! to hold the model in [`ViewMode::Pages`](flower_core::ViewMode::Pages), which
 //! is what makes an edit resolve against the cursor this draws.
+
+mod input;
+
+pub use input::{Outcome, handle_key};
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};

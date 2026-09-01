@@ -100,13 +100,27 @@ fn key_style() -> Style {
 
 /// Render the whole editor into `f`. `header` names the document in the header
 /// bar (typically the file name, plus whatever the app wants — e.g. format).
+///
+/// This is [`draw_in`] over the whole frame, which is what an app whose only
+/// surface is this editor wants.
 pub fn draw<B: Backend>(f: &mut Frame, model: &Model<B>, header: &str) {
+    draw_in(f, f.area(), model, header);
+}
+
+/// Render the editor into `area` rather than into the whole frame — the same
+/// picture, in a pane.
+///
+/// A host that draws this editor beside something else (a prose body, a file
+/// list) owns the split and hands each side its `Rect`. The chrome is unchanged,
+/// so [`page_room`] still describes the room: pass it the *pane's* height, not
+/// the terminal's.
+pub fn draw_in<B: Backend>(f: &mut Frame, area: Rect, model: &Model<B>, header: &str) {
     let chunks = Layout::vertical([
         Constraint::Length(1), // header
         Constraint::Min(0),    // body
         Constraint::Length(1), // footer / edit line
     ])
-    .split(f.area());
+    .split(area);
 
     draw_header(f, model, header, chunks[0]);
     draw_pages(f, model, chunks[1]);

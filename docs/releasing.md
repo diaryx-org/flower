@@ -21,9 +21,15 @@ do on its own.
 
 ## What goes to crates.io
 
-Two crates:
+Three crates:
 
 - **`flower-core`** — the frontend-neutral structural editing model.
+- **`flower-ratatui`** — the ratatui widget. `draw` and `handle_key` are the
+  whole of it, and the `Outcome` `handle_key` returns is what lets a host own
+  the event loop rather than surrender it. It draws into a `Rect`, not only
+  into the whole frame, so a terminal app with a config pane can put the editor
+  in that pane. Pinned to one ratatui minor, which is the cost of the crate
+  being useful at all.
 - **`flower-ffi`** — the UniFFI binding. It is a staticlib for the Swift app,
   but it is also a Rust API: [`view_of`]/[`pages_of`]/[`path_for_id`] and the
   flat view records they build are generic over the `Backend`, and an embedder
@@ -32,17 +38,23 @@ Two crates:
   nailed to `FigBackend` — the projection is the reusable half, and the reason
   this crate is on the registry. `leaf-ffi` is published for the same reason.
 
-`flower-ratatui` and `flower-tui` are `publish = false`:
+**`flower-tui`** is `publish = false`: it is the prototype binary, run from a
+checkout (`cargo run -p flower-tui -- path/to/config.toml`).
 
-- **`flower-ratatui`** is a widget pinned to one ratatui minor whose only
-  consumer is `flower-tui` in this repo.
-- **`flower-tui`** is the prototype binary; run it from a checkout
-  (`cargo run -p flower-tui -- path/to/config.toml`).
-
-They still move with the workspace version, and still appear in the changelog —
-publishing is the only thing they are out of. To publish one, delete its
+It still moves with the workspace version, and still appears in the changelog —
+publishing is the only thing it is out of. To publish it, delete its
 `publish = false`: `cargo publish --workspace` derives the list and the order
-from the manifests, so nothing else needs editing.
+from the manifests, so nothing else needs editing. That is all `flower-ratatui`
+took to join the list at 0.4.0.
+
+A crate that joins the list this way **cannot be published on its own at the
+version it joins at**. `cargo publish -p flower-ratatui` packages it with its
+`flower-core` path dependency swapped for the registry's copy at the pinned
+version, so the build sees whatever `flower-core` shipped last rather than the
+one beside it in the tree — and fails on anything added since. `cargo publish
+--workspace` is the fix: it verifies each crate against the versions it is
+uploading alongside. So a new crate goes up with the release that bumps the
+workspace, never before it.
 
 **`flower-core` 0.1.0 is already on crates.io**, published by hand on
 2026-08-17 with no matching tag. It cannot be reused; releases start at 0.2.0,
@@ -91,11 +103,12 @@ flower-core` — and a re-run of a tag that fully published fails on its first
 crate rather than doing nothing.
 
 Auth is the `CARGO_REGISTRY_TOKEN` secret on the repo, as in fig, twig, moid, and
-prov. **flower has never published, so its first release needs a token carrying
-`publish-new`** as well as `publish-update`, with no crate restriction — a token
-missing either fails at the first upload with `403 … token is not valid for crate
-flower-core`. The secret is not set on this repo yet; setting it is a
-prerequisite for the first tag.
+prov. It needs `publish-update` for every release, and **`publish-new` for any
+release that adds a crate** — 0.4.0 adds `flower-ratatui`, and a token without
+it fails that upload with `403 … token is not valid for crate flower-ratatui`
+after `flower-core` has already gone up. Keep it unrestricted by crate: a token
+scoped to the crates that existed when it was minted cannot create the next
+one.
 
 ## The changelog
 

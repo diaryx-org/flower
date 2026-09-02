@@ -532,11 +532,19 @@ mod tests {
                 .iter()
                 .any(|m| m.name == "flower-ffi" && m.publishable),
         );
+        // The widget publishes as of 0.4.0: `draw`/`handle_key` are usable by
+        // any ratatui host, not only `flower-tui`.
         assert!(
             found
                 .iter()
-                .any(|m| m.name == "flower-ratatui" && !m.publishable),
+                .any(|m| m.name == "flower-ratatui" && m.publishable),
             "flower-ratatui is publish = false",
+        );
+        assert!(
+            found
+                .iter()
+                .any(|m| m.name == "flower-tui" && !m.publishable),
+            "flower-tui is publishable",
         );
         assert!(found.iter().any(|m| m.name == "xtask" && !m.publishable));
         assert!(found.len() >= 5, "the array spans several lines");

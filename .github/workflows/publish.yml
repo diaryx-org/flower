@@ -5,9 +5,13 @@ name: Publish
 # As in ci.yml, this file holds no knowledge of the workspace: which crates go up
 # and in what order is `cargo publish --workspace`, which reads both off the
 # manifests — `publish = false` members are skipped, and the uploads are ordered
-# so nothing goes up before something it depends on. Today that is `flower-core`
-# and `flower-ffi`; `flower-ratatui` and `flower-tui` are `publish = false`. A
-# crate that drops that line is published by the next tag with no edit here.
+# so nothing goes up before something it depends on. Today that is `flower-core`,
+# `flower-ratatui`, and `flower-ffi`; `flower-tui` is `publish = false`. A crate
+# that drops that line is published by the next tag with no edit here — which is
+# how `flower-ratatui` joined at 0.4.0. `--workspace` is also what makes such a
+# crate buildable at all on the release that adds it: it verifies against the
+# versions going up beside it, where `cargo publish -p <new-crate>` would resolve
+# `flower-core` from the index and compile against the last release instead.
 # This replaced a hand-rolled loop in `cargo xtask publish` that did the same
 # thing by hand.
 #
@@ -22,10 +26,10 @@ name: Publish
 # toolchain must be on PATH. Version mirrors ci.yml.
 #
 # Auth is the `CARGO_REGISTRY_TOKEN` secret, as in fig, twig, moid, and prov. It
-# must carry `publish-new` — flower has never published, so its first release
-# creates the crate — and `publish-update` for every release after. Rotating is a
-# repo-settings edit (`gh secret set CARGO_REGISTRY_TOKEN`) and nothing here
-# changes.
+# must carry `publish-update` for every release, and `publish-new` for any release
+# that adds a crate — 0.4.0 adds `flower-ratatui`. Keep it unrestricted by crate,
+# or it cannot create the next one. Rotating is a repo-settings edit
+# (`gh secret set CARGO_REGISTRY_TOKEN`) and nothing here changes.
 on:
   push: { tags: [v*.*.*] }
   workflow_dispatch: null

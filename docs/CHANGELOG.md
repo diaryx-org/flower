@@ -43,6 +43,56 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## v0.4.0 — 2026-09-02
+
+**`flower-ratatui` uploads for the first time here**, at 0.4.0 — it was
+`publish = false` through 0.3.2 on the grounds that its only consumer was
+`flower-tui` in this repo. Two changes below made that stop being true: the
+widget draws into a `Rect` rather than only into the whole frame, and
+`handle_key` returns an `Outcome` naming what the host must do instead of
+acting on the terminal itself. Together they are what a host with its own
+event loop and its own layout needs, which is the same division `leaf-ratatui`
+already draws.
+
+It cannot be published on its own at this version — `cargo publish -p
+flower-ratatui` would compile it against `flower-core` 0.3.2 from the index,
+which has no `page_leads_the_split`. The tag's `cargo publish --workspace`
+verifies it against the `flower-core` going up beside it. `docs/releasing.md`
+has the longer form.
+
+### Breaking
+
+- **tui** — the page view is the terminal's only surface ([`c3bb583`](https://github.com/diaryx-org/flower/commit/c3bb583a1e50f96659e2cc91df69d5f5f252d87a))
+- **core** — size the page projection to the room it is drawn in ([`5d03871`](https://github.com/diaryx-org/flower/commit/5d03871794f415175e43e6aba9d2f000e73b38a3))
+
+### Added
+
+- **ratatui** — draw the editor into a pane, not only the whole frame ([`bfb8889`](https://github.com/diaryx-org/flower/commit/bfb8889f6588fd9edfdf7a00ad8ce074cdd419ae))
+- **ratatui** — prepare for publishing ([`69f2e07`](https://github.com/diaryx-org/flower/commit/69f2e07c7635dd9122bb7046fd108fb0da00c414))
+- **ratatui** — say everywhere that the widget publishes ([`cbcd0de`](https://github.com/diaryx-org/flower/commit/cbcd0de7905709e3d4fc91547274127f0f2f6cd5))
+
+### Changed
+
+- **ratatui** — own key handling behind an Outcome, like leaf-ratatui ([`d26660d`](https://github.com/diaryx-org/flower/commit/d26660d85c4ac8e1ff36af432ba5da53c77f5a14))
+
+### Behavioural changes
+
+- the `flower` binary no longer has a tree view. `v` is
+unbound, and `h`/`l` always pop and push a page rather than folding a container.
+
+- `InlineBudget` gains a third public field, `page_rows`,
+ so struct-literal construction no longer compiles — use
+ `InlineBudget::new(rows, depth)`, which sets a page limit at least as
+ generous as the subtree one. A sequence whose items each fit the budget
+ but which together exceed `page_rows` now renders as drill rows where it
+ previously inlined; the default limit is 20 rows, so lists of more than a
+ few small entries change shape. `Model::pages_would_degenerate` now also
+ answers true when the page holding the cursor leads the split and has
+ nothing to open, so a frontend keyed on it will draw one pane in cases it
+ previously split. A drill row's `summary` omits the field its `title` came
+ from; its `count` is unchanged and still counts that field.
+
+
 ## v0.3.2 — 2026-08-28
 
 ### Added

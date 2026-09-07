@@ -96,6 +96,27 @@ pub enum EditOp {
     /// position in the key order. `path` must end in a [`Seg::Key`]; `new_key` must
     /// not collide with an existing sibling.
     RenameKey { path: Vec<Seg>, new_key: String },
+    /// Set the own-line comment block **above** the node at `path` (the key's
+    /// line for a mapping entry) to `text`, replacing whatever block was there;
+    /// `None` removes it. `text` may span lines — one comment line per line.
+    ///
+    /// The comment is the node's, not its position's: it moves with the entry
+    /// under a reorder and goes with it under a delete, which is what fig's
+    /// editor already guarantees for a block it owns. A format with no comment
+    /// syntax (strict JSON) refuses. The value is untouched, so a schema has
+    /// nothing to validate here.
+    SetLeadingComment {
+        path: Vec<Seg>,
+        text: Option<String>,
+    },
+    /// Set the same-line comment **after** the value at `path` to `text`,
+    /// replacing an existing one; `None` removes it. `text` must be a single
+    /// line. On a block container (a TOML table, a YAML block mapping) the
+    /// comment rides the key's line, since the value has no line of its own.
+    SetTrailingComment {
+        path: Vec<Seg>,
+        text: Option<String>,
+    },
 }
 
 /// Lower a [`EditOp::MoveItem`] into the index permutation that a
@@ -155,6 +176,29 @@ pub trait Backend {
     fn schema(&self) -> Option<crate::schema::Schema> {
         None
     }
+
+    /// The own-line comment block immediately above the node at `path`, lines
+    /// joined by `\n` with markers and indentation stripped. `None` when there is
+    /// no block — and, by default, always: a backend that never reads comments
+    /// renders every page exactly as it did before this method existed, so the
+    /// comment surface is opt-in for an implementor and never a blank column
+    /// for a document that has none.
+    ///
+    /// `Some("")` is a present-but-empty comment (a bare marker), which a
+    /// renderer may treat as absent but an editor must not: it is a line the
+    /// document contains.
+    fn leading_comment(&self, path: &[Seg]) -> Result<Option<String>, BackendError> {
+        let _ = path;
+        Ok(None)
+    }
+
+    /// The same-line comment after the value at `path`, marker stripped. `None`
+    /// when there is none, and by default always — see
+    /// [`leading_comment`](Self::leading_comment).
+    fn trailing_comment(&self, path: &[Seg]) -> Result<Option<String>, BackendError> {
+        let _ = path;
+        Ok(None)
+    }
 }
 
 /// A [`Backend`] over a standalone config file, backed by [`fig::Editor`].
@@ -207,6 +251,26 @@ impl Backend for FigBackend {
                 .editor
                 .replace_key(&tree::to_fig(&path), &new_key)
                 .map_err(err),
+            // Two fig calls, so the atomicity the trait promises is checked up
+            // front: the one way the second can fail after the first has spliced
+            // is a format without comment syntax, and that refuses the first too.
+            // Anything else (a path that does not resolve) fails before either
+            // touches the source.
+            EditOp::SetLeadingComment { path, text } => {
+                let path = tree::to_fig(&path);
+                self.editor.delete_leading_comments(&path).map_err(err)?;
+                match text {
+                    Some(text) => self.editor.add_leading_comment(&path, &text).map_err(err),
+                    None => Ok(()),
+                }
+            }
+            EditOp::SetTrailingComment { path, text } => {
+                let path = tree::to_fig(&path);
+                match text {
+                    Some(text) => self.editor.set_trailing_comment(&path, &text).map_err(err),
+                    None => self.editor.delete_trailing_comment(&path).map_err(err),
+                }
+            }
         }
     }
 
@@ -218,6 +282,35 @@ impl Backend for FigBackend {
 
     fn source(&self) -> Result<String, BackendError> {
         self.editor.source().map(|s| s.to_string()).map_err(err)
+    }
+
+    fn leading_comment(&self, path: &[Seg]) -> Result<Option<String>, BackendError> {
+        if !self.has_comments() {
+            return Ok(None);
+        }
+        self.editor
+            .leading_comment(&tree::to_fig(path))
+            .map_err(err)
+    }
+
+    fn trailing_comment(&self, path: &[Seg]) -> Result<Option<String>, BackendError> {
+        if !self.has_comments() {
+            return Ok(None);
+        }
+        self.editor
+            .trailing_comment(&tree::to_fig(path))
+            .map_err(err)
+    }
+}
+
+impl FigBackend {
+    /// Whether the format has a comment syntax at all. Strict JSON does not, and
+    /// fig answers a comment *read* on it with an error — which is the right
+    /// answer to a write, and the wrong one to "is there a comment here": a page
+    /// over a JSON file has no comments, rather than a read failure on every
+    /// row.
+    fn has_comments(&self) -> bool {
+        !matches!(self.format, Format::Json)
     }
 }
 
@@ -673,5 +766,147 @@ mod tests {
             before,
             "a refused op leaves the document byte-identical"
         );
+    }
+
+    const COMMENTED: &str = "\
+# the document
+title = \"note\" # what it is called
+# above the tags
+# two lines of it
+tags = [\"alpha\"]
+
+# the nested table
+[nested]
+k = \"v\"
+";
+
+    fn open_commented() -> FigBackend {
+        FigBackend::open(COMMENTED.as_bytes(), Format::Toml).expect("open")
+    }
+
+    fn set_leading(b: &mut FigBackend, path: &[Seg], text: Option<&str>) {
+        b.apply(EditOp::SetLeadingComment {
+            path: path.to_vec(),
+            text: text.map(str::to_string),
+        })
+        .expect("set leading comment");
+    }
+
+    fn set_trailing(b: &mut FigBackend, path: &[Seg], text: Option<&str>) {
+        b.apply(EditOp::SetTrailingComment {
+            path: path.to_vec(),
+            text: text.map(str::to_string),
+        })
+        .expect("set trailing comment");
+    }
+
+    #[test]
+    fn comments_are_read_per_node_with_markers_stripped() {
+        let b = open_commented();
+        let at = |k: &str| vec![Seg::Key(k.into())];
+        assert_eq!(
+            b.leading_comment(&at("title")).unwrap().as_deref(),
+            Some("the document")
+        );
+        assert_eq!(
+            b.trailing_comment(&at("title")).unwrap().as_deref(),
+            Some("what it is called")
+        );
+        assert_eq!(
+            b.leading_comment(&at("tags")).unwrap().as_deref(),
+            Some("above the tags\ntwo lines of it"),
+            "a block reads as its lines joined"
+        );
+        assert_eq!(b.trailing_comment(&at("tags")).unwrap(), None);
+        assert_eq!(
+            b.leading_comment(&at("nested")).unwrap().as_deref(),
+            Some("the nested table"),
+            "a table header carries its block like any node"
+        );
+        assert_eq!(b.leading_comment(&at("k")).ok().flatten(), None);
+    }
+
+    #[test]
+    fn set_leading_comment_replaces_the_whole_block_and_none_removes_it() {
+        let mut b = open_commented();
+        let tags = vec![Seg::Key("tags".into())];
+        set_leading(&mut b, &tags, Some("one line now"));
+        let src = b.source().unwrap();
+        assert!(src.contains("# one line now\ntags = "), "{src}");
+        assert!(!src.contains("above the tags"), "old block gone:\n{src}");
+        assert!(
+            src.contains("# the document\ntitle"),
+            "other blocks untouched"
+        );
+
+        set_leading(&mut b, &tags, None);
+        let src = b.source().unwrap();
+        assert!(
+            src.contains("\"note\" # what it is called\ntags = "),
+            "{src}"
+        );
+        assert_eq!(b.leading_comment(&tags).unwrap(), None);
+    }
+
+    #[test]
+    fn set_trailing_comment_replaces_and_none_removes() {
+        let mut b = open_commented();
+        let title = vec![Seg::Key("title".into())];
+        set_trailing(&mut b, &title, Some("renamed"));
+        assert!(b.source().unwrap().contains("title = \"note\" # renamed\n"));
+        set_trailing(&mut b, &title, None);
+        assert!(b.source().unwrap().contains("title = \"note\"\n"));
+        assert_eq!(b.trailing_comment(&title).unwrap(), None);
+        // A node that had none gains one.
+        let k = vec![Seg::Key("nested".into()), Seg::Key("k".into())];
+        set_trailing(&mut b, &k, Some("added"));
+        assert!(b.source().unwrap().contains("k = \"v\" # added\n"));
+    }
+
+    #[test]
+    fn a_comment_edit_leaves_the_value_tree_alone() {
+        let mut b = open_commented();
+        let before = b.to_value().unwrap();
+        set_leading(&mut b, &[Seg::Key("title".into())], Some("changed"));
+        set_trailing(&mut b, &[Seg::Key("tags".into())], Some("changed"));
+        assert_eq!(b.to_value().unwrap(), before);
+    }
+
+    #[test]
+    fn strict_json_has_no_comments_to_read_and_refuses_to_write_one() {
+        let mut b = FigBackend::open(br#"{"a": 1}"#, Format::Json).expect("open");
+        let a = vec![Seg::Key("a".into())];
+        // A read is an answer, not an error: the page over a JSON file simply
+        // has no comments on it.
+        assert_eq!(b.leading_comment(&a).unwrap(), None);
+        assert_eq!(b.trailing_comment(&a).unwrap(), None);
+        let before = b.source().unwrap();
+        assert!(
+            b.apply(EditOp::SetLeadingComment {
+                path: a.clone(),
+                text: Some("nope".into()),
+            })
+            .is_err()
+        );
+        assert!(
+            b.apply(EditOp::SetTrailingComment {
+                path: a,
+                text: Some("nope".into()),
+            })
+            .is_err()
+        );
+        assert_eq!(b.source().unwrap(), before, "a refusal changes nothing");
+    }
+
+    #[test]
+    fn a_multiline_trailing_comment_is_refused_whole() {
+        let mut b = open_commented();
+        let before = b.source().unwrap();
+        let result = b.apply(EditOp::SetTrailingComment {
+            path: vec![Seg::Key("title".into())],
+            text: Some("two\nlines".into()),
+        });
+        assert!(result.is_err());
+        assert_eq!(b.source().unwrap(), before);
     }
 }

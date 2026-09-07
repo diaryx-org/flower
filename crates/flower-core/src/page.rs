@@ -320,6 +320,20 @@ pub struct PageItem {
     /// don't ([`SUMMARY_BUDGET`]), not the default way to describe a small
     /// container. `None` for a scalar, whose value is already its own row.
     pub summary: Option<String>,
+    /// The own-line comment block written above this node in the document,
+    /// lines joined by `\n`, markers stripped — what the file says *about* the
+    /// entry, which is the closest thing an undescribed document has to a
+    /// schema's help text. A renderer shows it under (or over) the name, and a
+    /// host with a schema description for the field lets that win.
+    ///
+    /// Not [`build_page`]'s to fill: the value tree carries no comments, so
+    /// the model asks the backend after the page is built, and a page built
+    /// from a bare `Value` has `None` throughout.
+    pub leading_comment: Option<String>,
+    /// The same-line comment after this node's value (`port = 8080 # dev`),
+    /// marker stripped. Filled the same way as
+    /// [`leading_comment`](Self::leading_comment).
+    pub trailing_comment: Option<String>,
 }
 
 impl PageItem {
@@ -989,6 +1003,8 @@ fn item(
         title,
         demoted,
         summary: is_container(v).then(|| flow(v, SUMMARY_BUDGET)).flatten(),
+        leading_comment: None,
+        trailing_comment: None,
     }
 }
 

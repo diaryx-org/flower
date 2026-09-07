@@ -33,17 +33,38 @@ pub enum ViewMode {
     Pages,
 }
 
-/// Interaction mode: normal navigation, or editing a scalar's text.
+/// Interaction mode: normal navigation, or editing one text field of a node.
 pub enum Mode {
     Normal,
     Editing {
         buffer: String,
-        /// The scalar being edited. Held here rather than re-read from the
+        /// The node being edited. Held here rather than re-read from the
         /// selection on commit, so an edit belongs to a *node* and not to
         /// whichever list the cursor happens to be in — the two projections
         /// index differently, and a commit must not care which one opened it.
         path: Vec<Seg>,
+        /// Which of the node's texts the buffer holds.
+        slot: EditSlot,
     },
+}
+
+/// The text of a node an inline editor can hold: its value, or one of the two
+/// comments fig anchors to it.
+///
+/// One editor, three targets, because they are typed the same way — a buffer
+/// in a footer, `Enter` to commit — and differ only in what the commit writes.
+/// A frontend that draws a different affordance per slot (a multi-line box for
+/// a leading block) reads this to choose it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EditSlot {
+    /// The scalar's value, coerced by shape (or by schema) on commit.
+    Value,
+    /// The own-line comment block above the node. May hold newlines; an empty
+    /// buffer commits as *no comment*, removing the block.
+    LeadingComment,
+    /// The same-line comment after the value. Single-line; an empty buffer
+    /// removes it.
+    TrailingComment,
 }
 
 pub struct Model<B> {
@@ -462,23 +483,11 @@ impl<B: Backend> Model<B> {
     /// [`view`](Self::view) for why both projections are kept live.
     fn rebuild_pages(&mut self) {
         self.reanchor_focus();
-        self.root_page = page::build_page(
-            &self.value,
-            &[],
-            &self.hidden,
-            &self.demoted,
-            self.inline_budget,
-        );
+        self.root_page = self.page_at(&[]);
         self.page = if self.focus.is_empty() {
             self.root_page.clone()
         } else {
-            page::build_page(
-                &self.value,
-                &self.focus,
-                &self.hidden,
-                &self.demoted,
-                self.inline_budget,
-            )
+            self.page_at(&self.focus.clone())
         };
         self.parent_page = if self.focus.is_empty() {
             Page::default()
@@ -497,13 +506,7 @@ impl<B: Backend> Model<B> {
             {
                 parent = &parent[..parent.len() - 1];
             }
-            page::build_page(
-                &self.value,
-                parent,
-                &self.hidden,
-                &self.demoted,
-                self.inline_budget,
-            )
+            self.page_at(parent)
         };
         if self.page_selected >= self.page.items.len() {
             self.page_selected = self.page.items.len().saturating_sub(1);
@@ -814,13 +817,33 @@ impl<B: Backend> Model<B> {
     /// Total, like [`build_page`](crate::page::build_page): a path that doesn't
     /// resolve, or that names a scalar, yields an empty page.
     pub fn page_at(&self, path: &[Seg]) -> Page {
-        page::build_page(
+        let mut page = page::build_page(
             &self.value,
             path,
             &self.hidden,
             &self.demoted,
             self.inline_budget,
-        )
+        );
+        self.annotate_comments(&mut page);
+        page
+    }
+
+    /// Fill each item's comments from the backend.
+    ///
+    /// A pass after the build rather than a parameter to it: the page projection
+    /// is a pure function of the value tree, and the value tree has no comments —
+    /// they live in the editor's source, one read per node. Keeping the reads
+    /// here leaves [`page::build_page`] callable on a bare `Value` (its tests,
+    /// an embedder without a backend) and puts the only code that knows comments
+    /// come from the *backend* next to the only code that has one.
+    ///
+    /// A read that fails leaves the item's comment `None`: a comment is
+    /// decoration on a page, and a page that cannot show one is still the page.
+    fn annotate_comments(&self, page: &mut Page) {
+        for item in &mut page.items {
+            item.leading_comment = self.backend.leading_comment(&item.path).ok().flatten();
+            item.trailing_comment = self.backend.trailing_comment(&item.path).ok().flatten();
+        }
     }
 
     /// The page the selected item *would* open.
@@ -1021,7 +1044,47 @@ impl<B: Backend> Model<B> {
             return;
         }
         let seed = tree::edit_seed(value);
-        self.mode = Mode::Editing { buffer: seed, path };
+        self.mode = Mode::Editing {
+            buffer: seed,
+            path,
+            slot: EditSlot::Value,
+        };
+    }
+
+    /// Open the selected node's leading comment block for editing, seeded with
+    /// what is there (empty when there is none). Any node, container or scalar:
+    /// a comment above a table is as much the table's as one above a key.
+    pub fn begin_edit_leading_comment(&mut self) {
+        self.begin_edit_comment(EditSlot::LeadingComment);
+    }
+
+    /// Open the selected node's trailing comment for editing, seeded with what is
+    /// there. See [`begin_edit_leading_comment`](Self::begin_edit_leading_comment).
+    pub fn begin_edit_trailing_comment(&mut self) {
+        self.begin_edit_comment(EditSlot::TrailingComment);
+    }
+
+    fn begin_edit_comment(&mut self, slot: EditSlot) {
+        let Some(path) = self.selected_path() else {
+            return;
+        };
+        let read = match slot {
+            EditSlot::LeadingComment => self.backend.leading_comment(&path),
+            EditSlot::TrailingComment => self.backend.trailing_comment(&path),
+            EditSlot::Value => unreachable!("begin_edit_comment is only called for a comment slot"),
+        };
+        let seed = match read {
+            Ok(text) => text.unwrap_or_default(),
+            Err(e) => {
+                self.status = format!("rejected: {e}");
+                return;
+            }
+        };
+        self.mode = Mode::Editing {
+            buffer: seed,
+            path,
+            slot,
+        };
     }
 
     pub fn edit_push(&mut self, c: char) {
@@ -1042,22 +1105,85 @@ impl<B: Backend> Model<B> {
     }
 
     pub fn edit_commit(&mut self) {
-        let Mode::Editing { buffer, path } = &mut self.mode else {
+        let Mode::Editing { buffer, path, slot } = &mut self.mode else {
             return;
         };
         let buffer = std::mem::take(buffer);
         let path = std::mem::take(path);
+        let slot = *slot;
         self.mode = Mode::Normal;
 
-        let value = self.coerce_text(&path, &buffer);
+        match slot {
+            EditSlot::Value => {
+                let value = self.coerce_text(&path, &buffer);
+                self.commit(
+                    EditOp::ReplaceValue {
+                        path: path.clone(),
+                        value,
+                    },
+                    path,
+                    "value updated",
+                );
+            }
+            // An empty buffer is "no comment", not "a comment saying nothing":
+            // the one thing a user can type to mean *remove it*.
+            EditSlot::LeadingComment => {
+                let text = (!buffer.is_empty()).then_some(buffer.as_str());
+                self.set_leading_comment(&path, text)
+            }
+            EditSlot::TrailingComment => {
+                let text = (!buffer.is_empty()).then_some(buffer.as_str());
+                self.set_trailing_comment(&path, text)
+            }
+        }
+    }
+
+    /// Set (or, with `None`, remove) the own-line comment block above the node at
+    /// `path`, refreshing the view. The by-path counterpart of committing an
+    /// [`EditSlot::LeadingComment`] edit, for an embedder or FFI.
+    pub fn set_leading_comment(&mut self, path: &[Seg], text: Option<&str>) {
         self.commit(
-            EditOp::ReplaceValue {
-                path: path.clone(),
-                value,
+            EditOp::SetLeadingComment {
+                path: path.to_vec(),
+                text: text.map(str::to_string),
             },
-            path,
-            "value updated",
+            path.to_vec(),
+            if text.is_some() {
+                "comment updated"
+            } else {
+                "comment removed"
+            },
         );
+    }
+
+    /// Set (or, with `None`, remove) the same-line comment after the value at
+    /// `path`, refreshing the view. See
+    /// [`set_leading_comment`](Self::set_leading_comment).
+    pub fn set_trailing_comment(&mut self, path: &[Seg], text: Option<&str>) {
+        self.commit(
+            EditOp::SetTrailingComment {
+                path: path.to_vec(),
+                text: text.map(str::to_string),
+            },
+            path.to_vec(),
+            if text.is_some() {
+                "comment updated"
+            } else {
+                "comment removed"
+            },
+        );
+    }
+
+    /// The own-line comment block above the node at `path`, if the backend
+    /// reports one — a fresh read, not the copy on a page item.
+    pub fn leading_comment_at(&self, path: &[Seg]) -> Option<String> {
+        self.backend.leading_comment(path).ok().flatten()
+    }
+
+    /// The same-line comment after the value at `path`, if the backend reports
+    /// one.
+    pub fn trailing_comment_at(&self, path: &[Seg]) -> Option<String> {
+        self.backend.trailing_comment(path).ok().flatten()
     }
 
     /// Programmatically replace the value at `path` (any depth), refreshing the
@@ -1374,7 +1500,9 @@ fn op_root_key(op: &EditOp) -> Option<&str> {
     match op {
         EditOp::ReplaceValue { path, .. }
         | EditOp::DeleteKey { path }
-        | EditOp::RenameKey { path, .. } => first_key(path),
+        | EditOp::RenameKey { path, .. }
+        | EditOp::SetLeadingComment { path, .. }
+        | EditOp::SetTrailingComment { path, .. } => first_key(path),
         EditOp::RemoveItem { seq_path, .. }
         | EditOp::AppendItem { seq_path, .. }
         | EditOp::MoveItem { seq_path, .. } => first_key(seq_path),
@@ -1466,6 +1594,113 @@ timeout = 30.5
             "status: {}",
             sample_model().status
         );
+    }
+
+    #[test]
+    fn page_items_carry_the_comments_written_on_them() {
+        let model = sample_model();
+        let page = model.root_page();
+        let item = |k: &str| {
+            page.items
+                .iter()
+                .find(|i| i.path == [Seg::Key(k.into())])
+                .unwrap_or_else(|| panic!("no item {k}"))
+        };
+        assert_eq!(
+            item("title").leading_comment.as_deref(),
+            Some("flower sample config — comments and formatting below should survive edits")
+        );
+        assert_eq!(
+            item("server").leading_comment.as_deref(),
+            Some("the server block")
+        );
+        assert_eq!(item("version").leading_comment, None);
+        assert_eq!(item("version").trailing_comment, None);
+        // The projection over a bare `Value` knows nothing of them: it is the
+        // model's pass that fills them, so a page built any other way has none.
+        let bare = page::build_page(
+            &model.value,
+            &[],
+            &HashSet::new(),
+            &HashSet::new(),
+            InlineBudget::default(),
+        );
+        assert!(bare.items.iter().all(|i| i.leading_comment.is_none()));
+    }
+
+    #[test]
+    fn a_comment_is_edited_through_the_same_footer_as_a_value() {
+        let mut model = sample_model();
+        select(
+            &mut model,
+            &[Seg::Key("server".into()), Seg::Key("port".into())],
+        );
+
+        model.begin_edit_trailing_comment();
+        assert!(matches!(
+            model.mode,
+            Mode::Editing {
+                slot: EditSlot::TrailingComment,
+                ..
+            }
+        ));
+        type_value(&mut model, "dev only");
+        let src = model.source_snapshot();
+        assert!(src.contains("port = 8080 # dev only\n"), "{src}");
+        assert!(model.dirty);
+        assert_eq!(model.status, "comment updated");
+        // …and the page shows it without a second read.
+        let server = model.page_at(&[Seg::Key("server".into())]);
+        let item = server
+            .items
+            .iter()
+            .find(|i| i.path.last() == Some(&Seg::Key("port".into())))
+            .expect("port is on server's page");
+        assert_eq!(item.trailing_comment.as_deref(), Some("dev only"));
+
+        // Reopening seeds the footer with what is there.
+        model.begin_edit_trailing_comment();
+        if let Mode::Editing { buffer, .. } = &model.mode {
+            assert_eq!(buffer, "dev only");
+        } else {
+            panic!("not editing");
+        }
+        // An empty commit removes it.
+        type_value(&mut model, "");
+        assert!(model.source_snapshot().contains("port = 8080\n"));
+        assert_eq!(model.status, "comment removed");
+
+        // The block above, replaced whole — on a container as readily as a key.
+        select(&mut model, &[Seg::Key("server".into())]);
+        model.begin_edit_leading_comment();
+        if let Mode::Editing { buffer, slot, .. } = &model.mode {
+            assert_eq!(buffer, "the server block");
+            assert_eq!(*slot, EditSlot::LeadingComment);
+        } else {
+            panic!("not editing");
+        }
+        type_value(&mut model, "where it listens");
+        let src = model.source_snapshot();
+        assert!(src.contains("# where it listens\n[server]"), "{src}");
+        assert!(!src.contains("the server block"), "{src}");
+        assert!(src.contains("port = 8080"), "value untouched");
+    }
+
+    #[test]
+    fn comment_ops_by_path_refresh_the_page() {
+        let mut model = sample_model();
+        let host = [Seg::Key("server".into()), Seg::Key("host".into())];
+        model.set_leading_comment(&host, Some("first\nsecond"));
+        assert_eq!(
+            model.leading_comment_at(&host).as_deref(),
+            Some("first\nsecond")
+        );
+        let page = model.page_at(&[Seg::Key("server".into())]);
+        let item = page.items.iter().find(|i| i.path == host).unwrap();
+        assert_eq!(item.leading_comment.as_deref(), Some("first\nsecond"));
+        model.set_leading_comment(&host, None);
+        assert_eq!(model.leading_comment_at(&host), None);
+        assert!(!model.source_snapshot().contains("first"));
     }
 
     #[test]

@@ -159,6 +159,23 @@ public protocol PageItemDisplaying: Identifiable where ID == String {
     ///
     /// `nil` — the default — means the value is what it shows.
     var linkLabel: String? { get }
+
+    // ── what the document says, for a document that has no schema ────────────
+    //
+    // A config file annotates itself: the comment above a key is the closest
+    // thing an undescribed document has to a schema's help text, and the one
+    // after a value is the file's aside on it. Both are the document's own
+    // words, so a renderer shows them where it shows a schema's — and lets the
+    // schema win when both speak, since a description was written for every
+    // reader and a comment for whoever opened the file.
+
+    /// The own-line comment block written above this node, lines joined by
+    /// `\n`, markers stripped. `nil` when there is none — and, by default,
+    /// always, so a host whose records carry no comments renders as before.
+    var leadingComment: String? { get }
+
+    /// The same-line comment after the value, marker stripped. One line.
+    var trailingComment: String? { get }
 }
 
 public extension PageItemDisplaying {
@@ -170,6 +187,18 @@ public extension PageItemDisplaying {
     var tint: String? { nil }
     var description: String? { nil }
     var linkLabel: String? { nil }
+    var leadingComment: String? { nil }
+    var trailingComment: String? { nil }
+
+    /// The sentence a row shows under its name: the schema's description where
+    /// there is one, else the first line of the comment above the node. `nil`
+    /// when neither has anything to say.
+    var note: String? {
+        if let description, !description.isEmpty { return description }
+        if let line = leadingComment?.split(separator: "\n", maxSplits: 1).first,
+           !line.isEmpty { return String(line) }
+        return nil
+    }
 }
 
 /// One step of a breadcrumb: what it names, and the id that opens it.

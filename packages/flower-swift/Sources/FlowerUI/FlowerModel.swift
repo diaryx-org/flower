@@ -186,6 +186,21 @@ public final class FlowerModel: ObservableObject {
         apply(doc.pageSetValue(id: item.id, text: value))
     }
 
+    /// Set the comment block above `item` — one comment line per line of
+    /// `text` — replacing whatever block was there. An empty `text` removes it.
+    /// Any row, container or scalar: a comment above a table is as much the
+    /// table's as one above a key.
+    public func setLeadingComment(_ item: PageItemView, _ text: String) {
+        apply(doc.pageSetLeadingComment(id: item.id, text: text))
+    }
+
+    /// Set the same-line comment after `item`'s value, replacing an existing
+    /// one; an empty `text` removes it. One line — a newline is refused with a
+    /// status.
+    public func setTrailingComment(_ item: PageItemView, _ text: String) {
+        apply(doc.pageSetTrailingComment(id: item.id, text: text))
+    }
+
     /// Delete the mapping entry or sequence item `item` names.
     public func delete(_ item: PageItemView) {
         if editingId == item.id { editingId = nil }

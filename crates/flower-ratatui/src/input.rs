@@ -34,10 +34,11 @@ pub enum Outcome {
 ///
 /// Both modes are here. In [`Mode::Normal`] this is one flat table over the page
 /// projection — `j`/`k` walk the page, `l`/`h` push and pop one, and the keys
-/// that operate on a *node* (`e` edit, `x` delete) resolve against the page
-/// cursor. In [`Mode::Editing`] every printable character goes into the value
-/// buffer, `Enter` commits and `Esc` cancels; nothing returns an outcome, since
-/// an edit in progress is entirely the model's business.
+/// that operate on a *node* (`e` edit, `c`/`C` its trailing / leading comment,
+/// `x` delete) resolve against the page cursor. In [`Mode::Editing`] every
+/// printable character goes into the buffer, `Enter` commits and `Esc` cancels;
+/// nothing returns an outcome, since an edit in progress is entirely the
+/// model's business.
 ///
 /// Only the key *code* is read, so a modifier a terminal happens to attach does
 /// not stop a binding from firing. The host is expected to filter to
@@ -61,6 +62,8 @@ fn normal<B: Backend>(model: &mut Model<B>, code: KeyCode) -> Outcome {
         KeyCode::Char('q') => return Outcome::Quit,
         KeyCode::Char('s') => return Outcome::Save,
         KeyCode::Char('e') => model.begin_edit(),
+        KeyCode::Char('c') => model.begin_edit_trailing_comment(),
+        KeyCode::Char('C') => model.begin_edit_leading_comment(),
         KeyCode::Char('x') => model.delete_selected(),
         KeyCode::Char('j') | KeyCode::Down => model.page_move_down(),
         KeyCode::Char('k') | KeyCode::Up => model.page_move_up(),
@@ -120,6 +123,36 @@ max_connections = 100
         assert_eq!(press(&mut m, KeyCode::Char('s')), Outcome::Save);
         // Neither touched the document — the host is what acts on them.
         assert!(!m.dirty);
+    }
+
+    #[test]
+    fn c_and_shift_c_open_the_two_comments_in_the_footer() {
+        let mut m = model();
+        m.focus_on(&[Seg::Key("version".into())]);
+        assert_eq!(press(&mut m, KeyCode::Char('c')), Outcome::Continue);
+        assert!(matches!(
+            m.mode,
+            Mode::Editing {
+                slot: flower_core::EditSlot::TrailingComment,
+                ..
+            }
+        ));
+        for c in "bump me".chars() {
+            press(&mut m, KeyCode::Char(c));
+        }
+        press(&mut m, KeyCode::Enter);
+        assert!(m.source_snapshot().contains("version = 1 # bump me"));
+
+        press(&mut m, KeyCode::Char('C'));
+        assert!(matches!(
+            m.mode,
+            Mode::Editing {
+                slot: flower_core::EditSlot::LeadingComment,
+                ..
+            }
+        ));
+        press(&mut m, KeyCode::Esc);
+        assert!(matches!(m.mode, Mode::Normal));
     }
 
     #[test]

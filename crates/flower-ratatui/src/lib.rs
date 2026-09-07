@@ -42,7 +42,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState};
 
-use flower_core::{Backend, ItemKind, Mode, Model, Page, PageItem, VKind};
+use flower_core::{Backend, EditSlot, ItemKind, Mode, Model, Page, PageItem, VKind};
 
 /// Below this width a two-pane split leaves neither pane usable, so the page view
 /// collapses to the single-pane (push/pop) layout — the same interaction, one
@@ -218,9 +218,34 @@ fn draw_page_pane(f: &mut Frame, page: &Page, selected: Option<usize>, active: b
     let items: Vec<ListItem> = page
         .items
         .iter()
-        .map(|item| ListItem::new(page_line(item, width)))
+        .map(|item| ListItem::new(page_lines(item, width)))
         .collect();
     render_list(f, items, selected, rows[1]);
+}
+
+/// One page item as the rows it takes: the comment written above it in the
+/// document, when there is one, then the row itself.
+///
+/// The comment takes one row whatever its length — the first line of the block,
+/// cut to the width — because a page is a list to scan, and a paragraph between
+/// two of its rows would turn it into a page to read. The whole block is a
+/// keystroke away (`C`), and the row's own line is never squeezed for it.
+fn page_lines(item: &PageItem, width: u16) -> Vec<Line<'static>> {
+    let mut lines = Vec::with_capacity(2);
+    if let Some(comment) = &item.leading_comment {
+        let indent = 2 + item.inset * 2;
+        let first = comment.lines().next().unwrap_or_default();
+        let text = fit(
+            &format!("# {first}"),
+            (width as usize).saturating_sub(indent + RIGHT_GUTTER),
+        );
+        lines.push(Line::from(vec![
+            Span::raw(" ".repeat(indent)),
+            Span::styled(text, dim()),
+        ]));
+    }
+    lines.push(page_line(item, width));
+    lines
 }
 
 fn draw_empty_detail(f: &mut Frame, area: Rect) {
@@ -276,13 +301,21 @@ fn page_line(item: &PageItem, width: u16) -> Line<'static> {
                     format!("{count} {noun} ›")
                 }
             };
-            row_line(indent, name, &trailing, dim(), width)
+            row_line(
+                indent,
+                name,
+                &trailing,
+                dim(),
+                item.trailing_comment.as_deref(),
+                width,
+            )
         }
         ItemKind::Scalar => row_line(
             indent,
             name_spans(item),
             &item.preview,
             value_style(item.vkind),
+            item.trailing_comment.as_deref(),
             width,
         ),
     }
@@ -305,37 +338,58 @@ fn name_spans(item: &PageItem) -> Vec<Span<'static>> {
     }
 }
 
-/// `indent + name … trailing`, with `trailing` flushed to `width` and truncated
-/// before the name is ever squeezed — a name you can't read costs more than a
-/// value you can't finish.
+/// `indent + name … trailing  # comment`, with the tail flushed to `width` and
+/// truncated before the name is ever squeezed — a name you can't read costs
+/// more than a value you can't finish.
+///
+/// The comment goes first when room runs short: it is the file's aside on the
+/// value, and an aside is what you drop before the thing it is about. It is
+/// shown dimmed after the value, the way it sits in the file, and not at all
+/// when fewer than a few characters of it would fit.
 fn row_line(
     indent: usize,
     name: Vec<Span<'static>>,
     trailing: &str,
     trailing_style: Style,
+    comment: Option<&str>,
     width: u16,
 ) -> Line<'static> {
     let width = width as usize;
     let name_w: usize = name.iter().map(|s| s.content.chars().count()).sum();
     let room = room_for(indent, &name, width as u16);
 
-    let trailing: String = if trailing.chars().count() <= room {
-        trailing.to_string()
-    } else if room >= 2 {
-        trailing.chars().take(room - 1).chain(['…']).collect()
-    } else {
-        String::new()
-    };
+    let trailing = fit(trailing, room);
+    let comment = comment
+        .map(|c| format!("# {c}"))
+        .map(|c| fit(&c, room.saturating_sub(trailing.chars().count() + 2)))
+        .filter(|c| c.chars().count() >= 4);
+    let tail_w = trailing.chars().count() + comment.as_ref().map_or(0, |c| c.chars().count() + 2);
 
     let pad = width
-        .saturating_sub(indent + name_w + trailing.chars().count() + RIGHT_GUTTER)
+        .saturating_sub(indent + name_w + tail_w + RIGHT_GUTTER)
         .max(1);
 
     let mut spans = vec![Span::raw(" ".repeat(indent))];
     spans.extend(name);
     spans.push(Span::raw(" ".repeat(pad)));
     spans.push(Span::styled(trailing, trailing_style));
+    if let Some(comment) = comment {
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(comment, dim()));
+    }
     Line::from(spans)
+}
+
+/// `text` cut to `room` columns, with an ellipsis where it was cut. Empty when
+/// there is no room for even the ellipsis and one character.
+fn fit(text: &str, room: usize) -> String {
+    if text.chars().count() <= room {
+        text.to_string()
+    } else if room >= 2 {
+        text.chars().take(room - 1).chain(['…']).collect()
+    } else {
+        String::new()
+    }
 }
 
 /// How many columns are left for a row's trailing text once its name has taken
@@ -368,18 +422,26 @@ fn render_list(f: &mut Frame, items: Vec<ListItem>, selected: Option<usize>, are
 
 fn draw_footer<B: Backend>(f: &mut Frame, model: &Model<B>, area: Rect) {
     // Kept short enough to survive an 80-column terminal alongside the status.
-    let hints = "  j/k · l/h in/out · e edit · x del · s save · q quit";
+    let hints = "  j/k · l/h in/out · e edit · c/C comment · x del · s save · q quit";
     let line = match &model.mode {
-        Mode::Editing { buffer, .. } => Line::from(vec![
-            Span::styled(
-                " edit ",
-                Style::default().bg(Color::Yellow).fg(Color::Black),
-            ),
-            Span::raw(" "),
-            Span::raw(buffer.clone()),
-            Span::styled("▏", Style::default().fg(Color::Yellow)),
-            Span::styled("   (Enter to commit · Esc to cancel)", dim()),
-        ]),
+        Mode::Editing { buffer, slot, .. } => {
+            let badge = match slot {
+                EditSlot::Value => " edit ",
+                EditSlot::TrailingComment => " comment ",
+                EditSlot::LeadingComment => " comment above ",
+            };
+            // A leading block may span lines, and the footer is one: the breaks
+            // are shown as a mark rather than lost, so the block is at least
+            // read and trimmed faithfully here. Adding a line is not on offer.
+            let shown = buffer.replace('\n', "⏎");
+            Line::from(vec![
+                Span::styled(badge, Style::default().bg(Color::Yellow).fg(Color::Black)),
+                Span::raw(" "),
+                Span::raw(shown),
+                Span::styled("▏", Style::default().fg(Color::Yellow)),
+                Span::styled("   (Enter to commit · Esc to cancel)", dim()),
+            ])
+        }
         // The status carries refusals, and is empty until there has been one —
         // so the badge is drawn only when it has something in it. A green block
         // holding two spaces is a widget reporting that nothing is wrong, which
@@ -480,6 +542,41 @@ timeout = 30.5
         assert!(!out.contains("host = "), "{out}");
         assert!(!out.contains("▾ "), "{out}");
         assert!(!out.contains("v pages") && !out.contains("v tree"), "{out}");
+    }
+
+    #[test]
+    fn comments_are_drawn_above_and_after_the_rows_they_belong_to() {
+        let src = "\
+# what it is called
+title = \"flower\"
+port = 8080 # dev only
+";
+        let backend = FigBackend::open(src.as_bytes(), fig::Format::Toml).expect("open");
+        let mut model = Model::new(backend).expect("model");
+        model.set_view(ViewMode::Pages);
+        let out = render(&model, 60, 8);
+        let lines: Vec<&str> = out.lines().collect();
+        let above = lines
+            .iter()
+            .position(|l| l.contains("# what it is called"))
+            .expect(&out);
+        let title = lines.iter().position(|l| l.contains("title")).expect(&out);
+        assert_eq!(above + 1, title, "the block sits on the row above:\n{out}");
+        assert!(out.contains("8080  # dev only"), "{out}");
+    }
+
+    #[test]
+    fn a_trailing_comment_gives_way_before_the_value_does() {
+        let src = "port = 8080 # a comment far longer than the row has room for\n";
+        let backend = FigBackend::open(src.as_bytes(), fig::Format::Toml).expect("open");
+        let mut model = Model::new(backend).expect("model");
+        model.set_view(ViewMode::Pages);
+        let out = render(&model, 30, 6);
+        assert!(out.contains("8080"), "{out}");
+        assert!(
+            out.contains("…"),
+            "the comment is cut, not the value:\n{out}"
+        );
     }
 
     #[test]

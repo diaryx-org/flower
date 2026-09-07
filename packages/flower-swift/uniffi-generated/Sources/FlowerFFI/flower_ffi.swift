@@ -635,6 +635,24 @@ public protocol FlowerDocProtocol : AnyObject {
     func pageSelect(id: String)  -> PagesView
     
     /**
+     * Set the own-line comment block above the node `id` names to `text`,
+     * replacing whatever block was there — one comment line per line of
+     * `text`. **An empty `text` removes the block**: the one thing a user can
+     * type to mean "no comment", and the same rule the TUI's footer follows.
+     * Any node, container or scalar. Refused, with a status, on a format
+     * without comment syntax (strict JSON).
+     */
+    func pageSetLeadingComment(id: String, text: String)  -> PagesView
+    
+    /**
+     * Set the same-line comment after the value `id` names to `text`, replacing
+     * an existing one; an empty `text` removes it. `text` must be one line —
+     * a newline is refused with a status. See
+     * [`page_set_leading_comment`](Self::page_set_leading_comment).
+     */
+    func pageSetTrailingComment(id: String, text: String)  -> PagesView
+    
+    /**
      * Commit `text` as the new value of the scalar `id` names, spliced losslessly
      * through fig — the page-view peer of [`set_value`](Self::set_value).
      */
@@ -1078,6 +1096,38 @@ open func pageSelect(id: String) -> PagesView {
     return try!  FfiConverterTypePagesView.lift(try! rustCall() {
     uniffi_flower_ffi_fn_method_flowerdoc_page_select(self.uniffiClonePointer(),
         FfiConverterString.lower(id),$0
+    )
+})
+}
+    
+    /**
+     * Set the own-line comment block above the node `id` names to `text`,
+     * replacing whatever block was there — one comment line per line of
+     * `text`. **An empty `text` removes the block**: the one thing a user can
+     * type to mean "no comment", and the same rule the TUI's footer follows.
+     * Any node, container or scalar. Refused, with a status, on a format
+     * without comment syntax (strict JSON).
+     */
+open func pageSetLeadingComment(id: String, text: String) -> PagesView {
+    return try!  FfiConverterTypePagesView.lift(try! rustCall() {
+    uniffi_flower_ffi_fn_method_flowerdoc_page_set_leading_comment(self.uniffiClonePointer(),
+        FfiConverterString.lower(id),
+        FfiConverterString.lower(text),$0
+    )
+})
+}
+    
+    /**
+     * Set the same-line comment after the value `id` names to `text`, replacing
+     * an existing one; an empty `text` removes it. `text` must be one line —
+     * a newline is refused with a status. See
+     * [`page_set_leading_comment`](Self::page_set_leading_comment).
+     */
+open func pageSetTrailingComment(id: String, text: String) -> PagesView {
+    return try!  FfiConverterTypePagesView.lift(try! rustCall() {
+    uniffi_flower_ffi_fn_method_flowerdoc_page_set_trailing_comment(self.uniffiClonePointer(),
+        FfiConverterString.lower(id),
+        FfiConverterString.lower(text),$0
     )
 })
 }
@@ -1580,6 +1630,20 @@ public struct PageItemView {
      * end of a partition, and never cuts an inlined group in half.
      */
     public var demoted: Bool
+    /**
+     * The own-line comment block written above this node in the document,
+     * lines joined by `\n`, markers stripped — the file's own note on the
+     * entry. A host shows it where it shows a schema's help text, and lets a
+     * schema description win when it has one. `None` when there is none, and
+     * always for a format without comments (strict JSON) or a backend that
+     * does not read them.
+     */
+    public var leadingComment: String?
+    /**
+     * The same-line comment after the value (`port = 8080 # dev`), marker
+     * stripped. Single-line by construction.
+     */
+    public var trailingComment: String?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -1645,7 +1709,19 @@ public struct PageItemView {
          * key the embedder demoted, or anything under one. A host folds these into
          * an "advanced" disclosure; the run of them is already contiguous at the
          * end of a partition, and never cuts an inlined group in half.
-         */demoted: Bool) {
+         */demoted: Bool, 
+        /**
+         * The own-line comment block written above this node in the document,
+         * lines joined by `\n`, markers stripped — the file's own note on the
+         * entry. A host shows it where it shows a schema's help text, and lets a
+         * schema description win when it has one. `None` when there is none, and
+         * always for a format without comments (strict JSON) or a backend that
+         * does not read them.
+         */leadingComment: String?, 
+        /**
+         * The same-line comment after the value (`port = 8080 # dev`), marker
+         * stripped. Single-line by construction.
+         */trailingComment: String?) {
         self.id = id
         self.label = label
         self.title = title
@@ -1658,6 +1734,8 @@ public struct PageItemView {
         self.canRename = canRename
         self.chain = chain
         self.demoted = demoted
+        self.leadingComment = leadingComment
+        self.trailingComment = trailingComment
     }
 }
 
@@ -1701,6 +1779,12 @@ extension PageItemView: Equatable, Hashable {
         if lhs.demoted != rhs.demoted {
             return false
         }
+        if lhs.leadingComment != rhs.leadingComment {
+            return false
+        }
+        if lhs.trailingComment != rhs.trailingComment {
+            return false
+        }
         return true
     }
 
@@ -1717,6 +1801,8 @@ extension PageItemView: Equatable, Hashable {
         hasher.combine(canRename)
         hasher.combine(chain)
         hasher.combine(demoted)
+        hasher.combine(leadingComment)
+        hasher.combine(trailingComment)
     }
 }
 
@@ -1739,7 +1825,9 @@ public struct FfiConverterTypePageItemView: FfiConverterRustBuffer {
                 inset: FfiConverterUInt32.read(from: &buf), 
                 canRename: FfiConverterBool.read(from: &buf), 
                 chain: FfiConverterSequenceString.read(from: &buf), 
-                demoted: FfiConverterBool.read(from: &buf)
+                demoted: FfiConverterBool.read(from: &buf), 
+                leadingComment: FfiConverterOptionString.read(from: &buf), 
+                trailingComment: FfiConverterOptionString.read(from: &buf)
         )
     }
 
@@ -1756,6 +1844,8 @@ public struct FfiConverterTypePageItemView: FfiConverterRustBuffer {
         FfiConverterBool.write(value.canRename, into: &buf)
         FfiConverterSequenceString.write(value.chain, into: &buf)
         FfiConverterBool.write(value.demoted, into: &buf)
+        FfiConverterOptionString.write(value.leadingComment, into: &buf)
+        FfiConverterOptionString.write(value.trailingComment, into: &buf)
     }
 }
 
@@ -2566,6 +2656,12 @@ private var initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_flower_ffi_checksum_method_flowerdoc_page_select() != 61872) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_flower_ffi_checksum_method_flowerdoc_page_set_leading_comment() != 23755) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_flower_ffi_checksum_method_flowerdoc_page_set_trailing_comment() != 16358) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_flower_ffi_checksum_method_flowerdoc_page_set_value() != 1068) {

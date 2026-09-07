@@ -26,7 +26,7 @@ pub mod tree;
 
 pub use backend::{Backend, BackendError, EditOp, FigBackend};
 pub use format::detect;
-pub use model::{Mode, Model, ViewMode};
+pub use model::{EditSlot, Mode, Model, ViewMode};
 pub use page::{InlineBudget, ItemKind, Page, PageItem};
 pub use schema::{Constraint, FieldRule, FieldRuleExt, Schema};
 pub use tree::{Row, VKind};

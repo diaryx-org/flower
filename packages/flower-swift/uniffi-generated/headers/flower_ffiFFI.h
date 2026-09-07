@@ -381,6 +381,16 @@ RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_page_rename(void*_Nonnull ptr, 
 RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_page_select(void*_Nonnull ptr, RustBuffer id, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_PAGE_SET_LEADING_COMMENT
+#define UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_PAGE_SET_LEADING_COMMENT
+RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_page_set_leading_comment(void*_Nonnull ptr, RustBuffer id, RustBuffer text, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_PAGE_SET_TRAILING_COMMENT
+#define UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_PAGE_SET_TRAILING_COMMENT
+RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_page_set_trailing_comment(void*_Nonnull ptr, RustBuffer id, RustBuffer text, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_PAGE_SET_VALUE
 #define UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_PAGE_SET_VALUE
 RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_page_set_value(void*_Nonnull ptr, RustBuffer id, RustBuffer text, RustCallStatus *_Nonnull out_status
@@ -851,6 +861,18 @@ uint16_t uniffi_flower_ffi_checksum_method_flowerdoc_page_rename(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_CHECKSUM_METHOD_FLOWERDOC_PAGE_SELECT
 #define UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_CHECKSUM_METHOD_FLOWERDOC_PAGE_SELECT
 uint16_t uniffi_flower_ffi_checksum_method_flowerdoc_page_select(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_CHECKSUM_METHOD_FLOWERDOC_PAGE_SET_LEADING_COMMENT
+#define UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_CHECKSUM_METHOD_FLOWERDOC_PAGE_SET_LEADING_COMMENT
+uint16_t uniffi_flower_ffi_checksum_method_flowerdoc_page_set_leading_comment(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_CHECKSUM_METHOD_FLOWERDOC_PAGE_SET_TRAILING_COMMENT
+#define UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_CHECKSUM_METHOD_FLOWERDOC_PAGE_SET_TRAILING_COMMENT
+uint16_t uniffi_flower_ffi_checksum_method_flowerdoc_page_set_trailing_comment(void
     
 );
 #endif

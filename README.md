@@ -31,6 +31,12 @@ Early prototype. Working today:
   owns) below the ones they do, subtree and all, without hiding them.
 - Edit a scalar in place (typed: `true`/`42`/`3.14`/`null`/text) — committed via
   `fig::Editor::replace_value`, so the splice is lossless and validated.
+- Read and edit the **comments** on a node: the block above it is drawn on the
+  row above, dimmed, and the one after its value sits after the value, the way
+  both read in the file. Either is edited in the same footer a value is, and
+  emptied to remove it. A comment is the document's own note on a field — the
+  closest thing an undescribed config has to help text — and fig anchors it to
+  the node, so it moves with a reorder and goes with a delete.
 - Delete a mapping entry or sequence item.
 - Save (writes fig's edited source back to disk).
 
@@ -45,6 +51,8 @@ Deliberately not here yet — see the roadmap.
 | `h` (or ← / `Esc`) | back to the page that listed the container you opened |
 | `Enter` / `Space` | ← same as `l` |
 | `e` | edit the selected scalar |
+| `c` | edit the comment after the selected value (one line; empty removes it) |
+| `C` | edit the comment block above the selected node (empty removes it) |
 | `x` | delete the selected entry or item |
 | `s` | save to disk |
 | `q` | quit |
@@ -213,8 +221,18 @@ app-specific bridge lives in provui, not here — flower doesn't depend on prov.
   literal shape, which a schema layer would fix.
 - **Insert**: add keys / append sequence items (`fig` already exposes the ops).
 - **Reorder / move**: `move_key`, `reorder_keys`, `move_item`.
-- **Comments**: show and edit leading/trailing comments (`fig::Editor` exposes
-  `leading_comment`/`set_trailing_comment`/…).
+- **Commented-out entries**: a `# port = 8080` is, to fig, the leading comment
+  of the next entry (or the container's dangling run when it was last), and
+  flower shows it as exactly that. Showing it as a *disabled entry* — a ghost
+  row with a toggle — needs fig to read and write the dangling anchor and to
+  comment a node out (and back in) at the byte level, since only fig has the
+  spans to do that losslessly. Filed as fig's
+  [`dangling-comments-and-comment-out-ops`](../fig/docs/tasks/dangling-comments-and-comment-out-ops.md)
+  and, on this side, [`disabled-entries`](docs/tasks/disabled-entries.md).
+- **Comment as help text**: the Swift page view already lets a schema
+  description win over the leading comment for the sentence under a name; the
+  TUI shows the comment only. A schema description for the TUI is part of the
+  schema layer below.
 - **Schema layer**: the big one — fig has none, so a "what keys/values are valid
   here" layer is ours to add; unlocks completion, typed widgets, validation. It
   also supersedes the page view's structural guesses — inline-vs-drill, and which
@@ -230,8 +248,9 @@ app-specific bridge lives in provui, not here — flower doesn't depend on prov.
   with it.
 - **Native frontend affordances** (`FlowerUI`): today it edits scalars in one
   inline text field. Next: type-aware widgets (bool toggle, number stepper, enum
-  picker), keyboard navigation, insert/reorder, and comment display — the same
-  roadmap the TUI has, in SwiftUI.
+  picker), keyboard navigation, insert/reorder, and comment *editing* — the
+  rows show comments, and `FlowerModel` can set them, but no control opens one
+  yet. The same roadmap the TUI has, in SwiftUI.
 - **The rest of the Apple slices**: cross-compile `fig` via Zig for macOS-x64,
   iOS, and the simulator so `scripts/build-xcframework.sh` produces a full
   `FlowerFFI.xcframework`.

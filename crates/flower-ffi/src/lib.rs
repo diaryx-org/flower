@@ -203,6 +203,16 @@ pub struct PageItemView {
     /// an "advanced" disclosure; the run of them is already contiguous at the
     /// end of a partition, and never cuts an inlined group in half.
     pub demoted: bool,
+    /// The own-line comment block written above this node in the document,
+    /// lines joined by `\n`, markers stripped — the file's own note on the
+    /// entry. A host shows it where it shows a schema's help text, and lets a
+    /// schema description win when it has one. `None` when there is none, and
+    /// always for a format without comments (strict JSON) or a backend that
+    /// does not read them.
+    pub leading_comment: Option<String>,
+    /// The same-line comment after the value (`port = 8080 # dev`), marker
+    /// stripped. Single-line by construction.
+    pub trailing_comment: Option<String>,
 }
 
 /// A step of a page's breadcrumb: the container it names, and the id to open it.
@@ -670,6 +680,36 @@ impl FlowerDoc {
         pages_of(&m)
     }
 
+    /// Set the own-line comment block above the node `id` names to `text`,
+    /// replacing whatever block was there — one comment line per line of
+    /// `text`. **An empty `text` removes the block**: the one thing a user can
+    /// type to mean "no comment", and the same rule the TUI's footer follows.
+    /// Any node, container or scalar. Refused, with a status, on a format
+    /// without comment syntax (strict JSON).
+    pub fn page_set_leading_comment(&self, id: String, text: String) -> PagesView {
+        let mut m = self.lock();
+        m.set_view(ViewMode::Pages);
+        if let Some(path) = path_for_id(&m, &id) {
+            m.focus_on(&path);
+            m.set_leading_comment(&path, (!text.is_empty()).then_some(text.as_str()));
+        }
+        pages_of(&m)
+    }
+
+    /// Set the same-line comment after the value `id` names to `text`, replacing
+    /// an existing one; an empty `text` removes it. `text` must be one line —
+    /// a newline is refused with a status. See
+    /// [`page_set_leading_comment`](Self::page_set_leading_comment).
+    pub fn page_set_trailing_comment(&self, id: String, text: String) -> PagesView {
+        let mut m = self.lock();
+        m.set_view(ViewMode::Pages);
+        if let Some(path) = path_for_id(&m, &id) {
+            m.focus_on(&path);
+            m.set_trailing_comment(&path, (!text.is_empty()).then_some(text.as_str()));
+        }
+        pages_of(&m)
+    }
+
     /// Delete the mapping entry or sequence item `id` names.
     pub fn page_delete(&self, id: String) -> PagesView {
         let mut m = self.lock();
@@ -919,6 +959,8 @@ pub fn item_view_of(item: &PageItem) -> PageItemView {
         chain: item.chain_labels(),
         can_rename: item.can_rename(),
         demoted: item.demoted,
+        leading_comment: item.leading_comment.clone(),
+        trailing_comment: item.trailing_comment.clone(),
     }
 }
 
@@ -1341,6 +1383,34 @@ jobs:
         assert!(v.dirty);
         assert!(d.source().contains("port: 9090"));
         assert!(d.source().contains("host: localhost"), "sibling untouched");
+    }
+
+    #[test]
+    fn a_page_carries_and_edits_the_comments_on_its_rows() {
+        let d = FlowerDoc::new(
+            "# the port\nport: 8080 # dev\nhost: localhost\n".to_string(),
+            "yaml".to_string(),
+            Vec::new(),
+        )
+        .unwrap();
+        let v = d.show_pages();
+        let port = item(&v.page, "port");
+        assert_eq!(port.leading_comment.as_deref(), Some("the port"));
+        assert_eq!(port.trailing_comment.as_deref(), Some("dev"));
+        assert_eq!(item(&v.page, "host").leading_comment, None);
+
+        let v = d.page_set_trailing_comment("host".to_string(), "where".to_string());
+        assert!(v.dirty);
+        assert_eq!(
+            item(&v.page, "host").trailing_comment.as_deref(),
+            Some("where")
+        );
+        assert!(d.source().contains("host: localhost # where"));
+
+        // Empty removes, and the value survives every step.
+        let v = d.page_set_leading_comment("port".to_string(), String::new());
+        assert_eq!(item(&v.page, "port").leading_comment, None);
+        assert!(d.source().starts_with("port: 8080 # dev"), "{}", d.source());
     }
 
     #[test]

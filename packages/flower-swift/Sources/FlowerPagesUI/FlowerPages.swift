@@ -921,7 +921,7 @@ private struct PageRow<Model: PageDriving>: View {
     /// Spoken after the value, saying what acting on the row does — or, for a
     /// maintained field, why nothing does.
     private var axHint: String {
-        if let description = item.description, !description.isEmpty { return description }
+        if let note = item.note { return note }
         if let link = item.linkLabel { return "Opens \(link)" }
         if item.isReadonly { return "Maintained automatically" }
         return ""
@@ -967,18 +967,19 @@ private struct PageRow<Model: PageDriving>: View {
         } else {
             VStack(alignment: .leading, spacing: 1) {
                 nameLine
-                // The schema's help text, where it has some. One line: a row is
-                // a row, and a paragraph under one of them would turn a list you
-                // scan into a page you read. The full sentence is the tooltip.
-                if let description = item.description, !description.isEmpty {
-                    Text(description)
+                // The schema's help text, or failing that the comment the file
+                // wrote above the entry. One line: a row is a row, and a
+                // paragraph under one of them would turn a list you scan into a
+                // page you read. The full text is the tooltip.
+                if let note = item.note {
+                    Text(note)
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .truncationMode(.tail)
                 }
             }
-            .help(item.description ?? "")
+            .help(item.description ?? item.leadingComment ?? "")
         }
     }
 
@@ -1004,9 +1005,25 @@ private struct PageRow<Model: PageDriving>: View {
         }
     }
 
+    /// The file's aside on the value (`port: 8080 # dev`), drawn dimmed ahead
+    /// of whatever the row shows for the value itself, the way it reads in
+    /// the file — and dropped first when the row is short of room.
+    @ViewBuilder private var aside: some View {
+        if let comment = item.trailingComment, !comment.isEmpty {
+            Text(comment)
+                .font(.system(size: 12))
+                .foregroundStyle(.tertiary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .layoutPriority(-1)
+                .accessibilityLabel("Comment: \(comment)")
+        }
+    }
+
     @ViewBuilder private var trailing: some View {
         if isDrill {
             HStack(spacing: 6) {
+                aside
                 Text(drillSummary(item))
                     .font(.system(size: 13, design: item.summary != nil ? .monospaced : .default))
                     .foregroundStyle(.tertiary)
@@ -1081,12 +1098,15 @@ private struct PageRow<Model: PageDriving>: View {
                 }
             }
         } else {
-            Text(item.preview.isEmpty ? "Not set" : item.preview)
-                .font(.system(size: 15, design: valueDesign))
-                .foregroundStyle(item.preview.isEmpty
-                                 ? Color.gray.opacity(0.8)
-                                 : FlowerPalette.value(forKind: item.kind))
-                .lineLimit(1)
+            HStack(spacing: 8) {
+                aside
+                Text(item.preview.isEmpty ? "Not set" : item.preview)
+                    .font(.system(size: 15, design: valueDesign))
+                    .foregroundStyle(item.preview.isEmpty
+                                     ? Color.gray.opacity(0.8)
+                                     : FlowerPalette.value(forKind: item.kind))
+                    .lineLimit(1)
+            }
         }
     }
 

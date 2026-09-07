@@ -99,6 +99,30 @@ final class FlowerPageTests: XCTestCase {
         XCTAssertTrue(model.source().contains("host: localhost"), "sibling untouched")
     }
 
+    func testRowsCarryTheirCommentsAndTheModelSetsThem() throws {
+        let model = try FlowerModel(
+            source: "# the port\nport: 8080 # dev\nhost: localhost\n", format: "yaml")
+        model.showPages()
+        guard let port = model.page.items.first(where: { $0.id == "port" }),
+              let host = model.page.items.first(where: { $0.id == "host" }) else {
+            return XCTFail("no port / host rows")
+        }
+        XCTAssertEqual(port.leadingComment, "the port")
+        XCTAssertEqual(port.trailingComment, "dev")
+        XCTAssertEqual(port.note, "the port", "with no schema, the comment is the note")
+        XCTAssertNil(host.leadingComment)
+
+        model.setTrailingComment(host, "where")
+        XCTAssertTrue(model.isDirty)
+        XCTAssertTrue(model.source().contains("host: localhost # where"))
+        XCTAssertEqual(model.page.items.first(where: { $0.id == "host" })?.trailingComment, "where")
+
+        // Empty removes, and the value survives.
+        model.setLeadingComment(port, "")
+        XCTAssertNil(model.page.items.first(where: { $0.id == "port" })?.leadingComment)
+        XCTAssertTrue(model.source().hasPrefix("port: 8080 # dev"))
+    }
+
     func testTheBoolRowCommitsImmediately() throws {
         let model = try FlowerModel(source: "server:\n  tls: false\n  port: 8080\n", format: "yaml")
         model.showPages()

@@ -39,7 +39,39 @@ bucket first. `docs/releasing.md` is how it is cut.
 
 <!-- git-cliff:begin — generated; edits here are overwritten -->
 
-_No commits since the last tag._
+### Breaking
+
+- **deps** — move to fig 4, and drop the flow-item comment guard it retires ([`2bbd8e3`](https://github.com/diaryx-org/flower/commit/2bbd8e33b2cc84d20985a764774a6d3cd02e3a4d))
+
+### Added
+
+- read and edit the comments on a node, in the page and through the FFI ([`6c0306d`](https://github.com/diaryx-org/flower/commit/6c0306d1e4452d51ba443702bde1d5c79e57699f))
+
+### Fixed
+
+- **core** — do not repeat a container's leading comment on each of its flow items ([`6213232`](https://github.com/diaryx-org/flower/commit/621323274ffa9475d3e7509718812586b63dffc6))
+
+### Behavioural changes
+
+- the ratatui widget draws an extra dimmed row above any
+item whose node carries a leading comment, and binds `c` / `C` to editing a
+node's trailing / leading comment; a host that forwarded those keys for its
+own use must now intercept them first.
+
+- a page item whose leading comment is byte-equal to its
+parent's now reports none, and set_leading_comment / the `C` key on such an
+item is refused with a status instead of being applied.
+
+- `Model::set_leading_comment` and
+`begin_edit_leading_comment` at an item of a one-line flow collection no
+longer refuse with "rejected: the comment above belongs to the container,
+not this item". Setting a comment there now reports "rejected: invalid
+argument" (fig's refusal) with the source untouched; removing one reports
+"comment removed" and changes nothing, as at any node without a comment;
+and beginning an edit opens the editor with an empty seed, whose commit
+meets the same refusal. The page and `leading_comment_at` are unchanged:
+such an item still shows no comment, and the container's block is still
+never taken through it.
 
 <!-- git-cliff:end -->
 

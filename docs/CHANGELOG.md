@@ -39,6 +39,12 @@ bucket first. `docs/releasing.md` is how it is cut.
 
 <!-- git-cliff:begin — generated; edits here are overwritten -->
 
+_No commits since the last tag._
+
+<!-- git-cliff:end -->
+
+## v0.5.0 — 2026-09-14
+
 ### Breaking
 
 - **deps** — move to fig 4, and drop the flow-item comment guard it retires ([`2bbd8e3`](https://github.com/diaryx-org/flower/commit/2bbd8e33b2cc84d20985a764774a6d3cd02e3a4d))
@@ -73,7 +79,6 @@ meets the same refusal. The page and `leading_comment_at` are unchanged:
 such an item still shows no comment, and the container's block is still
 never taken through it.
 
-<!-- git-cliff:end -->
 
 ## v0.4.0 — 2026-09-02
 

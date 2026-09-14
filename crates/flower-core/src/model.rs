@@ -840,19 +840,8 @@ impl<B: Backend> Model<B> {
     /// A read that fails leaves the item's comment `None`: a comment is
     /// decoration on a page, and a page that cannot show one is still the page.
     fn annotate_comments(&self, page: &mut Page) {
-        // One read per parent rather than per item, for the guard below: the
-        // items of one container share a parent, and a page is mostly that.
-        let mut parents: HashMap<Vec<Seg>, Option<String>> = HashMap::new();
         for item in &mut page.items {
-            let leading = self.backend.leading_comment(&item.path).ok().flatten();
-            item.leading_comment = match leading {
-                Some(text)
-                    if leading_is_the_parents(&self.backend, &item.path, &text, &mut parents) =>
-                {
-                    None
-                }
-                other => other,
-            };
+            item.leading_comment = self.backend.leading_comment(&item.path).ok().flatten();
             item.trailing_comment = self.backend.trailing_comment(&item.path).ok().flatten();
         }
     }
@@ -1079,10 +1068,6 @@ impl<B: Backend> Model<B> {
         let Some(path) = self.selected_path() else {
             return;
         };
-        if slot == EditSlot::LeadingComment && self.leading_comment_belongs_to_parent(&path) {
-            self.status = PARENTS_COMMENT.to_string();
-            return;
-        }
         let read = match slot {
             EditSlot::LeadingComment => self.backend.leading_comment(&path),
             EditSlot::TrailingComment => self.backend.trailing_comment(&path),
@@ -1157,10 +1142,6 @@ impl<B: Backend> Model<B> {
     /// `path`, refreshing the view. The by-path counterpart of committing an
     /// [`EditSlot::LeadingComment`] edit, for an embedder or FFI.
     pub fn set_leading_comment(&mut self, path: &[Seg], text: Option<&str>) {
-        if self.leading_comment_belongs_to_parent(path) {
-            self.status = PARENTS_COMMENT.to_string();
-            return;
-        }
         self.commit(
             EditOp::SetLeadingComment {
                 path: path.to_vec(),
@@ -1194,22 +1175,9 @@ impl<B: Backend> Model<B> {
     }
 
     /// The own-line comment block above the node at `path`, if the backend
-    /// reports one — a fresh read, not the copy on a page item — under the same
-    /// guard the page applies (see [`leading_is_the_parents`]).
+    /// reports one — a fresh read, not the copy on a page item.
     pub fn leading_comment_at(&self, path: &[Seg]) -> Option<String> {
-        let text = self.backend.leading_comment(path).ok().flatten()?;
-        let mut parents = HashMap::new();
-        (!leading_is_the_parents(&self.backend, path, &text, &mut parents)).then_some(text)
-    }
-
-    /// Whether a leading-comment write at `path` would land on the parent's
-    /// block instead — the case [`leading_is_the_parents`] detects, where the
-    /// delete half of a set would take the parent's comment with it.
-    fn leading_comment_belongs_to_parent(&self, path: &[Seg]) -> bool {
-        match self.backend.leading_comment(path).ok().flatten() {
-            Some(text) => leading_is_the_parents(&self.backend, path, &text, &mut HashMap::new()),
-            None => false,
-        }
+        self.backend.leading_comment(path).ok().flatten()
     }
 
     /// The same-line comment after the value at `path`, if the backend reports
@@ -1518,44 +1486,6 @@ impl<B: Backend> Model<B> {
 /// `Index(0)` stands in; it only serves to match an `EachItem` rule pattern, which
 /// is index-agnostic. Structural ops (delete, move, reorder, rename) carry no new
 /// value and return `None`.
-const PARENTS_COMMENT: &str = "rejected: the comment above belongs to the container, not this item";
-
-/// Whether `text`, read as the leading comment of the node at `path`, is really
-/// its parent's block reported through the child.
-///
-/// A guard against a fig defect (fig's `docs/tasks/flow-item-leading-comment-is-
-/// the-parents.md`): a leading-comment op anchors on the *line* the node is on,
-/// so an item of a one-line array (`members = ["a", "b"]`) reads the block above
-/// `members` as its own — and a delete through the item removes it. A flow item
-/// cannot own a leading comment at all (the spec discards comments inside flow
-/// collections), so the honest answer is none, and the page would otherwise
-/// repeat one container's comment on every one of its rows. Byte-equality with
-/// the parent's block is the test because layout is not visible from here; the
-/// one false positive, an item on its own line under a comment identical to its
-/// parent's, loses a duplicate line. The guard goes when the fig pin reaches
-/// the fix. `parents` caches the parent reads across a page.
-fn leading_is_the_parents<B: Backend>(
-    backend: &B,
-    path: &[Seg],
-    text: &str,
-    parents: &mut HashMap<Vec<Seg>, Option<String>>,
-) -> bool {
-    let Some((_, parent)) = path.split_last() else {
-        return false;
-    };
-    // The root's "leading comment" is the block above its first entry — the
-    // document starts where the first entry does — so the first top-level
-    // entry always matches its parent, and nothing at the top level is a flow
-    // item on someone else's line anyway.
-    if parent.is_empty() {
-        return false;
-    }
-    let parent_text = parents
-        .entry(parent.to_vec())
-        .or_insert_with(|| backend.leading_comment(parent).ok().flatten());
-    parent_text.as_deref() == Some(text)
-}
-
 /// The top-level mapping key an op would change, if any — the unit at which a
 /// document's managed fields are declared, so an edit anywhere beneath one
 /// (an item of a managed list, a nested key) is caught along with the field
@@ -1757,11 +1687,13 @@ timeout = 30.5
     }
 
     #[test]
-    fn a_flow_items_reported_comment_is_its_parents_and_is_neither_shown_nor_edited() {
-        // fig anchors a leading op on the node's *line*, and an item of a
-        // one-line array is on its parent's line — so it reads the parent's
-        // block and a delete through it would remove that block. See
-        // `leading_is_the_parents`.
+    fn a_flow_item_owns_no_leading_comment_and_the_parents_block_is_never_edited_through_it() {
+        // An item of a one-line array sits on its parent's line and owns no
+        // line to comment. fig (since core 2.9) reports none for it, deletes
+        // nothing through it, and refuses to add one — so the page shows the
+        // block once, on the container, and no write through an item can take
+        // it. Before that fix the model guarded this itself, by comparing the
+        // item's reported comment with its parent's; the guard is gone.
         let src = "\
 # the members
 members = [\"a\", \"b\"]
@@ -1777,18 +1709,15 @@ members = [\"a\", \"b\"]
         assert_eq!(of(&item0).leading_comment, None, "not repeated per item");
         assert_eq!(model.leading_comment_at(&item0), None);
 
-        model.set_leading_comment(&item0, None);
+        // Adding through the item is refused, and the source is untouched.
+        model.set_leading_comment(&item0, Some("mine"));
         assert!(model.status.starts_with("rejected"), "{}", model.status);
         assert!(!model.dirty);
-        assert!(
-            model.source_snapshot().contains("# the members"),
-            "parent's block kept"
-        );
+        assert_eq!(model.source_snapshot(), src, "parent's block kept");
 
-        model.focus_on(&item0);
-        model.begin_edit_leading_comment();
-        assert!(matches!(model.mode, Mode::Normal));
-        assert!(model.status.starts_with("rejected"));
+        // Removing through the item removes nothing — there is nothing there.
+        model.set_leading_comment(&item0, None);
+        assert_eq!(model.source_snapshot(), src, "parent's block kept");
 
         // The container's own comment is still editable as its own.
         model.set_leading_comment(&members, Some("renamed"));

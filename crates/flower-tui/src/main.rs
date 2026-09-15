@@ -1,15 +1,20 @@
 //! flower — a structural TUI editor for config files, built on flower-core.
 //!
 //! This binary owns the two things flower-core deliberately does not: the file
-//! (read on open, written on save) and the terminal event loop. The keys
-//! themselves belong to `flower-ratatui` — this host forwards an event and acts
-//! on the [`flower_ratatui::Outcome`] that comes back, so an app embedding the
-//! widget gets exactly the interaction this binary has.
+//! (read on open, written on save) and the terminal event loop. The keys and
+//! the mouse themselves belong to `flower-ratatui` — this host forwards an
+//! event and acts on the [`flower_ratatui::Outcome`] that comes back, so an app
+//! embedding the widget gets exactly the interaction this binary has.
 
+use std::io::stdout;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
-use ratatui::crossterm::event::{self, Event, KeyEventKind};
+use ratatui::crossterm::event::{
+    self, DisableMouseCapture, EnableMouseCapture, Event, KeyEventKind,
+};
+use ratatui::crossterm::execute;
+use ratatui::layout::Rect;
 
 use flower_core::{FigBackend, Model, ViewMode};
 use flower_ratatui::Outcome;
@@ -67,7 +72,11 @@ fn main() -> Result<()> {
     model.set_view(ViewMode::Pages);
 
     let mut terminal = ratatui::init();
+    // Best effort, like `restore` is: a terminal that cannot report the mouse
+    // still has the keys, and the widget ignores what never arrives.
+    let _ = execute!(stdout(), EnableMouseCapture);
     let result = run(&mut terminal, &mut model, &path, fmt);
+    let _ = execute!(stdout(), DisableMouseCapture);
     ratatui::restore();
     result
 }
@@ -98,17 +107,24 @@ fn run(
         fit(model, terminal)?;
         terminal.draw(|f| flower_ratatui::draw(f, model, &name))?;
 
-        let Event::Key(key) = event::read()? else {
-            continue;
+        let outcome = match event::read()? {
+            // A Windows console reports releases and repeats as well as
+            // presses, and the widget takes whatever it is given — so the
+            // filter is here, where the events are read.
+            Event::Key(key) if key.kind == KeyEventKind::Press => {
+                flower_ratatui::handle_key(model, key)
+            }
+            // The editor is the whole frame, so the widget resolves the click
+            // against the terminal's own rectangle.
+            Event::Mouse(mouse) => {
+                let size = terminal.size().context("terminal size")?;
+                let area = Rect::new(0, 0, size.width, size.height);
+                flower_ratatui::handle_mouse(model, area, mouse)
+            }
+            _ => continue,
         };
-        // A Windows console reports releases and repeats as well as presses, and
-        // the widget takes whatever it is given — so the filter is here, where
-        // the events are read.
-        if key.kind != KeyEventKind::Press {
-            continue;
-        }
 
-        match flower_ratatui::handle_key(model, key) {
+        match outcome {
             Outcome::Continue => {}
             Outcome::Quit => return Ok(()),
             Outcome::Save => save(model, path),

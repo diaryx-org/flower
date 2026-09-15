@@ -3,13 +3,15 @@
 //! that drive them.
 //!
 //! The embedding app owns the terminal and the event loop; it calls [`draw`]
-//! each frame and forwards key events to [`handle_key`], which performs the
-//! navigation or edit the key implies and returns an [`Outcome`] naming what the
-//! *host* must do (quit, save) about the ones the widget deliberately leaves
-//! alone. That is the same division as `leaf-ratatui`'s, and for the same
-//! reason: a third-party TUI embedding flower as a pane should get flower's key
-//! table by forwarding an event, not by re-implementing the app's event loop.
-//! `header` is whatever the app wants to name the document (e.g. a file name) —
+//! each frame and forwards key events to [`handle_key`] and mouse events to
+//! [`handle_mouse`], which perform the navigation or edit the event implies and
+//! return an [`Outcome`] naming what the *host* must do (quit, save) about the
+//! ones the widget deliberately leaves alone. That is the same division as
+//! `leaf-ratatui`'s, and for the same reason: a third-party TUI embedding
+//! flower as a pane should get flower's key table by forwarding an event, not
+//! by re-implementing the app's event loop — and its clicks by forwarding the
+//! event and the `Rect` it drew into, not by restating the layout. `header` is
+//! whatever the app wants to name the document (e.g. a file name) —
 //! flower-core has no filesystem concept of its own.
 //!
 //! The body is the **page** projection ([`Model::page`](flower_core::Model::page))
@@ -34,13 +36,14 @@
 
 mod input;
 
-pub use input::{Outcome, handle_key};
+pub use input::{Outcome, handle_key, handle_mouse};
+
+use std::borrow::Cow;
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState};
+use ratatui::text::{Line, Span, Text};
 
 use flower_core::{Backend, EditSlot, ItemKind, Mode, Model, Page, PageItem, VKind};
 
@@ -115,16 +118,21 @@ pub fn draw<B: Backend>(f: &mut Frame, model: &Model<B>, header: &str) {
 /// so [`page_room`] still describes the room: pass it the *pane's* height, not
 /// the terminal's.
 pub fn draw_in<B: Backend>(f: &mut Frame, area: Rect, model: &Model<B>, header: &str) {
-    let chunks = Layout::vertical([
-        Constraint::Length(1), // header
-        Constraint::Min(0),    // body
-        Constraint::Length(1), // footer / edit line
-    ])
-    .split(area);
+    let [head, body, foot] = bands(area);
+    draw_header(f, model, header, head);
+    draw_pages(f, model, body);
+    draw_footer(f, model, foot);
+}
 
-    draw_header(f, model, header, chunks[0]);
-    draw_pages(f, model, chunks[1]);
-    draw_footer(f, model, chunks[2]);
+/// The three bands of the editor: a header line, the body, and the footer that
+/// doubles as the edit line.
+fn bands(area: Rect) -> [Rect; 3] {
+    Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Min(0),
+        Constraint::Length(1),
+    ])
+    .areas(area)
 }
 
 fn draw_header<B: Backend>(f: &mut Frame, model: &Model<B>, header: &str, area: Rect) {
@@ -142,62 +150,124 @@ fn draw_header<B: Backend>(f: &mut Frame, model: &Model<B>, header: &str, area: 
 
 // ── the page projection ──────────────────────────────────────────────────────
 
-/// Two panes when the terminal is wide enough *and* there is something for the
-/// second pane to hold; one otherwise.
+/// What a pane of the page layout stands for, relative to the cursor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Role {
+    /// The page the cursor is on.
+    Current,
+    /// The page one level out — the left pane, while the cursor's page is on
+    /// the right.
+    Parent,
+    /// The page the cursor would open — the right pane, while the cursor's page
+    /// leads the split and the right one is a preview.
+    Peek,
+}
+
+/// One pane of the page layout: where it is, and the page it shows.
+struct Pane<'m> {
+    area: Rect,
+    /// `None` is the placeholder pane — the right half while the cursor stands
+    /// on a scalar, which has no page to preview.
+    shows: Option<Shown<'m>>,
+}
+
+/// A page in a pane. The cursor is drawn only on the current page; the parent
+/// keeps the row the current page was opened through marked instead, and a
+/// preview marks nothing.
+struct Shown<'m> {
+    role: Role,
+    page: Cow<'m, Page>,
+    selected: Option<usize>,
+}
+
+/// The panes `area` is cut into, and what each shows — the one layout decision,
+/// read by [`draw_pages`] to draw and by [`hit_at`] to resolve a click, so the
+/// two cannot disagree about where a row went.
 ///
-/// Both conditions matter. A flat document has no categories to put in a sidebar,
-/// so splitting would spend half the width drawing an empty box next to the only
-/// list there is.
-fn draw_pages<B: Backend>(f: &mut Frame, model: &Model<B>, area: Rect) {
+/// Two panes when the terminal is wide enough *and* there is something for the
+/// second pane to hold; one otherwise. Both conditions matter. A flat document
+/// has no categories to put in a sidebar, so splitting would spend half the
+/// width drawing an empty box next to the only list there is.
+fn panes<'m, B: Backend>(model: &'m Model<B>, area: Rect) -> Vec<Pane<'m>> {
+    let current = |area: Rect| Pane {
+        area,
+        shows: Some(Shown {
+            role: Role::Current,
+            page: Cow::Borrowed(model.page()),
+            selected: Some(model.page_selected()),
+        }),
+    };
+
+    // The narrow layout: just the page you are on, with the breadcrumb standing
+    // in for the sidebar you don't have room for.
     if area.width < TWO_PANE_MIN_WIDTH || model.pages_would_degenerate() {
-        draw_single_pane(f, model, area);
-        return;
+        return vec![current(area)];
     }
 
     // Even halves. The two panes are consecutive levels of one lineage, not a
     // fixed index and a variable detail, so neither has a claim on more room than
     // the other — and the left is about to become the right.
-    let cols =
-        Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).split(area);
+    let [left, right] =
+        Layout::horizontal([Constraint::Percentage(50), Constraint::Percentage(50)]).areas(area);
 
     // Exactly one pane owns the cursor: the left while the page you are choosing
     // on leads the split, the right once there is an outer page worth drawing
     // beside it. That is what makes `h` and `l` unambiguous without a
     // focus-switch key.
     if model.page_leads_the_split() {
-        draw_page_pane(f, model.page(), Some(model.page_selected()), true, cols[0]);
         // Nothing worth drawing behind this page, so the right pane previews what
         // the cursor would open. Without it the split would start half empty.
-        match model.peek_page() {
-            Some(peek) => draw_page_pane(f, &peek, None, false, cols[1]),
-            None => draw_empty_detail(f, cols[1]),
-        }
-        return;
+        let peek = model.peek_page().map(|page| Shown {
+            role: Role::Peek,
+            page: Cow::Owned(page),
+            selected: None,
+        });
+        return vec![
+            current(left),
+            Pane {
+                area: right,
+                shows: peek,
+            },
+        ];
     }
 
     // A window sliding along the lineage: the left pane is the page the right one
     // was opened from, at every depth. It keeps the row you came out of marked, so
     // a deep page never loses the trace of what contains it.
     let parent = model.parent_page();
-    let came_from = parent.position_of(model.focus());
-    draw_page_pane(f, parent, came_from, false, cols[0]);
-    draw_page_pane(f, model.page(), Some(model.page_selected()), true, cols[1]);
+    vec![
+        Pane {
+            area: left,
+            shows: Some(Shown {
+                role: Role::Parent,
+                page: Cow::Borrowed(parent),
+                selected: parent.position_of(model.focus()),
+            }),
+        },
+        current(right),
+    ]
 }
 
-/// The narrow layout: just the page you are on, with the breadcrumb standing in
-/// for the sidebar you don't have room for.
-fn draw_single_pane<B: Backend>(f: &mut Frame, model: &Model<B>, area: Rect) {
-    draw_page_pane(f, model.page(), Some(model.page_selected()), true, area);
+fn draw_pages<B: Backend>(f: &mut Frame, model: &Model<B>, area: Rect) {
+    for pane in panes(model, area) {
+        match pane.shows {
+            Some(shown) => draw_page_pane(f, &shown, pane.area),
+            None => draw_empty_detail(f, pane.area),
+        }
+    }
 }
 
-/// One page: a breadcrumb line, then its items. `selected` is `None` for a pane
-/// that is only being previewed; `active` dims the breadcrumb of a pane that does
-/// not hold the cursor.
-fn draw_page_pane(f: &mut Frame, page: &Page, selected: Option<usize>, active: bool, area: Rect) {
-    let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).split(area);
+/// A pane is a breadcrumb line over its items.
+fn pane_rows(area: Rect) -> [Rect; 2] {
+    Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(area)
+}
 
-    let crumb = page.breadcrumb(ROOT_LABEL);
-    let style = if active {
+/// One page: a breadcrumb line, then its items. The breadcrumb of a pane that
+/// does not hold the cursor is dimmed.
+fn draw_page_pane(f: &mut Frame, shown: &Shown<'_>, area: Rect) {
+    let [crumb, list] = pane_rows(area);
+
+    let style = if shown.role == Role::Current {
         Style::default()
             .fg(Color::White)
             .add_modifier(Modifier::BOLD)
@@ -205,22 +275,142 @@ fn draw_page_pane(f: &mut Frame, page: &Page, selected: Option<usize>, active: b
         dim()
     };
     f.render_widget(
-        Line::from(Span::styled(format!(" {crumb}"), style)),
-        rows[0],
+        Line::from(Span::styled(
+            format!(" {}", shown.page.breadcrumb(ROOT_LABEL)),
+            style,
+        )),
+        crumb,
     );
 
-    if page.is_empty() {
-        f.render_widget(Line::from(Span::styled("   (empty)", dim())), rows[1]);
+    if shown.page.is_empty() {
+        f.render_widget(Line::from(Span::styled("   (empty)", dim())), list);
         return;
     }
+    draw_list(f, &shown.page, shown.selected, list);
+}
 
-    let width = rows[1].width;
-    let items: Vec<ListItem> = page
-        .items
-        .iter()
-        .map(|item| ListItem::new(page_lines(item, width)))
-        .collect();
-    render_list(f, items, selected, rows[1]);
+/// One item of a page, placed in its list: which item, and the rows it took.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Placed {
+    index: usize,
+    /// Rows from the top of the list.
+    y: u16,
+    height: u16,
+}
+
+/// The rows an item takes: the comment written above it, when there is one,
+/// then the row itself ([`page_lines`]).
+fn rows_of(item: &PageItem) -> usize {
+    1 + usize::from(item.leading_comment.is_some())
+}
+
+/// Where each of `page`'s items lands in a list `height` rows tall.
+///
+/// The list starts at the top and scrolls only as far as it must to bring
+/// `selected` on screen — by whole items, so no row is drawn without the
+/// comment above it — which is the scroll a fresh `ListState` gives ratatui's
+/// `List` on every frame, stated once here so that the frame and a click
+/// resolved against it agree. An item that does not fit is left off, except
+/// the selected one, which is clipped rather than lost.
+fn place(page: &Page, selected: Option<usize>, height: u16) -> Vec<Placed> {
+    let height = height as usize;
+    let heights: Vec<usize> = page.items.iter().map(rows_of).collect();
+
+    let mut first = 0;
+    if let Some(s) = selected.filter(|&s| s < heights.len()) {
+        let mut span: usize = heights[..=s].iter().sum();
+        while span > height && first < s {
+            span -= heights[first];
+            first += 1;
+        }
+    }
+
+    let mut placed = Vec::new();
+    let mut y = 0;
+    for (index, &h) in heights.iter().enumerate().skip(first) {
+        if y + h > height {
+            if Some(index) == selected && y < height {
+                placed.push(Placed {
+                    index,
+                    y: y as u16,
+                    height: (height - y) as u16,
+                });
+            }
+            break;
+        }
+        placed.push(Placed {
+            index,
+            y: y as u16,
+            height: h as u16,
+        });
+        y += h;
+    }
+    placed
+}
+
+/// The items of `page` as rows, `selected` highlighted.
+fn draw_list(f: &mut Frame, page: &Page, selected: Option<usize>, area: Rect) {
+    let highlight = Style::default()
+        .bg(Color::Rgb(40, 40, 55))
+        .add_modifier(Modifier::BOLD);
+    for placed in place(page, selected, area.height) {
+        let item = &page.items[placed.index];
+        let rect = Rect {
+            x: area.x,
+            y: area.y + placed.y,
+            width: area.width,
+            height: placed.height,
+        };
+        f.render_widget(Text::from(page_lines(item, area.width)), rect);
+        if Some(placed.index) == selected {
+            f.buffer_mut().set_style(rect, highlight);
+        }
+    }
+}
+
+/// What a point in the editor is standing on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Hit {
+    /// Row `i` of the page the cursor is on.
+    Row(usize),
+    /// Row `i` of the page one level out — the left pane, while the cursor's
+    /// page is on the right.
+    ParentRow(usize),
+    /// Row `i` of the page the cursor would open — the right pane, while the
+    /// cursor's page leads the split and the right one is a preview.
+    PeekRow(usize),
+}
+
+/// Which row is drawn under `at`, in an editor drawn into `area` — the `Rect`
+/// the host handed [`draw_in`], or the whole frame for [`draw`]. `None` for
+/// the chrome (header, breadcrumbs, footer) and for the empty space under a
+/// short list.
+///
+/// Resolved the way the frame was laid out, from the model alone: the widget
+/// keeps no record of the last frame, so a host that draws and a host that
+/// only asks get the same answer. [`handle_mouse`] is this with the click's
+/// meaning applied; a host with a policy of its own — a click that also brings
+/// the keyboard to the pane, say — reads the hit and applies its own.
+pub fn hit_at<B: Backend>(model: &Model<B>, area: Rect, at: Position) -> Option<Hit> {
+    let [_, body, _] = bands(area);
+    let pane = panes(model, body)
+        .into_iter()
+        .find(|p| p.area.contains(at))?;
+    let shown = pane.shows?;
+    let [_, list] = pane_rows(pane.area);
+    if !list.contains(at) {
+        return None;
+    }
+    let y = at.y - list.y;
+    let index = place(&shown.page, shown.selected, list.height)
+        .into_iter()
+        .find(|p| p.y <= y && y < p.y + p.height)?
+        .index;
+    Some(match shown.role {
+        Role::Current => Hit::Row(index),
+        Role::Parent => Hit::ParentRow(index),
+        Role::Peek => Hit::PeekRow(index),
+    })
 }
 
 /// One page item as the rows it takes: the comment written above it in the
@@ -398,24 +588,6 @@ fn fit(text: &str, room: usize) -> String {
 fn room_for(indent: usize, name: &[Span<'static>], width: u16) -> usize {
     let name_w: usize = name.iter().map(|s| s.content.chars().count()).sum();
     (width as usize).saturating_sub(indent + name_w + RIGHT_GUTTER + 1)
-}
-
-fn render_list(f: &mut Frame, items: Vec<ListItem>, selected: Option<usize>, area: Rect) {
-    let empty = items.is_empty();
-    let list = List::new(items)
-        .block(Block::default().borders(Borders::NONE))
-        .highlight_style(
-            Style::default()
-                .bg(Color::Rgb(40, 40, 55))
-                .add_modifier(Modifier::BOLD),
-        )
-        .highlight_symbol("");
-
-    let mut state = ListState::default();
-    if !empty {
-        state.select(selected);
-    }
-    f.render_stateful_widget(list, area, &mut state);
 }
 
 // ── footer ───────────────────────────────────────────────────────────────────
@@ -741,6 +913,115 @@ port = 8080 # dev only
             .position(|(i, _)| crumb[i..].starts_with("server"))
             .expect("the right pane's breadcrumb");
         assert_eq!(col, 51, "{crumb:?}");
+    }
+
+    // ── hit-testing ──────────────────────────────────────────────────────
+
+    fn at(x: u16, y: u16) -> Position {
+        Position::new(x, y)
+    }
+
+    #[test]
+    fn a_hit_names_the_row_under_the_point_and_nothing_under_the_chrome() {
+        let m = model();
+        let area = Rect::new(0, 0, 40, 12);
+        // Row 0 is the header, row 1 the breadcrumb; the items start at row 2.
+        assert_eq!(hit_at(&m, area, at(3, 0)), None);
+        assert_eq!(hit_at(&m, area, at(3, 1)), None);
+        assert_eq!(hit_at(&m, area, at(3, 2)), Some(Hit::Row(0)));
+        assert_eq!(hit_at(&m, area, at(30, 5)), Some(Hit::Row(3)));
+        // The footer, and the empty space under a short list.
+        assert_eq!(hit_at(&m, area, at(3, 11)), None);
+        assert_eq!(hit_at(&m, area, at(3, 10)), None);
+        // Outside the editor altogether.
+        assert_eq!(hit_at(&m, area, at(45, 3)), None);
+    }
+
+    #[test]
+    fn a_hit_is_resolved_in_the_rect_the_editor_was_drawn_into() {
+        // Embedded at an offset: the same rows, found from the pane's origin
+        // rather than the frame's.
+        let m = model();
+        let area = Rect::new(10, 5, 40, 12);
+        assert_eq!(hit_at(&m, area, at(3, 7)), None);
+        assert_eq!(hit_at(&m, area, at(12, 7)), Some(Hit::Row(0)));
+        assert_eq!(hit_at(&m, area, at(12, 8)), Some(Hit::Row(1)));
+    }
+
+    #[test]
+    fn a_comment_above_a_row_is_part_of_the_row_it_is_above() {
+        let src = "\
+# what it is called
+title = \"flower\"
+port = 8080
+";
+        let backend = FigBackend::open(src.as_bytes(), fig::Format::Toml).expect("open");
+        let mut m = Model::new(backend).expect("model");
+        m.set_view(ViewMode::Pages);
+        let area = Rect::new(0, 0, 40, 8);
+        // Rows 2 and 3 are both `title`: the comment, then the row. `port` is
+        // on row 4, not 3 — every item is *not* one row.
+        assert_eq!(hit_at(&m, area, at(3, 2)), Some(Hit::Row(0)));
+        assert_eq!(hit_at(&m, area, at(3, 3)), Some(Hit::Row(0)));
+        assert_eq!(hit_at(&m, area, at(3, 4)), Some(Hit::Row(1)));
+        assert_eq!(hit_at(&m, area, at(3, 5)), None);
+    }
+
+    #[test]
+    fn a_hit_on_a_scrolled_list_accounts_for_the_scroll() {
+        let mut m = list_model();
+        for _ in 0..15 {
+            m.page_move_down();
+        }
+        // 24 rows: header, breadcrumb, 21 of list, footer. The selection is
+        // item 15, which fits without scrolling — so the top row is item 0.
+        let area = Rect::new(0, 0, 100, 24);
+        assert_eq!(hit_at(&m, area, at(3, 2)), Some(Hit::Row(0)));
+        assert_eq!(hit_at(&m, area, at(3, 17)), Some(Hit::Row(15)));
+        // Standing on the last of 22 items scrolls the list by one, and what
+        // is drawn on the top row is what a click there stands on.
+        for _ in 0..6 {
+            m.page_move_down();
+        }
+        assert_eq!(m.page_selected(), 21);
+        let out = render(&m, 100, 24);
+        assert!(!out.contains("[0] r0"), "{out}");
+        assert_eq!(hit_at(&m, area, at(3, 2)), Some(Hit::Row(1)));
+        assert_eq!(hit_at(&m, area, at(3, 22)), Some(Hit::Row(21)));
+    }
+
+    #[test]
+    fn the_other_pane_names_its_rows_by_what_it_shows() {
+        // The page leads the split: the right pane previews what the cursor
+        // would open.
+        let mut m = list_model();
+        let area = Rect::new(0, 0, 100, 24);
+        assert!(m.page_leads_the_split());
+        assert_eq!(hit_at(&m, area, at(3, 2)), Some(Hit::Row(0)));
+        assert_eq!(hit_at(&m, area, at(60, 2)), Some(Hit::PeekRow(0)));
+        assert_eq!(hit_at(&m, area, at(60, 3)), Some(Hit::PeekRow(1)));
+        assert_eq!(hit_at(&m, area, at(60, 4)), None);
+
+        // The page was opened from the one on the left: that pane is the
+        // parent, and the cursor's page is on the right.
+        m = model();
+        m.focus_on(&[Seg::Key("server".into())]);
+        m.page_enter();
+        assert!(!m.page_leads_the_split());
+        assert_eq!(hit_at(&m, area, at(3, 2)), Some(Hit::ParentRow(0)));
+        assert_eq!(hit_at(&m, area, at(60, 2)), Some(Hit::Row(0)));
+    }
+
+    #[test]
+    fn a_scalar_under_the_cursor_leaves_the_preview_pane_empty() {
+        let mut m = model();
+        // A short room, so the root page has drills and keeps its split; the
+        // cursor starts on `title`, a scalar with no page to preview.
+        m.fit_to_room(page_room(9));
+        let area = Rect::new(0, 0, 100, 9);
+        assert!(m.page_item().is_some_and(PageItem::is_scalar));
+        assert!(render(&m, 100, 9).contains("select a section"));
+        assert_eq!(hit_at(&m, area, at(60, 2)), None);
     }
 
     #[test]

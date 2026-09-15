@@ -1,17 +1,22 @@
-//! The keyboard half of the widget: the key table that drives a
-//! [`flower_core::Model`], and the [`Outcome`] naming what the *host* must do
-//! about a key the widget deliberately does not act on itself.
+//! The input half of the widget: the key table and the mouse gestures that
+//! drive a [`flower_core::Model`], and the [`Outcome`] naming what the *host*
+//! must do about an event the widget deliberately does not act on itself.
 //!
 //! Everything that only moves the cursor or edits the document happens here, in
 //! the crate that draws it — so an app embedding flower as a pane gets flower's
-//! keys by forwarding an event, not by copying a match arm out of `flower-tui`.
-//! Quitting and saving are the host's: this crate has no terminal to leave and
-//! no file to write (flower-core is filesystem-free by design), so they come
-//! back as [`Outcome::Quit`] and [`Outcome::Save`] for the host to answer with
-//! its own unsaved-changes handling, its own path, and its own error reporting.
+//! keys by forwarding an event, not by copying a match arm out of `flower-tui`,
+//! and its clicks by forwarding the event with the `Rect` it drew into, not by
+//! restating where the rows went. Quitting and saving are the host's: this
+//! crate has no terminal to leave and no file to write (flower-core is
+//! filesystem-free by design), so they come back as [`Outcome::Quit`] and
+//! [`Outcome::Save`] for the host to answer with its own unsaved-changes
+//! handling, its own path, and its own error reporting.
 
 use flower_core::{Backend, Mode, Model};
-use ratatui::crossterm::event::{KeyCode, KeyEvent};
+use ratatui::crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
+use ratatui::layout::{Position, Rect};
+
+use crate::{Hit, hit_at};
 
 /// What the host must do after the widget has handled a key.
 ///
@@ -74,6 +79,65 @@ fn normal<B: Backend>(model: &mut Model<B>, code: KeyCode) -> Outcome {
         _ => {}
     }
     Outcome::Continue
+}
+
+/// Apply what `mouse` implies to `model`, drawn into `area` — the `Rect` the
+/// host handed [`draw_in`](crate::draw_in), or the whole frame for
+/// [`draw`](crate::draw).
+///
+/// A click stands on the row it lands on. A second click on the row the cursor
+/// is already on is Enter — a container opens as a page, a value opens for
+/// editing. Two clicks rather than a double-click, because a terminal reports
+/// no such thing and a timing guess would make a slow second click a different
+/// gesture from a quick one. In the two-pane layout the other pane is one step
+/// along the lineage in one direction or the other, and a click there takes
+/// that step first: the left pane is the page this one was opened from, so a
+/// click backs out onto the row clicked; the right is a preview of what the
+/// cursor would open, so a click opens it onto the row clicked. The wheel
+/// walks the cursor, wherever over the editor it turns.
+///
+/// An event outside `area` is not the widget's and is ignored, which is what
+/// lets a host forward every mouse event unread. So is any event while a value
+/// is open: flower's own keys leave the cursor alone while editing, and a click
+/// that moved it out from under a half-typed value would commit that value to
+/// the wrong row.
+///
+/// Returns an [`Outcome`] for the same reason [`handle_key`] does. No gesture
+/// asks anything of the host yet, so today it is always
+/// [`Outcome::Continue`].
+pub fn handle_mouse<B: Backend>(model: &mut Model<B>, area: Rect, mouse: MouseEvent) -> Outcome {
+    let at = Position::new(mouse.column, mouse.row);
+    if !area.contains(at) || matches!(model.mode, Mode::Editing { .. }) {
+        return Outcome::Continue;
+    }
+    match mouse.kind {
+        MouseEventKind::Down(MouseButton::Left) => {
+            if let Some(hit) = hit_at(model, area, at) {
+                click(model, hit);
+            }
+        }
+        MouseEventKind::ScrollDown => model.page_move_down(),
+        MouseEventKind::ScrollUp => model.page_move_up(),
+        _ => {}
+    }
+    Outcome::Continue
+}
+
+/// What a click on a row does, in the page vocabulary the keys use.
+fn click<B: Backend>(model: &mut Model<B>, hit: Hit) {
+    match hit {
+        Hit::Row(i) if i == model.page_selected() => model.page_enter(),
+        Hit::Row(i) => model.page_select(i),
+        Hit::ParentRow(i) => {
+            model.page_back();
+            model.page_select(i);
+        }
+        // Only a container has a preview, so this is a page and never an edit.
+        Hit::PeekRow(i) => {
+            model.page_enter();
+            model.page_select(i);
+        }
+    }
 }
 
 /// Typing into the value field the footer doubles as.
@@ -197,6 +261,113 @@ max_connections = 100
         press(&mut m, KeyCode::Enter);
         assert!(matches!(m.mode, Mode::Normal));
         assert!(m.source_snapshot().contains('q'), "{}", m.source_snapshot());
+    }
+
+    // ── the mouse ──────────────────────────────────────────────────────
+
+    /// The 100×24 frame every mouse test draws into: a header row, a
+    /// breadcrumb row, 21 rows of list, a footer.
+    const AREA: Rect = Rect {
+        x: 0,
+        y: 0,
+        width: 100,
+        height: 24,
+    };
+
+    fn mouse<B: Backend>(model: &mut Model<B>, kind: MouseEventKind, x: u16, y: u16) -> Outcome {
+        handle_mouse(
+            model,
+            AREA,
+            MouseEvent {
+                kind,
+                column: x,
+                row: y,
+                modifiers: KeyModifiers::NONE,
+            },
+        )
+    }
+
+    fn click<B: Backend>(model: &mut Model<B>, x: u16, y: u16) -> Outcome {
+        mouse(model, MouseEventKind::Down(MouseButton::Left), x, y)
+    }
+
+    #[test]
+    fn a_click_stands_on_the_row_and_a_second_click_opens_it() {
+        let mut m = model();
+        m.set_inline_budget(flower_core::InlineBudget::default());
+        // Row 2 of the frame is item 0; `server` is item 2, on row 4.
+        assert_eq!(click(&mut m, 5, 4), Outcome::Continue);
+        assert_eq!(m.page_selected(), 2);
+        assert!(m.focus().is_empty());
+        click(&mut m, 5, 4);
+        assert_eq!(m.focus(), [Seg::Key("server".into())]);
+        // The cursor arrives on `host`; `port` is the row below. The second
+        // click on a scalar opens it for editing, as Enter does.
+        click(&mut m, 60, 3);
+        assert_eq!(m.page_selected(), 1);
+        assert!(matches!(m.mode, Mode::Normal));
+        click(&mut m, 60, 3);
+        assert!(matches!(m.mode, Mode::Editing { .. }));
+    }
+
+    #[test]
+    fn a_click_on_the_chrome_or_past_the_editor_does_nothing() {
+        let mut m = model();
+        let was = m.page_selected();
+        click(&mut m, 5, 0);
+        click(&mut m, 5, 1);
+        click(&mut m, 5, 23);
+        click(&mut m, 120, 4);
+        assert_eq!(m.page_selected(), was);
+        assert!(m.focus().is_empty());
+    }
+
+    #[test]
+    fn a_click_in_the_parent_pane_backs_out_onto_the_row_clicked() {
+        let mut m = model();
+        m.set_inline_budget(flower_core::InlineBudget::default());
+        m.focus_on(&[Seg::Key("server".into())]);
+        m.page_enter();
+        assert!(!m.page_leads_the_split());
+        // The left pane is the root page; `version` is its row 1, on frame row 3.
+        click(&mut m, 5, 3);
+        assert!(m.focus().is_empty());
+        assert_eq!(m.page_selected(), 1);
+    }
+
+    #[test]
+    fn a_click_in_the_preview_pane_opens_it_onto_the_row_clicked() {
+        let mut m = model();
+        m.set_inline_budget(flower_core::InlineBudget::default());
+        m.focus_on(&[Seg::Key("server".into())]);
+        assert!(m.page_leads_the_split());
+        // The right pane previews `server`'s page; `port` is its row 1.
+        click(&mut m, 60, 3);
+        assert_eq!(m.focus(), [Seg::Key("server".into())]);
+        assert_eq!(m.page_selected(), 1);
+    }
+
+    #[test]
+    fn the_wheel_walks_the_cursor() {
+        let mut m = model();
+        let start = m.page_selected();
+        mouse(&mut m, MouseEventKind::ScrollDown, 5, 4);
+        mouse(&mut m, MouseEventKind::ScrollDown, 5, 4);
+        assert_eq!(m.page_selected(), start + 2);
+        // Over the other pane too: the wheel is not a pointer.
+        mouse(&mut m, MouseEventKind::ScrollUp, 80, 4);
+        assert_eq!(m.page_selected(), start + 1);
+    }
+
+    #[test]
+    fn the_mouse_leaves_an_open_value_alone() {
+        let mut m = model();
+        press(&mut m, KeyCode::Char('e'));
+        let was = m.page_selected();
+        click(&mut m, 5, 4);
+        mouse(&mut m, MouseEventKind::ScrollDown, 5, 4);
+        assert!(matches!(m.mode, Mode::Editing { .. }));
+        assert_eq!(m.page_selected(), was);
     }
 
     #[test]

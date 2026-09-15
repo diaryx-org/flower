@@ -39,7 +39,16 @@ bucket first. `docs/releasing.md` is how it is cut.
 
 <!-- git-cliff:begin — generated; edits here are overwritten -->
 
-_No commits since the last tag._
+### Added
+
+- **core** — let a document that does not fit still fill the room it has ([`836c9bd`](https://github.com/diaryx-org/flower/commit/836c9bd5fb7b404f1f74b7a1f128c42a679725fd))
+- **ratatui** — take the mouse, and let the host forward it unread ([`b0ae212`](https://github.com/diaryx-org/flower/commit/b0ae212e904f18286da7c00a1f5f0108fc9120c5))
+
+### Behavioural changes
+
+- a model sized with `fit_to_room` inlines more in a tall room than it did. When the document does not fit whole, a subtree now inlines if it takes at most a third of the room (never fewer than six rows) and nests at most two ranks, where it previously had to fit six rows and one rank whatever the room. Pages built through `set_inline_budget` are unchanged.
+
+- flower-tui captures the mouse, so the terminal's own text selection needs its modifier (Shift, or Option in Ghostty and Terminal.app) while flower is running.
 
 <!-- git-cliff:end -->
 

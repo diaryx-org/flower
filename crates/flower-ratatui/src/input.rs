@@ -168,9 +168,11 @@ max_connections = 100
     #[test]
     fn l_and_h_push_and_pop_a_page() {
         let mut m = model();
-        // A room too short to inline `server` into the root page, so there is a
-        // page to push and pop rather than a group already on screen.
-        m.fit_to_room(crate::page_room(9));
+        // The founding budget, one rank deep: `server` holds a group of its
+        // own, so it drills, and there is a page to push and pop rather than a
+        // group already on screen. Fitted to a room it would inline — a third
+        // of any room is at least six rows, and two ranks are admitted.
+        m.set_inline_budget(flower_core::InlineBudget::default());
         m.focus_on(&[Seg::Key("server".into())]);
         assert!(m.focus().is_empty());
         press(&mut m, KeyCode::Char('l'));

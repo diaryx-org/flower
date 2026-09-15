@@ -62,11 +62,20 @@
 //! Both limits above are constants, and a constant cannot be right about a room
 //! it has never seen. [`InlineBudget::fitting`] asks the document and the room
 //! instead: a document that fits entirely is *drawn* entirely, so a file nobody
-//! needs to navigate costs no navigation, and one that doesn't falls back to the
-//! founding rule with the page's limit set to the room. That is the general form
-//! of the observation that a file which is only one array belongs on one page —
-//! the shape of the document is not what settles it, the size of it against the
+//! needs to navigate costs no navigation. That is the general form of the
+//! observation that a file which is only one array belongs on one page — the
+//! shape of the document is not what settles it, the size of it against the
 //! room is.
+//!
+//! A document that does not fit is still drawn in the room it has. The
+//! per-subtree limit becomes a share of the room ([`FIT_SHARE`]) rather than
+//! the founding constant, so a tall terminal inlines the eleven-member list
+//! and the seven-field group that a short one drills, and the page's limit
+//! becomes the room itself. Six rows was never a fact about groups; it is a
+//! third of the body of a 24-row terminal, which is the room the founding rule
+//! was written in. The insets are bounded by [`FIT_MAX_DEPTH`] either way: a
+//! group sits one rank under its page, so it may nest one rank less than a
+//! document drawn whole, and the page never draws deeper than that document.
 //!
 //! Inlining is a *presentation* default, never a cage: a group header keeps its
 //! own path, so it stays selectable, deletable, and openable as a page like any
@@ -146,13 +155,26 @@ pub const INLINE_MAX: usize = 6;
 /// them buries the page.
 pub const PAGE_INLINE_MAX: usize = 20;
 
-/// The deepest document [`InlineBudget::fitting`] will pour onto one page.
+/// The deepest document [`InlineBudget::fitting`] will pour onto one page —
+/// and, less the rank a group sits under its page, the deepest subtree it will
+/// inline into one when the document as a whole does not fit.
 ///
 /// Rows are not the only thing a page spends: every rank of nesting is two more
 /// columns of inset on every row below it. A document that fits vertically and
 /// runs eight ranks deep fits by the row count and not by the eye, so past this
 /// it drills however short it is.
 pub const FIT_MAX_DEPTH: usize = 3;
+
+/// The share of the room one inlined subtree may take, when the document does
+/// not fit the room whole: a third.
+///
+/// [`INLINE_MAX`] is this share of a 24-row terminal's body, which is the room
+/// the founding rule was written in — so [`InlineBudget::fitting`] reproduces
+/// that rule there, and in a taller terminal inlines what the same eye would
+/// still read as a group rather than as a page. A subtree that takes half the
+/// room is the page; one that takes a third is a group on it. Never less than
+/// [`INLINE_MAX`], so a short terminal loses nothing it had.
+pub const FIT_SHARE: usize = 3;
 
 /// How much of a container's subtree may be inlined into its parent's page
 /// rather than drilled into — the knob that slides the page projection between
@@ -214,9 +236,13 @@ impl InlineBudget {
     /// enough ([`FIT_MAX_DEPTH`]) that the insets stay readable — the budget is
     /// the document's own size and the root page simply *is* the document: no
     /// navigation at all for a file that never needed any, which is the general
-    /// form of "a file that is only one array belongs on one page". Otherwise it
-    /// is the founding rule with the page limit set to the room, so a taller
-    /// terminal inlines a longer list and a short one does not.
+    /// form of "a file that is only one array belongs on one page". Otherwise
+    /// every limit is the room's: a subtree may take a share of it
+    /// ([`FIT_SHARE`]), nested as deep as a whole document's subtrees may be,
+    /// and a page may spend all of it on one list. So a taller terminal
+    /// inlines the group and the list that a short one drills, and a short one
+    /// is exactly the founding rule, which is where that rule's constant came
+    /// from.
     ///
     /// Measured over the whole document, hidden keys included: they are the
     /// embedder's few reserved names, and counting them costs at most a row of
@@ -230,9 +256,14 @@ impl InlineBudget {
                 page_rows: rows,
             };
         }
+        // One rank less than a whole document: the subtree's header is a row
+        // on the page, so its members sit one rank deeper than the document's
+        // own would, and the page's insets stay within what a whole document
+        // may draw.
         Self {
+            rows: (room / FIT_SHARE).max(INLINE_MAX),
+            depth: FIT_MAX_DEPTH - 1,
             page_rows: room.max(INLINE_MAX),
-            ..Self::default()
         }
     }
 }
@@ -1300,21 +1331,60 @@ timeout = 30.5
     fn a_document_one_row_too_big_falls_back_to_the_founding_rule() {
         let root = sample();
         let budget = InlineBudget::fitting(&root, 11);
+        // Eleven rows of room is a short terminal, and a third of it is less
+        // than the founding constant — so this *is* the founding rule, with
+        // the page's own limit set to the room.
         assert_eq!(budget.rows, INLINE_MAX);
-        assert_eq!(budget.depth, 1);
-        // The room still sets the page's own limit, so a taller terminal
-        // inlines a longer list and a short one does not.
         assert_eq!(budget.page_rows, 11);
         assert!(budgeted(&root, &[], budget).has_drills());
     }
 
     #[test]
+    fn a_document_that_does_not_fit_still_inlines_a_share_of_the_room() {
+        // A group of eleven and a group of thirty, forty-three rows between
+        // them: the founding rule drills both, and so does a short terminal.
+        // A tall one that still cannot take the document whole has room to
+        // show the eleven as the group it is, and still drills the thirty —
+        // which would take most of the page, and a group that takes the page
+        // is the page.
+        let members: Vec<String> = (0..11).map(|i| format!("\"m{i}\"")).collect();
+        let deps: Vec<String> = (0..30).map(|i| format!("\"d{i}\": {i}")).collect();
+        let root = value_of(
+            &format!(
+                "{{\"members\": [{}], \"deps\": {{{}}}}}",
+                members.join(", "),
+                deps.join(", ")
+            ),
+            Format::Json,
+        );
+        let short = InlineBudget::fitting(&root, 20);
+        assert_eq!(short.rows, INLINE_MAX);
+        let page = budgeted(&root, &[], short);
+        assert_eq!(
+            shape(&page),
+            [("members".into(), 0, "drill"), ("deps".into(), 0, "drill")]
+        );
+
+        let tall = InlineBudget::fitting(&root, 40);
+        assert_eq!(tall.rows, 13);
+        assert_eq!(tall.page_rows, 40);
+        let page = budgeted(&root, &[], tall);
+        let kinds = shape(&page);
+        assert_eq!(kinds.len(), 1 + 11 + 1, "{kinds:?}");
+        assert_eq!(kinds[0], ("members".into(), 0, "group"));
+        assert_eq!(kinds[12], ("deps".into(), 0, "drill"));
+    }
+
+    #[test]
     fn a_document_too_deep_to_read_drills_however_short_it_is() {
         // Four rows and four ranks. It fits the room by the row count and not
-        // by the eye: inlining it would draw eight columns of inset.
+        // by the eye: inlining it would draw eight columns of inset. Nor does
+        // `a` inline as a group on the root page, which would draw the same
+        // insets by another route: a group may nest one rank less than a
+        // document, and `a` is three ranks deep.
         let root = value_of(r#"{"a": {"b": {"c": {"d": 1}}}}"#, Format::Json);
         let budget = InlineBudget::fitting(&root, 100);
-        assert_eq!(budget.depth, 1);
+        assert_eq!(budget.depth, FIT_MAX_DEPTH - 1);
         assert!(budgeted(&root, &[], budget).has_drills());
     }
 

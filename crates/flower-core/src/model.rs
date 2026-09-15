@@ -882,6 +882,18 @@ impl<B: Backend> Model<B> {
         self.page_selected = self.page_selected.saturating_sub(1);
     }
 
+    /// Stand on row `index` of the page — a click, where `j`/`k` are a walk.
+    ///
+    /// The page counterpart to [`select_row`](Self::select_row), and clamped
+    /// the same way: a row past the end is the last row, and an empty page
+    /// keeps the cursor at zero. It cannot land the cursor anywhere the walk
+    /// could not, only faster.
+    pub fn page_select(&mut self, index: usize) {
+        // Page vocabulary: assert the projection this cursor belongs to.
+        self.set_view(ViewMode::Pages);
+        self.page_selected = index.min(self.page.items.len().saturating_sub(1));
+    }
+
     /// `l`/`Enter` in the page view: open the selected container as a page, or
     /// begin editing the selected scalar.
     ///

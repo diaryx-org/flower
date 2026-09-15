@@ -289,35 +289,196 @@ fn draw_page_pane(f: &mut Frame, shown: &Shown<'_>, area: Rect) {
     draw_list(f, &shown.page, shown.selected, list);
 }
 
-/// One item of a page, placed in its list: which item, and the rows it took.
+// ── laying a page out ────────────────────────────────────────────────────────
+
+/// One drawable entry of a page: what the projection's flat, inset-tagged item
+/// list becomes once it is read the way a settings screen reads.
+///
+/// This is the same seam the Swift host's `pageLayout` is. The projection ships
+/// rows and group headers; a screen draws captions, rows, and chips. Three
+/// rules, applied in document order:
+///
+/// - a **group** with members becomes a caption over them — its name, bold,
+///   with a blank line above unless it opens the list — rather than a rule
+///   across the pane, which gave every group the same weight whatever it held;
+/// - a **scalar sequence** whose members fit on the row becomes one row of
+///   chips, because a list of tags is one fact about the document, not `n`
+///   rows of positions, and the file spends one line on it too;
+/// - everything else — a scalar, a drill, an empty container — is one row.
+///
+/// Every member of a chips row is still its own item: the cursor walks the
+/// chips as it walked the rows, and an edit resolves against the chip it is
+/// on. Nothing here is a fact about the document, only about how it is drawn.
+enum Entry<'p> {
+    /// A group's name over the members inlined under it. `gap` is the blank
+    /// row above it that separates it from what came before.
+    Caption {
+        index: usize,
+        item: &'p PageItem,
+        gap: bool,
+    },
+    /// One item as one row.
+    Row { index: usize, item: &'p PageItem },
+    /// A scalar sequence as one row: the header names it, the members are the
+    /// chips. The one place several items share a line.
+    Chips {
+        index: usize,
+        header: &'p PageItem,
+        members: Vec<(usize, &'p PageItem)>,
+    },
+}
+
+impl Entry<'_> {
+    /// Whether the item at `selected` is drawn on this entry.
+    fn holds(&self, selected: usize) -> bool {
+        match self {
+            Entry::Caption { index, .. } | Entry::Row { index, .. } => *index == selected,
+            Entry::Chips { index, members, .. } => {
+                *index == selected || members.iter().any(|(i, _)| *i == selected)
+            }
+        }
+    }
+
+    /// The item a click on this entry stands on when it lands on no chip in
+    /// particular: the row's own, or a chips row's header.
+    fn index(&self) -> usize {
+        match self {
+            Entry::Caption { index, .. } | Entry::Row { index, .. } => *index,
+            Entry::Chips { index, .. } => *index,
+        }
+    }
+
+    fn item(&self) -> &PageItem {
+        match self {
+            Entry::Caption { item, .. } | Entry::Row { item, .. } => item,
+            Entry::Chips { header, .. } => header,
+        }
+    }
+
+    /// The rows this entry takes: the gap above a caption, the comment
+    /// written above the item, then the line itself.
+    fn rows(&self) -> usize {
+        let gap = matches!(self, Entry::Caption { gap: true, .. });
+        usize::from(gap) + usize::from(self.item().leading_comment.is_some()) + 1
+    }
+}
+
+/// The page's items as the entries a pane `width` columns wide draws.
+fn layout(page: &Page, width: u16) -> Vec<Entry<'_>> {
+    let items = &page.items;
+    let mut out: Vec<Entry<'_>> = Vec::with_capacity(items.len());
+    let mut i = 0;
+    while i < items.len() {
+        let item = &items[i];
+        let ItemKind::GroupHeader { count } = item.kind else {
+            out.push(Entry::Row { index: i, item });
+            i += 1;
+            continue;
+        };
+        let mut j = i + 1;
+        while j < items.len() && items[j].inset > item.inset {
+            j += 1;
+        }
+        let members: Vec<(usize, &PageItem)> = (i + 1..j).map(|k| (k, &items[k])).collect();
+        // An empty container is a value, not a section: a caption over nothing
+        // reads as a caption over whatever comes next.
+        if count == 0 || members.is_empty() {
+            out.push(Entry::Row { index: i, item });
+            i += 1;
+            continue;
+        }
+        if chips_fit(item, &members, width) {
+            out.push(Entry::Chips {
+                index: i,
+                header: item,
+                members,
+            });
+            i = j;
+            continue;
+        }
+        out.push(Entry::Caption {
+            index: i,
+            item,
+            gap: !out.is_empty(),
+        });
+        i += 1;
+    }
+    out
+}
+
+/// Whether a group is drawn as one row of chips: a scalar sequence, all of
+/// whose members sit directly under it, short enough to share the row with its
+/// name. A list that would not fit keeps a row per member, where each can be
+/// read whole.
+fn chips_fit(header: &PageItem, members: &[(usize, &PageItem)], width: u16) -> bool {
+    if header.vkind != VKind::Seq
+        || !members
+            .iter()
+            .all(|(_, m)| m.is_scalar() && m.inset == header.inset + 1)
+    {
+        return false;
+    }
+    let text: usize = members
+        .iter()
+        .map(|(_, m)| m.preview.chars().count())
+        .sum::<usize>()
+        + CHIP_SEP.chars().count() * (members.len() - 1);
+    text <= room_for(indent_of(header), &name_spans(header), width)
+}
+
+/// What separates one chip from the next.
+const CHIP_SEP: &str = " · ";
+
+/// Where the values of a list start: one column, just past the widest name,
+/// so the names read as one column and the values as another — the way the
+/// file's `key = value` lines up, with the `=` taken out.
+///
+/// Capped at half the width so one long key cannot push every value off the
+/// right edge; a name wider than that has its value follow it instead.
+fn value_col(entries: &[Entry<'_>], width: u16) -> usize {
+    let widest = entries
+        .iter()
+        .filter(|e| !matches!(e, Entry::Caption { .. }))
+        .map(|e| indent_of(e.item()) + name_width(&name_spans(e.item())))
+        .max()
+        .unwrap_or(0);
+    (widest + 2).min(usize::from(width) / 2)
+}
+
+fn indent_of(item: &PageItem) -> usize {
+    2 + item.inset * 2
+}
+
+fn name_width(name: &[Span<'static>]) -> usize {
+    name.iter().map(|s| s.content.chars().count()).sum()
+}
+
+// ── placing and drawing the entries ──────────────────────────────────────────
+
+/// One entry of a page, placed in its list: which entry, and the rows it took.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct Placed {
-    index: usize,
+    entry: usize,
     /// Rows from the top of the list.
     y: u16,
     height: u16,
 }
 
-/// The rows an item takes: the comment written above it, when there is one,
-/// then the row itself ([`page_lines`]).
-fn rows_of(item: &PageItem) -> usize {
-    1 + usize::from(item.leading_comment.is_some())
-}
-
-/// Where each of `page`'s items lands in a list `height` rows tall.
+/// Where each of `entries` lands in a list `height` rows tall.
 ///
-/// The list starts at the top and scrolls only as far as it must to bring
-/// `selected` on screen — by whole items, so no row is drawn without the
-/// comment above it — which is the scroll a fresh `ListState` gives ratatui's
-/// `List` on every frame, stated once here so that the frame and a click
-/// resolved against it agree. An item that does not fit is left off, except
-/// the selected one, which is clipped rather than lost.
-fn place(page: &Page, selected: Option<usize>, height: u16) -> Vec<Placed> {
+/// The list starts at the top and scrolls only as far as it must to bring the
+/// entry holding `selected` on screen — by whole entries, so no row is drawn
+/// without the comment above it — which is the scroll a fresh `ListState`
+/// gives ratatui's `List` on every frame, stated once here so that the frame
+/// and a click resolved against it agree. An entry that does not fit is left
+/// off, except the selected one, which is clipped rather than lost.
+fn place(entries: &[Entry<'_>], selected: Option<usize>, height: u16) -> Vec<Placed> {
     let height = height as usize;
-    let heights: Vec<usize> = page.items.iter().map(rows_of).collect();
+    let heights: Vec<usize> = entries.iter().map(Entry::rows).collect();
+    let selected = selected.and_then(|s| entries.iter().position(|e| e.holds(s)));
 
     let mut first = 0;
-    if let Some(s) = selected.filter(|&s| s < heights.len()) {
+    if let Some(s) = selected {
         let mut span: usize = heights[..=s].iter().sum();
         while span > height && first < s {
             span -= heights[first];
@@ -327,11 +488,11 @@ fn place(page: &Page, selected: Option<usize>, height: u16) -> Vec<Placed> {
 
     let mut placed = Vec::new();
     let mut y = 0;
-    for (index, &h) in heights.iter().enumerate().skip(first) {
+    for (entry, &h) in heights.iter().enumerate().skip(first) {
         if y + h > height {
-            if Some(index) == selected && y < height {
+            if Some(entry) == selected && y < height {
                 placed.push(Placed {
-                    index,
+                    entry,
                     y: y as u16,
                     height: (height - y) as u16,
                 });
@@ -339,7 +500,7 @@ fn place(page: &Page, selected: Option<usize>, height: u16) -> Vec<Placed> {
             break;
         }
         placed.push(Placed {
-            index,
+            entry,
             y: y as u16,
             height: h as u16,
         });
@@ -348,22 +509,39 @@ fn place(page: &Page, selected: Option<usize>, height: u16) -> Vec<Placed> {
     placed
 }
 
-/// The items of `page` as rows, `selected` highlighted.
+/// The items of `page` as entries, `selected` highlighted.
 fn draw_list(f: &mut Frame, page: &Page, selected: Option<usize>, area: Rect) {
     let highlight = Style::default()
         .bg(Color::Rgb(40, 40, 55))
         .add_modifier(Modifier::BOLD);
-    for placed in place(page, selected, area.height) {
-        let item = &page.items[placed.index];
+    let entries = layout(page, area.width);
+    let col = value_col(&entries, area.width);
+    for placed in place(&entries, selected, area.height) {
+        let entry = &entries[placed.entry];
         let rect = Rect {
             x: area.x,
             y: area.y + placed.y,
             width: area.width,
             height: placed.height,
         };
-        f.render_widget(Text::from(page_lines(item, area.width)), rect);
-        if Some(placed.index) == selected {
-            f.buffer_mut().set_style(rect, highlight);
+        let drawn = render_entry(entry, col, area.width);
+        f.render_widget(Text::from(drawn.lines), rect);
+        let Some(selected) = selected.filter(|&s| entry.holds(s)) else {
+            continue;
+        };
+        f.buffer_mut().set_style(rect, highlight);
+        // A selected chip is marked on its own, the row being shared.
+        if let Some(&(x0, x1, _)) = drawn.chips.iter().find(|(_, _, i)| *i == selected)
+            && placed.height == entry.rows() as u16
+        {
+            let chip = Rect {
+                x: area.x + x0 as u16,
+                y: rect.y + rect.height - 1,
+                width: (x1 - x0) as u16,
+                height: 1,
+            };
+            f.buffer_mut()
+                .set_style(chip, Style::default().add_modifier(Modifier::REVERSED));
         }
     }
 }
@@ -386,6 +564,9 @@ pub enum Hit {
 /// the chrome (header, breadcrumbs, footer) and for the empty space under a
 /// short list.
 ///
+/// A row of chips is several items on one line: a point on a chip stands on
+/// that member, and a point on the name, or between chips, on the sequence.
+///
 /// Resolved the way the frame was laid out, from the model alone: the widget
 /// keeps no record of the last frame, so a host that draws and a host that
 /// only asks get the same answer. [`handle_mouse`] is this with the click's
@@ -402,10 +583,21 @@ pub fn hit_at<B: Backend>(model: &Model<B>, area: Rect, at: Position) -> Option<
         return None;
     }
     let y = at.y - list.y;
-    let index = place(&shown.page, shown.selected, list.height)
+    let entries = layout(&shown.page, list.width);
+    let placed = place(&entries, shown.selected, list.height)
         .into_iter()
-        .find(|p| p.y <= y && y < p.y + p.height)?
-        .index;
+        .find(|p| p.y <= y && y < p.y + p.height)?;
+    let entry = &entries[placed.entry];
+    let mut index = entry.index();
+    if let Entry::Chips { .. } = entry
+        && y == placed.y + entry.rows() as u16 - 1
+    {
+        let x = usize::from(at.x - list.x);
+        let drawn = render_entry(entry, value_col(&entries, list.width), list.width);
+        if let Some(&(_, _, i)) = drawn.chips.iter().find(|(x0, x1, _)| *x0 <= x && x < *x1) {
+            index = i;
+        }
+    }
     Some(match shown.role {
         Role::Current => Hit::Row(index),
         Role::Parent => Hit::ParentRow(index),
@@ -413,17 +605,33 @@ pub fn hit_at<B: Backend>(model: &Model<B>, area: Rect, at: Position) -> Option<
     })
 }
 
-/// One page item as the rows it takes: the comment written above it in the
-/// document, when there is one, then the row itself.
+fn draw_empty_detail(f: &mut Frame, area: Rect) {
+    f.render_widget(Line::from(Span::styled("  select a section", dim())), area);
+}
+
+/// One entry, drawn: its lines, and where each chip landed on the last one.
+struct Drawn {
+    lines: Vec<Line<'static>>,
+    /// `(from, to, item)` in columns from the pane's left edge, for the chips
+    /// of a chips row — what a click on the row is resolved against.
+    chips: Vec<(usize, usize, usize)>,
+}
+
+/// One entry as the rows it takes: a caption's gap, the comment written above
+/// the item in the document when there is one, then the line itself.
 ///
 /// The comment takes one row whatever its length — the first line of the block,
 /// cut to the width — because a page is a list to scan, and a paragraph between
 /// two of its rows would turn it into a page to read. The whole block is a
 /// keystroke away (`C`), and the row's own line is never squeezed for it.
-fn page_lines(item: &PageItem, width: u16) -> Vec<Line<'static>> {
-    let mut lines = Vec::with_capacity(2);
+fn render_entry(entry: &Entry<'_>, col: usize, width: u16) -> Drawn {
+    let item = entry.item();
+    let indent = indent_of(item);
+    let mut lines = Vec::with_capacity(3);
+    if matches!(entry, Entry::Caption { gap: true, .. }) {
+        lines.push(Line::default());
+    }
     if let Some(comment) = &item.leading_comment {
-        let indent = 2 + item.inset * 2;
         let first = comment.lines().next().unwrap_or_default();
         let text = fit(
             &format!("# {first}"),
@@ -434,51 +642,70 @@ fn page_lines(item: &PageItem, width: u16) -> Vec<Line<'static>> {
             Span::styled(text, dim()),
         ]));
     }
-    lines.push(page_line(item, width));
-    lines
+    let mut chips = Vec::new();
+    lines.push(match entry {
+        Entry::Caption { item, .. } => caption_line(item, width),
+        Entry::Row { item, .. } => row_line(item, col, width),
+        Entry::Chips {
+            header, members, ..
+        } => {
+            let (line, at) = chips_line(header, members, col, width);
+            chips = at;
+            line
+        }
+    });
+    Drawn { lines, chips }
 }
 
-fn draw_empty_detail(f: &mut Frame, area: Rect) {
-    f.render_widget(Line::from(Span::styled("  select a section", dim())), area);
-}
-
-/// One page item, laid out the way a settings row reads: the name on the left,
-/// its value or affordance flushed right.
+/// A group's name over its members: bold, on a line of its own, with the
+/// file's aside on it dimmed after — enough to bind the members below it
+/// together without a rule across the pane or a second indentation scheme.
 ///
-/// Right-aligning the values is what makes a page scannable — the names form one
-/// column and the values another, instead of a ragged `key = value` edge that
-/// moves with every key length.
-fn page_line(item: &PageItem, width: u16) -> Line<'static> {
-    let indent = 2 + item.inset * 2;
+/// No drill chevron, though a caption does open a page: the members it would
+/// lead to are already on screen, which is the whole point of inlining them.
+fn caption_line(item: &PageItem, width: u16) -> Line<'static> {
+    let indent = indent_of(item);
+    let name = name_spans(item);
+    let mut spans = vec![Span::raw(" ".repeat(indent))];
+    spans.extend(name.clone());
+    if let Some(comment) = &item.trailing_comment {
+        let room = room_for(indent, &name, width).saturating_sub(2);
+        let text = fit(&format!("# {comment}"), room);
+        if text.chars().count() >= 4 {
+            spans.push(Span::raw("  "));
+            spans.push(Span::styled(text, dim()));
+        }
+    }
+    Line::from(spans)
+}
 
+/// One item as one row, the way a settings row reads: the name on the left,
+/// its value or affordance in the value column.
+fn row_line(item: &PageItem, col: usize, width: u16) -> Line<'static> {
+    let name = name_spans(item);
     match &item.kind {
-        // A rule with the group's name in it: enough to bind the members below it
-        // together, without a second indentation scheme to read.
-        //
-        // No drill chevron, though the header does open a page: at the right-hand
-        // end of a rule it reads as part of the rule, and the affordance is not
-        // worth the noise on every group — the members it would lead to are
-        // already on screen, which is the whole point of inlining them.
+        ItemKind::Scalar => tail_line(
+            item,
+            name,
+            &item.preview,
+            value_style(item.vkind),
+            col,
+            width,
+        ),
+        // An empty container, drawn as the value it is.
         ItemKind::GroupHeader { .. } => {
-            let name = match &item.title {
-                Some(title) => format!("{} · {title}", item.label),
-                None => item.label.clone(),
-            };
-            let head = format!("{}── {name} ", " ".repeat(indent));
-            let rule = (width as usize).saturating_sub(head.chars().count() + 1);
-            Line::from(vec![
-                Span::styled(head, dim()),
-                Span::styled("─".repeat(rule), dim()),
-            ])
+            let empty = if item.vkind == VKind::Seq { "[]" } else { "{}" };
+            tail_line(item, name, empty, dim(), col, width)
         }
         ItemKind::Drill { count } => {
-            let name = name_spans(item);
             // Show what is in it when what is in it fits: `1 field ›` is strictly
             // less than the document says when the field is right there. The count
             // is the fallback for a container too big to put on the row, which is
             // the only case where counting beats showing.
             let trailing = match &item.summary {
-                Some(flow) if flow.chars().count() + 2 <= room_for(indent, &name, width) => {
+                Some(flow)
+                    if flow.chars().count() + 2 <= room_for(indent_of(item), &name, width) =>
+                {
                     format!("{flow} ›")
                 }
                 _ => {
@@ -491,24 +718,94 @@ fn page_line(item: &PageItem, width: u16) -> Line<'static> {
                     format!("{count} {noun} ›")
                 }
             };
-            row_line(
-                indent,
-                name,
-                &trailing,
-                dim(),
-                item.trailing_comment.as_deref(),
-                width,
-            )
+            tail_line(item, name, &trailing, dim(), col, width)
         }
-        ItemKind::Scalar => row_line(
-            indent,
-            name_spans(item),
-            &item.preview,
-            value_style(item.vkind),
-            item.trailing_comment.as_deref(),
-            width,
-        ),
     }
+}
+
+/// A scalar sequence on one row: its name, then each member as a chip, in the
+/// value column. What does not fit is cut with an ellipsis — the sequence was
+/// only folded because it fit against its own name, so this is the value
+/// column having moved it, and the whole list is still `l` away.
+fn chips_line(
+    header: &PageItem,
+    members: &[(usize, &PageItem)],
+    col: usize,
+    width: u16,
+) -> (Line<'static>, Vec<(usize, usize, usize)>) {
+    let indent = indent_of(header);
+    let name = name_spans(header);
+    let start = tail_start(indent, &name, col);
+    let end = usize::from(width).saturating_sub(RIGHT_GUTTER);
+
+    let mut spans = vec![Span::raw(" ".repeat(indent))];
+    let name_w = name_width(&name);
+    spans.extend(name);
+    spans.push(Span::raw(" ".repeat(start - indent - name_w)));
+    let mut at = Vec::with_capacity(members.len());
+    let mut x = start;
+    for (n, (index, member)) in members.iter().enumerate() {
+        if n > 0 {
+            let sep = fit(CHIP_SEP, end.saturating_sub(x));
+            x += sep.chars().count();
+            spans.push(Span::styled(sep, dim()));
+        }
+        let text = fit(&member.preview, end.saturating_sub(x));
+        if text.is_empty() {
+            break;
+        }
+        let w = text.chars().count();
+        at.push((x, x + w, *index));
+        spans.push(Span::styled(text, value_style(member.vkind)));
+        x += w;
+    }
+    (Line::from(spans), at)
+}
+
+/// `indent + name   trailing  # comment`, the trailing text in the value
+/// column and truncated before the name is ever squeezed — a name you can't
+/// read costs more than a value you can't finish.
+///
+/// The comment goes first when room runs short: it is the file's aside on the
+/// value, and an aside is what you drop before the thing it is about. It is
+/// shown dimmed after the value, the way it sits in the file, and not at all
+/// when fewer than a few characters of it would fit.
+fn tail_line(
+    item: &PageItem,
+    name: Vec<Span<'static>>,
+    trailing: &str,
+    trailing_style: Style,
+    col: usize,
+    width: u16,
+) -> Line<'static> {
+    let indent = indent_of(item);
+    let start = tail_start(indent, &name, col);
+    let room = usize::from(width).saturating_sub(start + RIGHT_GUTTER);
+
+    let trailing = fit(trailing, room);
+    let comment = item
+        .trailing_comment
+        .as_deref()
+        .map(|c| format!("# {c}"))
+        .map(|c| fit(&c, room.saturating_sub(trailing.chars().count() + 2)))
+        .filter(|c| c.chars().count() >= 4);
+
+    let mut spans = vec![Span::raw(" ".repeat(indent))];
+    let name_w = name_width(&name);
+    spans.extend(name);
+    spans.push(Span::raw(" ".repeat(start - indent - name_w)));
+    spans.push(Span::styled(trailing, trailing_style));
+    if let Some(comment) = comment {
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(comment, dim()));
+    }
+    Line::from(spans)
+}
+
+/// The column a row's trailing text starts in: the page's value column, or
+/// two past the name when the name reaches beyond it.
+fn tail_start(indent: usize, name: &[Span<'static>], col: usize) -> usize {
+    (indent + name_width(name) + 2).max(col)
 }
 
 /// What names an item on the left of its row.
@@ -528,48 +825,6 @@ fn name_spans(item: &PageItem) -> Vec<Span<'static>> {
     }
 }
 
-/// `indent + name … trailing  # comment`, with the tail flushed to `width` and
-/// truncated before the name is ever squeezed — a name you can't read costs
-/// more than a value you can't finish.
-///
-/// The comment goes first when room runs short: it is the file's aside on the
-/// value, and an aside is what you drop before the thing it is about. It is
-/// shown dimmed after the value, the way it sits in the file, and not at all
-/// when fewer than a few characters of it would fit.
-fn row_line(
-    indent: usize,
-    name: Vec<Span<'static>>,
-    trailing: &str,
-    trailing_style: Style,
-    comment: Option<&str>,
-    width: u16,
-) -> Line<'static> {
-    let width = width as usize;
-    let name_w: usize = name.iter().map(|s| s.content.chars().count()).sum();
-    let room = room_for(indent, &name, width as u16);
-
-    let trailing = fit(trailing, room);
-    let comment = comment
-        .map(|c| format!("# {c}"))
-        .map(|c| fit(&c, room.saturating_sub(trailing.chars().count() + 2)))
-        .filter(|c| c.chars().count() >= 4);
-    let tail_w = trailing.chars().count() + comment.as_ref().map_or(0, |c| c.chars().count() + 2);
-
-    let pad = width
-        .saturating_sub(indent + name_w + tail_w + RIGHT_GUTTER)
-        .max(1);
-
-    let mut spans = vec![Span::raw(" ".repeat(indent))];
-    spans.extend(name);
-    spans.push(Span::raw(" ".repeat(pad)));
-    spans.push(Span::styled(trailing, trailing_style));
-    if let Some(comment) = comment {
-        spans.push(Span::raw("  "));
-        spans.push(Span::styled(comment, dim()));
-    }
-    Line::from(spans)
-}
-
 /// `text` cut to `room` columns, with an ellipsis where it was cut. Empty when
 /// there is no room for even the ellipsis and one character.
 fn fit(text: &str, room: usize) -> String {
@@ -586,8 +841,7 @@ fn fit(text: &str, room: usize) -> String {
 /// what it needs — the name is never squeezed, because a name you can't read
 /// costs more than a value you can't finish.
 fn room_for(indent: usize, name: &[Span<'static>], width: u16) -> usize {
-    let name_w: usize = name.iter().map(|s| s.content.chars().count()).sum();
-    (width as usize).saturating_sub(indent + name_w + RIGHT_GUTTER + 1)
+    (width as usize).saturating_sub(indent + name_width(name) + RIGHT_GUTTER + 2)
 }
 
 // ── footer ───────────────────────────────────────────────────────────────────
@@ -696,7 +950,7 @@ timeout = 30.5
         assert!(out.contains("‹document›"), "{out}");
         assert!(out.contains("server"), "{out}");
         assert!(out.contains("max_connections"), "{out}");
-        // Values are flushed right, not written as `key = value`.
+        // Values sit in a column of their own, not written as `key = value`.
         assert!(!out.contains("host = "), "{out}");
     }
 
@@ -708,7 +962,7 @@ timeout = 30.5
         // is what says the widget no longer has a renderer to fall into.
         model.set_view(ViewMode::Tree);
         let out = render(&model, 76, 14);
-        // A page — a breadcrumb, and values flushed right rather than `key = value`
+        // A page — a breadcrumb, and values in their own column rather than `key = value`
         // rows under expand twisties.
         assert!(out.contains("‹document›"), "{out}");
         assert!(!out.contains("host = "), "{out}");
@@ -752,14 +1006,138 @@ port = 8080 # dev only
     }
 
     #[test]
-    fn a_group_is_inlined_under_a_titled_rule() {
+    fn a_group_is_inlined_under_its_name_and_a_tag_list_is_one_row() {
         let mut model = model();
         model.focus_on(&[Seg::Key("server".into())]);
         model.page_enter();
         let out = render(&model, 76, 12);
-        assert!(out.contains("── limits "), "{out}");
-        assert!(out.contains("── tags "), "{out}");
-        assert!(out.contains("server"), "{out}");
+        // The group's name is a caption over its members, not a rule across
+        // the pane, and a blank row sets it off from the rows above.
+        assert!(!out.contains("──"), "{out}");
+        let lines: Vec<&str> = out.lines().collect();
+        let limits = lines.iter().position(|l| l.contains("limits")).expect(&out);
+        // The right pane starts at the midpoint; the left one is still drawn.
+        let right = |l: &str| l.chars().skip(38).collect::<String>();
+        assert_eq!(right(lines[limits - 1]).trim_end(), "", "{out}");
+        assert!(lines[limits + 1].contains("max_connections"), "{out}");
+        // A scalar sequence is one row, its members as chips: the file spends
+        // one line on `tags`, and so does the page.
+        assert!(out.contains("tags"), "{out}");
+        assert!(out.contains("alpha · beta"), "{out}");
+        assert!(!out.contains("[0]"), "{out}");
+    }
+
+    /// The `languages.figl` shape: a list of entries, each with an empty list
+    /// and a short one.
+    fn languages_model() -> Model<FigBackend> {
+        let src = br#"{"language": [
+            {"name": "js-gitconfig", "extensions": [],
+             "command": ["fig-quickjs", "~/diaryx/fig-quickjs/languages/gitconfig.mjs"]},
+            {"name": "js-sshconfig", "extensions": [],
+             "command": ["fig-quickjs", "~/diaryx/fig-quickjs/languages/sshconfig.mjs"]}
+        ]}"#;
+        let backend = FigBackend::open(src, fig::Format::Json).expect("open");
+        let mut model = Model::new(backend).expect("model");
+        model.set_view(ViewMode::Pages);
+        model.fit_to_room(page_room(30));
+        model.enter_document();
+        model
+    }
+
+    #[test]
+    fn a_list_of_small_entries_reads_like_the_file() {
+        let out = render(&languages_model(), 100, 30);
+        let lines: Vec<&str> = out.lines().collect();
+        // Each entry: its title as a caption, then one row per field — three,
+        // as the file has — with the empty list drawn as the value it is and
+        // the command as chips on one row.
+        let entry = lines
+            .iter()
+            .position(|l| l.contains("js-gitconfig"))
+            .expect(&out);
+        assert!(lines[entry].contains("[0] js-gitconfig"), "{out}");
+        assert!(
+            lines[entry + 1].contains("name") && lines[entry + 1].contains("js-gitconfig"),
+            "{out}"
+        );
+        assert!(
+            lines[entry + 2].contains("extensions") && lines[entry + 2].contains("[]"),
+            "{out}"
+        );
+        assert!(lines[entry + 3].contains("command"), "{out}");
+        assert!(
+            lines[entry + 3].contains("fig-quickjs · ~/diaryx/fig-quickjs/languages/gitconfig.mjs"),
+            "{out}"
+        );
+        assert_eq!(
+            lines[entry + 4].trim_end(),
+            "",
+            "a blank row before the next entry:\n{out}"
+        );
+        assert!(lines[entry + 5].contains("[1] js-sshconfig"), "{out}");
+        assert!(!out.contains("──"), "{out}");
+        // Values line up in one column just past the widest name, not at the
+        // far edge of a wide terminal.
+        let value_at = |l: &str| l.find("js-gitconfig").expect(l);
+        assert_eq!(
+            value_at(lines[entry + 1]),
+            lines[entry + 2].find("[]").expect(&out)
+        );
+        assert_eq!(
+            value_at(lines[entry + 1]),
+            lines[entry + 3].find("fig-quickjs").expect(&out)
+        );
+        assert!(value_at(lines[entry + 1]) < 20, "{out}");
+    }
+
+    #[test]
+    fn a_chip_is_the_item_it_stands_for() {
+        let mut m = languages_model();
+        let area = Rect::new(0, 0, 100, 30);
+        let out = render(&m, 100, 30);
+        let lines: Vec<&str> = out.lines().collect();
+        let row = lines
+            .iter()
+            .position(|l| l.contains("fig-quickjs ·"))
+            .expect(&out);
+        let line = lines[row];
+        let name = line.find("command").expect(line) as u16;
+        let first = line.find("fig-quickjs").expect(line) as u16;
+        let second = line.find("~/diaryx").expect(line) as u16;
+        let y = row as u16;
+        // The page is `language`'s own (the root's one row was stepped past):
+        // [0] (0), name (1), extensions (2), command (3), its members (4, 5).
+        assert_eq!(hit_at(&m, area, at(name, y)), Some(Hit::Row(3)));
+        assert_eq!(hit_at(&m, area, at(first, y)), Some(Hit::Row(4)));
+        assert_eq!(hit_at(&m, area, at(second + 3, y)), Some(Hit::Row(5)));
+        // Between two chips is the sequence.
+        assert_eq!(hit_at(&m, area, at(second - 2, y)), Some(Hit::Row(3)));
+        // And the cursor walks the chips as items: standing on a member draws
+        // the row as selected, and an edit is of that member.
+        for _ in 0..4 {
+            m.page_move_down();
+        }
+        assert_eq!(m.page_selected(), 4);
+        assert_eq!(
+            m.page_item().map(|i| i.preview.as_str()),
+            Some("fig-quickjs")
+        );
+    }
+
+    #[test]
+    fn a_tag_list_too_long_for_its_row_keeps_a_row_per_member() {
+        let tags: Vec<String> = (0..12).map(|i| format!("\"tag-number-{i}\"")).collect();
+        let src = format!("tags = [{}]\n", tags.join(", "));
+        let backend = FigBackend::open(src.as_bytes(), fig::Format::Toml).expect("open");
+        let mut m = Model::new(backend).expect("model");
+        m.set_view(ViewMode::Pages);
+        m.fit_to_room(page_room(30));
+        let out = render(&m, 60, 30);
+        // No chips: the list would not fit the row, so each member is a row
+        // that can be read whole.
+        assert!(!out.contains("tag-number-0 ·"), "{out}");
+        assert!(out.contains("[0]") && out.contains("[11]"), "{out}");
+        assert!(out.contains("tag-number-11"), "{out}");
     }
 
     #[test]

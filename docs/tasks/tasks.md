@@ -6,6 +6,7 @@ updated: 2026-09-15
 contents:
   - "[Show a commented-out entry as a disabled row](disabled-entries.md)"
   - "[Undo and redo in the model](undo-journal.md)"
+  - "[Append a list item from the picker](append-from-the-picker.md)"
 part_of: '[flower](/README.md)'
 ---
 

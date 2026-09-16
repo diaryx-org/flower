@@ -39,6 +39,12 @@ bucket first. `docs/releasing.md` is how it is cut.
 
 <!-- git-cliff:begin — generated; edits here are overwritten -->
 
+_No commits since the last tag._
+
+<!-- git-cliff:end -->
+
+## v0.6.0 — 2026-09-16
+
 ### Added
 
 - **core** — let a document that does not fit still fill the room it has ([`836c9bd`](https://github.com/diaryx-org/flower/commit/836c9bd5fb7b404f1f74b7a1f128c42a679725fd))
@@ -89,7 +95,6 @@ editor. A host that wants the old behaviour calls `begin_edit` directly.
 `is_closed_enum`. `FlowerPages` rows that were free text before now render as a
 menu wherever something can enumerate the field's values.
 
-<!-- git-cliff:end -->
 
 ## v0.5.0 — 2026-09-14
 

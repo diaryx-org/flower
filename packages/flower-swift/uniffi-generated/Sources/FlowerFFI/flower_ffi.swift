@@ -415,6 +415,22 @@ fileprivate struct FfiConverterUInt32: FfiConverterPrimitive {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterUInt64: FfiConverterPrimitive {
+    typealias FfiType = UInt64
+    typealias SwiftType = UInt64
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> UInt64 {
+        return try lift(readInt(&buf))
+    }
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        writeInt(&buf, lower(value))
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterBool : FfiConverter {
     typealias FfiType = Int8
     typealias SwiftType = Bool
@@ -666,6 +682,12 @@ public protocol FlowerDocProtocol : AnyObject {
     func pages()  -> PagesView
     
     /**
+     * Redo the most recently undone edit. Cleared — and so a no-op — once a
+     * fresh edit has been committed on top.
+     */
+    func redo()  -> PagesView
+    
+    /**
      * Rename the mapping entry at `index` to `new_key`, keeping its value. A
      * no-op with a status hint when the row is a sequence item (no key); the
      * backend rejects a name that collides with a sibling.
@@ -733,6 +755,17 @@ public protocol FlowerDocProtocol : AnyObject {
      * frontend edits those in place instead).
      */
     func toggle(index: UInt32)  -> DocView
+    
+    /**
+     * Undo the most recent edit, wherever in the document it was made, and
+     * return the whole frame — the page it happened on is the page you land
+     * on, so the row that changed is the row on screen.
+     *
+     * A save is not a boundary: this runs back through one, and the frame's
+     * `dirty` is recomputed from the bytes, so undoing to the saved text
+     * reports clean again. A no-op with a status when the journal is empty.
+     */
+    func undo()  -> PagesView
     
     /**
      * Resolve the current document to a renderable frame — the first paint.
@@ -1158,6 +1191,17 @@ open func pages() -> PagesView {
 }
     
     /**
+     * Redo the most recently undone edit. Cleared — and so a no-op — once a
+     * fresh edit has been committed on top.
+     */
+open func redo() -> PagesView {
+    return try!  FfiConverterTypePagesView.lift(try! rustCall() {
+    uniffi_flower_ffi_fn_method_flowerdoc_redo(self.uniffiClonePointer(),$0
+    )
+})
+}
+    
+    /**
      * Rename the mapping entry at `index` to `new_key`, keeping its value. A
      * no-op with a status hint when the row is a sequence item (no key); the
      * backend rejects a name that collides with a sibling.
@@ -1270,6 +1314,22 @@ open func toggle(index: UInt32) -> DocView {
     return try!  FfiConverterTypeDocView.lift(try! rustCall() {
     uniffi_flower_ffi_fn_method_flowerdoc_toggle(self.uniffiClonePointer(),
         FfiConverterUInt32.lower(index),$0
+    )
+})
+}
+    
+    /**
+     * Undo the most recent edit, wherever in the document it was made, and
+     * return the whole frame — the page it happened on is the page you land
+     * on, so the row that changed is the row on screen.
+     *
+     * A save is not a boundary: this runs back through one, and the frame's
+     * `dirty` is recomputed from the bytes, so undoing to the saved text
+     * reports clean again. A no-op with a status when the journal is empty.
+     */
+open func undo() -> PagesView {
+    return try!  FfiConverterTypePagesView.lift(try! rustCall() {
+    uniffi_flower_ffi_fn_method_flowerdoc_undo(self.uniffiClonePointer(),$0
     )
 })
 }
@@ -2023,6 +2083,18 @@ public struct PagesView {
     public var status: String
     public var rootKind: String
     public var hiddenCount: UInt32
+    /**
+     * How many edits are on the undo journal, and how many undone edits can
+     * be replayed — what a host enables its Undo and Redo controls from.
+     */
+    public var undoDepth: UInt32
+    public var redoDepth: UInt32
+    /**
+     * A number that goes up on every successful commit, undo and redo. A host
+     * pairing flower with another editor keeps one ordered history by
+     * recording which editor's number moved.
+     */
+    public var editSeq: UInt64
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -2043,7 +2115,16 @@ public struct PagesView {
          * Whether a two-pane layout is worth drawing at all: false for a document
          * whose root has nothing to drill into, where the second pane would cost half
          * the width and show nothing.
-         */twoPane: Bool, dirty: Bool, status: String, rootKind: String, hiddenCount: UInt32) {
+         */twoPane: Bool, dirty: Bool, status: String, rootKind: String, hiddenCount: UInt32, 
+        /**
+         * How many edits are on the undo journal, and how many undone edits can
+         * be replayed — what a host enables its Undo and Redo controls from.
+         */undoDepth: UInt32, redoDepth: UInt32, 
+        /**
+         * A number that goes up on every successful commit, undo and redo. A host
+         * pairing flower with another editor keeps one ordered history by
+         * recording which editor's number moved.
+         */editSeq: UInt64) {
         self.page = page
         self.parent = parent
         self.peek = peek
@@ -2052,6 +2133,9 @@ public struct PagesView {
         self.status = status
         self.rootKind = rootKind
         self.hiddenCount = hiddenCount
+        self.undoDepth = undoDepth
+        self.redoDepth = redoDepth
+        self.editSeq = editSeq
     }
 }
 
@@ -2083,6 +2167,15 @@ extension PagesView: Equatable, Hashable {
         if lhs.hiddenCount != rhs.hiddenCount {
             return false
         }
+        if lhs.undoDepth != rhs.undoDepth {
+            return false
+        }
+        if lhs.redoDepth != rhs.redoDepth {
+            return false
+        }
+        if lhs.editSeq != rhs.editSeq {
+            return false
+        }
         return true
     }
 
@@ -2095,6 +2188,9 @@ extension PagesView: Equatable, Hashable {
         hasher.combine(status)
         hasher.combine(rootKind)
         hasher.combine(hiddenCount)
+        hasher.combine(undoDepth)
+        hasher.combine(redoDepth)
+        hasher.combine(editSeq)
     }
 }
 
@@ -2113,7 +2209,10 @@ public struct FfiConverterTypePagesView: FfiConverterRustBuffer {
                 dirty: FfiConverterBool.read(from: &buf), 
                 status: FfiConverterString.read(from: &buf), 
                 rootKind: FfiConverterString.read(from: &buf), 
-                hiddenCount: FfiConverterUInt32.read(from: &buf)
+                hiddenCount: FfiConverterUInt32.read(from: &buf), 
+                undoDepth: FfiConverterUInt32.read(from: &buf), 
+                redoDepth: FfiConverterUInt32.read(from: &buf), 
+                editSeq: FfiConverterUInt64.read(from: &buf)
         )
     }
 
@@ -2126,6 +2225,9 @@ public struct FfiConverterTypePagesView: FfiConverterRustBuffer {
         FfiConverterString.write(value.status, into: &buf)
         FfiConverterString.write(value.rootKind, into: &buf)
         FfiConverterUInt32.write(value.hiddenCount, into: &buf)
+        FfiConverterUInt32.write(value.undoDepth, into: &buf)
+        FfiConverterUInt32.write(value.redoDepth, into: &buf)
+        FfiConverterUInt64.write(value.editSeq, into: &buf)
     }
 }
 
@@ -2670,6 +2772,9 @@ private var initializationResult: InitializationResult = {
     if (uniffi_flower_ffi_checksum_method_flowerdoc_pages() != 41318) {
         return InitializationResult.apiChecksumMismatch
     }
+    if (uniffi_flower_ffi_checksum_method_flowerdoc_redo() != 22312) {
+        return InitializationResult.apiChecksumMismatch
+    }
     if (uniffi_flower_ffi_checksum_method_flowerdoc_rename_key() != 26782) {
         return InitializationResult.apiChecksumMismatch
     }
@@ -2692,6 +2797,9 @@ private var initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_flower_ffi_checksum_method_flowerdoc_toggle() != 62183) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_flower_ffi_checksum_method_flowerdoc_undo() != 9770) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_flower_ffi_checksum_method_flowerdoc_view() != 25871) {

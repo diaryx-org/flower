@@ -40,7 +40,8 @@ pub enum Outcome {
 /// Both modes are here. In [`Mode::Normal`] this is one flat table over the page
 /// projection — `j`/`k` walk the page, `l`/`h` push and pop one, and the keys
 /// that operate on a *node* (`e` edit, `c`/`C` its trailing / leading comment,
-/// `x` delete) resolve against the page cursor. In [`Mode::Editing`] every
+/// `x` delete) resolve against the page cursor, while `u`/`U` undo and redo
+/// whatever the document's own journal last recorded, wherever the cursor is. In [`Mode::Editing`] every
 /// printable character goes into the buffer, `Enter` commits and `Esc` cancels;
 /// nothing returns an outcome, since an edit in progress is entirely the
 /// model's business.
@@ -70,6 +71,11 @@ fn normal<B: Backend>(model: &mut Model<B>, code: KeyCode) -> Outcome {
         KeyCode::Char('c') => model.begin_edit_trailing_comment(),
         KeyCode::Char('C') => model.begin_edit_leading_comment(),
         KeyCode::Char('x') => model.delete_selected(),
+        // vi's `u`, and `U` for the way back — the pair flower-core journals
+        // ([`Model::undo`](flower_core::Model::undo)). A save is not a
+        // boundary: `u` runs back through one.
+        KeyCode::Char('u') => model.undo(),
+        KeyCode::Char('U') => model.redo(),
         KeyCode::Char('j') | KeyCode::Down => model.page_move_down(),
         KeyCode::Char('k') | KeyCode::Up => model.page_move_up(),
         KeyCode::Char('l') | KeyCode::Right | KeyCode::Enter | KeyCode::Char(' ') => {
@@ -261,6 +267,30 @@ max_connections = 100
         press(&mut m, KeyCode::Enter);
         assert!(matches!(m.mode, Mode::Normal));
         assert!(m.source_snapshot().contains('q'), "{}", m.source_snapshot());
+    }
+
+    #[test]
+    fn u_and_shift_u_walk_the_journal() {
+        let mut m = model();
+        m.focus_on(&[Seg::Key("version".into())]);
+        press(&mut m, KeyCode::Char('e'));
+        for c in "7".chars() {
+            press(&mut m, KeyCode::Char(c));
+        }
+        press(&mut m, KeyCode::Enter);
+        assert!(m.source_snapshot().contains("version = 17"));
+
+        assert_eq!(press(&mut m, KeyCode::Char('u')), Outcome::Continue);
+        assert_eq!(m.source_snapshot(), SAMPLE);
+        assert!(!m.dirty, "back at the opened bytes");
+        press(&mut m, KeyCode::Char('U'));
+        assert!(m.source_snapshot().contains("version = 17"));
+
+        // In edit mode they are text, like every other letter.
+        press(&mut m, KeyCode::Char('e'));
+        press(&mut m, KeyCode::Char('u'));
+        assert!(matches!(m.mode, Mode::Editing { .. }));
+        press(&mut m, KeyCode::Esc);
     }
 
     // ── the mouse ──────────────────────────────────────────────────────

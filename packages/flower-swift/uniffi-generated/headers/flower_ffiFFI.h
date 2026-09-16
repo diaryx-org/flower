@@ -401,6 +401,11 @@ RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_page_set_value(void*_Nonnull pt
 RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_pages(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_REDO
+#define UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_REDO
+RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_redo(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_RENAME_KEY
 #define UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_RENAME_KEY
 RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_rename_key(void*_Nonnull ptr, uint32_t index, RustBuffer new_key, RustCallStatus *_Nonnull out_status
@@ -439,6 +444,11 @@ RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_source(void*_Nonnull ptr, RustC
 #ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_TOGGLE
 #define UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_TOGGLE
 RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_toggle(void*_Nonnull ptr, uint32_t index, RustCallStatus *_Nonnull out_status
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_UNDO
+#define UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_UNDO
+RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_undo(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_VIEW
@@ -888,6 +898,12 @@ uint16_t uniffi_flower_ffi_checksum_method_flowerdoc_pages(void
     
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_CHECKSUM_METHOD_FLOWERDOC_REDO
+#define UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_CHECKSUM_METHOD_FLOWERDOC_REDO
+uint16_t uniffi_flower_ffi_checksum_method_flowerdoc_redo(void
+    
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_CHECKSUM_METHOD_FLOWERDOC_RENAME_KEY
 #define UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_CHECKSUM_METHOD_FLOWERDOC_RENAME_KEY
 uint16_t uniffi_flower_ffi_checksum_method_flowerdoc_rename_key(void
@@ -933,6 +949,12 @@ uint16_t uniffi_flower_ffi_checksum_method_flowerdoc_source(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_CHECKSUM_METHOD_FLOWERDOC_TOGGLE
 #define UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_CHECKSUM_METHOD_FLOWERDOC_TOGGLE
 uint16_t uniffi_flower_ffi_checksum_method_flowerdoc_toggle(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_CHECKSUM_METHOD_FLOWERDOC_UNDO
+#define UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_CHECKSUM_METHOD_FLOWERDOC_UNDO
+uint16_t uniffi_flower_ffi_checksum_method_flowerdoc_undo(void
     
 );
 #endif

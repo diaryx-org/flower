@@ -128,6 +128,34 @@ final class FlowerModelTests: XCTestCase {
         XCTAssertTrue(model.source().contains("= 1"))
     }
 
+    func testUndoAndRedoWalkTheJournal() throws {
+        let model = try makeModel()
+        let opened = model.source()
+        XCTAssertFalse(model.canUndo)
+
+        guard let version = item(model, "version") else {
+            return XCTFail("no version row")
+        }
+        model.beginEdit(version)
+        model.editBuffer = "42"
+        model.commitEdit()
+        XCTAssertTrue(model.source().contains("version = 42"))
+        XCTAssertTrue(model.canUndo)
+        let edited = model.editSeq
+
+        model.undo()
+        XCTAssertEqual(model.source(), opened)
+        // Undoing to the bytes the document opened with reads as clean, and is
+        // a change of its own — the sequence number goes up, never back.
+        XCTAssertFalse(model.isDirty)
+        XCTAssertGreaterThan(model.editSeq, edited)
+        XCTAssertTrue(model.canRedo)
+
+        model.redo()
+        XCTAssertTrue(model.source().contains("version = 42"))
+        XCTAssertFalse(model.canRedo)
+    }
+
     func testThemeColoursValuesByKind() {
         let theme = FlowerTheme.default
         // Distinct kinds map to distinct colours; containers use chrome (secondary).

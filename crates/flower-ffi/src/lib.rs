@@ -263,6 +263,14 @@ pub struct PagesView {
     pub status: String,
     pub root_kind: String,
     pub hidden_count: u32,
+    /// How many edits are on the undo journal, and how many undone edits can
+    /// be replayed — what a host enables its Undo and Redo controls from.
+    pub undo_depth: u32,
+    pub redo_depth: u32,
+    /// A number that goes up on every successful commit, undo and redo. A host
+    /// pairing flower with another editor keeps one ordered history by
+    /// recording which editor's number moved.
+    pub edit_seq: u64,
 }
 
 /// A live flower document bound for a native Apple frontend: a
@@ -751,6 +759,31 @@ impl FlowerDoc {
         pages_of(&m)
     }
 
+    // ── history ───────────────────────────────────────────────────────────
+
+    /// Undo the most recent edit, wherever in the document it was made, and
+    /// return the whole frame — the page it happened on is the page you land
+    /// on, so the row that changed is the row on screen.
+    ///
+    /// A save is not a boundary: this runs back through one, and the frame's
+    /// `dirty` is recomputed from the bytes, so undoing to the saved text
+    /// reports clean again. A no-op with a status when the journal is empty.
+    pub fn undo(&self) -> PagesView {
+        let mut m = self.lock();
+        m.set_view(ViewMode::Pages);
+        m.undo();
+        pages_of(&m)
+    }
+
+    /// Redo the most recently undone edit. Cleared — and so a no-op — once a
+    /// fresh edit has been committed on top.
+    pub fn redo(&self) -> PagesView {
+        let mut m = self.lock();
+        m.set_view(ViewMode::Pages);
+        m.redo();
+        pages_of(&m)
+    }
+
     /// Move the item `id` names one place earlier among its siblings.
     pub fn page_move_item_up(&self, id: String) -> PagesView {
         self.reorder_from_page(&id, -1)
@@ -906,6 +939,9 @@ pub fn pages_of<B: Backend>(model: &Model<B>) -> PagesView {
         status: model.status.clone(),
         root_kind: model.root_kind().to_string(),
         hidden_count: model.hidden_present() as u32,
+        undo_depth: model.history_len() as u32,
+        redo_depth: model.redo_len() as u32,
+        edit_seq: model.edit_seq(),
     }
 }
 

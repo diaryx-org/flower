@@ -1,13 +1,17 @@
 ---
 title: Undo and redo in the model
 description: Every edit reaches the backend through one `commit`, and nothing remembers what it replaced; flower should keep a journal of inverse edits so a value, a deleted key, a reorder or a comment edit can be undone and redone, and so a host composing flower with another editor can interleave both histories
-status: open
+status: done
 created: 2026-09-15
-updated: 2026-09-15
+updated: 2026-09-16
 part_of: '[Tasks](/docs/tasks/tasks.md)'
 ---
 
 # Undo and redo in the model
+
+**Status: done** — `Model` keeps the journal, `undo`/`redo`/`history_len`/
+`edit_seq` are the surface, `u`/`U` drive it in the widget and `undo()`/`redo()`
+in `FlowerModel`. Landed in COMMIT_HASH.
 
 **Where this starts.** `Model::commit` is the only way an edit reaches a
 backend: it applies one `EditOp`, refreshes the value tree, and sets the

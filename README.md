@@ -49,6 +49,11 @@ Early prototype. Working today:
   closest thing an undescribed config has to help text — and fig anchors it to
   the node, so it moves with a reorder and goes with a delete.
 - Delete a mapping entry or sequence item.
+- **Undo and redo** every edit, including a delete and its comment: the model
+  keeps a journal of inverse ops, so `u` walks back through a save as readily
+  as through a keystroke and undoing to the saved text reads as clean again. A
+  host pairing flower with another editor interleaves the two histories by
+  `Model::edit_seq`.
 - Save (writes fig's edited source back to disk).
 
 Deliberately not here yet — see the roadmap.
@@ -65,6 +70,7 @@ Deliberately not here yet — see the roadmap.
 | `c` | edit the comment after the selected value (one line; empty removes it) |
 | `C` | edit the comment block above the selected node (empty removes it) |
 | `x` | delete the selected entry or item |
+| `u` / `U` | undo / redo the last edit, wherever it was made |
 | `s` | save to disk |
 | `q` | quit |
 

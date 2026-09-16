@@ -161,6 +161,41 @@ pub struct Model<B> {
     /// child is *gone* — you opened a key and deleted it — and the cursor would
     /// otherwise have nothing to return to.
     page_memory: HashMap<Vec<Seg>, usize>,
+
+    // ── history ───────────────────────────────────────────────────────────
+    /// The edits made, newest last, each with the ops that undo it — the
+    /// journal [`undo`](Self::undo) walks back through.
+    undo_stack: Vec<Change>,
+    /// The edits undone, newest last, each replayable by [`redo`](Self::redo).
+    /// Cleared by the next fresh [`commit`](Self::commit).
+    redo_stack: Vec<Change>,
+    /// A number that goes up on every successful commit, undo and redo — see
+    /// [`edit_seq`](Self::edit_seq).
+    edit_seq: u64,
+    /// The source as of the last save (or the open), against which
+    /// [`dirty`](Self::dirty) is recomputed. Undoing back to it reads as clean,
+    /// which is why the flag is derived from the bytes rather than from how
+    /// deep the journal is.
+    saved_source: String,
+}
+
+/// One committed edit, with what it takes to undo it and to do it again.
+///
+/// The inverse is a *list* because two ops in [`EditOp`]'s vocabulary do not
+/// invert to one: restoring a deleted mapping entry is an insert (which
+/// appends) plus the reorder that puts it back where it was, and restoring a
+/// removed sequence item is an append plus a move. Its comments ride along the
+/// same way — fig anchors a comment to the node, so setting it after the insert
+/// and before the reorder leaves it attached through both.
+#[derive(Debug, Clone)]
+struct Change {
+    /// The op as committed — what [`Model::redo`] replays.
+    forward: EditOp,
+    /// The ops that put the document back, in order.
+    inverse: Vec<EditOp>,
+    /// Where the cursor was anchored by the commit, so undoing puts the row
+    /// that changes back on screen.
+    anchor: Vec<Seg>,
 }
 
 impl<B: Backend> Model<B> {
@@ -236,8 +271,15 @@ impl<B: Backend> Model<B> {
             parent_page: Page::default(),
             page_selected: 0,
             page_memory: HashMap::new(),
+            undo_stack: Vec::new(),
+            redo_stack: Vec::new(),
+            edit_seq: 0,
+            saved_source: String::new(),
         };
         model.reload()?;
+        // The bytes the document opened with are the baseline `dirty` is
+        // measured against, until the embedder saves and moves it.
+        model.saved_source = model.source_snapshot();
         Ok(model)
     }
 
@@ -453,7 +495,14 @@ impl<B: Backend> Model<B> {
     }
 
     /// Clear the dirty flag after the embedder has persisted the source.
+    ///
+    /// Moves the baseline [`dirty`](Self::dirty) is measured against to the
+    /// bytes just written, and leaves the journal alone: a save is not a
+    /// history boundary, so undo still runs back through it — and undoing to
+    /// the saved text reads as clean again, because the flag is a comparison
+    /// and not a count.
     pub fn mark_saved(&mut self) {
+        self.saved_source = self.source_snapshot();
         self.dirty = false;
     }
 
@@ -1467,8 +1516,30 @@ impl<B: Backend> Model<B> {
                 Validation::Ok => {}
             }
         }
-        match self.backend.apply(op) {
+        // Derived *before* the apply, from the tree as it still stands: an
+        // inverse is a statement about the document the op is addressed
+        // against, and after the splice that document is gone.
+        let inverse = self.invert(&op);
+        match self.backend.apply(op.clone()) {
             Ok(()) => {
+                match inverse {
+                    Some(inverse) => self.undo_stack.push(Change {
+                        forward: op,
+                        inverse,
+                        anchor: anchor.clone(),
+                    }),
+                    // An op we cannot invert (a path that stopped resolving
+                    // between the two reads, a rename of something that is not
+                    // a key) is a hole in the history rather than a step in it,
+                    // and a stack with a hole in the middle undoes to a document
+                    // nobody ever had. Dropping what is behind it is the honest
+                    // answer, and `history_len` says so.
+                    None => self.undo_stack.clear(),
+                }
+                // A fresh edit is a new branch: what was undone is no longer
+                // ahead of us.
+                self.redo_stack.clear();
+                self.edit_seq += 1;
                 self.after_edit(&anchor, msg);
                 // A soft-warn overrides the success status so the user sees it.
                 if let Some(why) = warn {
@@ -1480,6 +1551,275 @@ impl<B: Backend> Model<B> {
         }
     }
 
+    // ── history ───────────────────────────────────────────────────────────
+
+    /// How many edits are on the undo journal — the depth
+    /// [`undo`](Self::undo) can walk back through.
+    ///
+    /// A host composing flower with another editor reads it to know whether
+    /// there is anything of flower's to undo before it dispatches the keystroke
+    /// (provui's session, holding flower's metadata beside leaf's body).
+    pub fn history_len(&self) -> usize {
+        self.undo_stack.len()
+    }
+
+    /// How many undone edits are available to [`redo`](Self::redo). Reset to 0
+    /// by the next fresh commit.
+    pub fn redo_len(&self) -> usize {
+        self.redo_stack.len()
+    }
+
+    /// A number that increases on every successful commit, undo and redo, and
+    /// on nothing else.
+    ///
+    /// Not a depth — undoing advances it as surely as editing does, because
+    /// what it counts is *how many times the document has changed*, not how far
+    /// from the start it is. A host holding two editors keeps one ordered
+    /// history by recording which editor's sequence number moved, so "body
+    /// edit, metadata edit, body edit" undoes in that order without either
+    /// editor knowing the other exists.
+    pub fn edit_seq(&self) -> u64 {
+        self.edit_seq
+    }
+
+    /// Undo the most recent edit, putting the cursor back where it was made.
+    ///
+    /// The inverse goes through the same [`Backend::apply`] the edit did, so a
+    /// backend that declines an edit declines its undo too — and a
+    /// workspace-maintained key refuses here exactly as it refuses there. The
+    /// schema is *not* re-consulted: the value being restored is one the
+    /// document already held, and a vocabulary that has since tightened is not
+    /// a reason to strand a user one edit away from where they were.
+    ///
+    /// A no-op with a status when there is nothing to undo.
+    pub fn undo(&mut self) {
+        let Some(change) = self.undo_stack.pop() else {
+            self.status = "nothing to undo".to_string();
+            return;
+        };
+        if let Some(key) = self.managed_key_of(&change.inverse) {
+            self.status = format!("rejected: `{key}` is maintained by the workspace");
+            self.undo_stack.push(change);
+            return;
+        }
+        match self.apply_all(&change.inverse) {
+            Ok(()) => {
+                self.edit_seq += 1;
+                let anchor = change.anchor.clone();
+                self.redo_stack.push(change);
+                self.after_edit(&anchor, "undone");
+                self.reveal(&anchor);
+            }
+            Err(e) => {
+                self.status = format!("rejected: {e}");
+                self.undo_stack.push(change);
+            }
+        }
+    }
+
+    /// Redo the most recently undone edit. Cleared — and so a no-op — once a
+    /// fresh edit has been committed on top.
+    pub fn redo(&mut self) {
+        let Some(change) = self.redo_stack.pop() else {
+            self.status = "nothing to redo".to_string();
+            return;
+        };
+        if let Some(key) = self.managed_key_of(std::slice::from_ref(&change.forward)) {
+            self.status = format!("rejected: `{key}` is maintained by the workspace");
+            self.redo_stack.push(change);
+            return;
+        }
+        match self.apply_all(std::slice::from_ref(&change.forward)) {
+            Ok(()) => {
+                self.edit_seq += 1;
+                let anchor = change.anchor.clone();
+                self.undo_stack.push(change);
+                self.after_edit(&anchor, "redone");
+                self.reveal(&anchor);
+            }
+            Err(e) => {
+                self.status = format!("rejected: {e}");
+                self.redo_stack.push(change);
+            }
+        }
+    }
+
+    /// The workspace-maintained top-level key one of `ops` would touch, if any
+    /// — the same refusal [`commit`](Self::commit) makes, asked of a whole
+    /// inverse at once so that nothing is half-applied before it fires.
+    fn managed_key_of(&self, ops: &[EditOp]) -> Option<String> {
+        ops.iter()
+            .filter_map(op_root_key)
+            .find(|k| self.derived.contains(*k))
+            .map(str::to_string)
+    }
+
+    /// Apply every op in order. Each is atomic on its own
+    /// ([`Backend::apply`]); the *sequence* is not, so a failure partway
+    /// through — which needs a backend refusing an op it accepted the inverse
+    /// of — leaves what ran in place and reports.
+    fn apply_all(&mut self, ops: &[EditOp]) -> Result<(), crate::backend::BackendError> {
+        for op in ops {
+            self.backend.apply(op.clone())?;
+        }
+        Ok(())
+    }
+
+    /// Bring the node at `anchor` under the cursor, opening whatever stands
+    /// between the cursor and it.
+    ///
+    /// [`after_edit`](Self::after_edit) re-anchors the selection, which is
+    /// enough while the edit and the cursor are on the same page — they are,
+    /// for an edit the cursor just made. An undo is the case where they are
+    /// not: it changes a row the reader may have navigated away from several
+    /// pages ago, and a status line saying "undone" over an unchanged screen
+    /// is the one thing an undo must not be. So this *navigates*, in whichever
+    /// projection is live.
+    fn reveal(&mut self, anchor: &[Seg]) {
+        if self.value_at(anchor).is_none() {
+            return;
+        }
+        match self.view {
+            ViewMode::Pages => self.focus_on(anchor),
+            ViewMode::Tree => {
+                for i in 0..anchor.len() {
+                    self.collapsed.remove(&anchor[..i]);
+                }
+                self.rebuild_rows();
+                self.select_path(anchor);
+            }
+        }
+    }
+
+    /// The ops that put the document back the way it is *now*, were `op` to be
+    /// applied to it. `None` when the current tree cannot answer — an
+    /// unresolvable path, a rename of something that is not a key.
+    ///
+    /// Read against the pre-edit tree by every arm, which is what makes the
+    /// derivation total in one place instead of scattered through the ops.
+    fn invert(&self, op: &EditOp) -> Option<Vec<EditOp>> {
+        Some(match op {
+            EditOp::ReplaceValue { path, .. } => vec![EditOp::ReplaceValue {
+                path: path.clone(),
+                value: self.value_at(path)?.clone(),
+            }],
+            EditOp::DeleteKey { path } => {
+                let Some(Seg::Key(key)) = path.last() else {
+                    return None;
+                };
+                let map_path = path[..path.len() - 1].to_vec();
+                let value = self.value_at(path)?.clone();
+                let keys = tree::map_keys(&self.value, &map_path)?;
+                let mut ops = vec![EditOp::InsertKey {
+                    map_path: map_path.clone(),
+                    key: key.clone(),
+                    value,
+                }];
+                // The entry comes back at the end of the mapping, so its
+                // comments are addressed there and the reorder carries them to
+                // its old position with it.
+                let mut at = map_path.clone();
+                at.push(Seg::Key(key.clone()));
+                ops.extend(self.comment_restores(path, &at));
+                ops.push(EditOp::ReorderKeys { map_path, keys });
+                ops
+            }
+            EditOp::RemoveItem { seq_path, index } => {
+                let mut item_path = seq_path.clone();
+                item_path.push(Seg::Index(*index));
+                let value = self.value_at(&item_path)?.clone();
+                let len = tree::seq_len(&self.value, seq_path)?;
+                // After the removal the list is one shorter, so the append
+                // lands at `len - 1` and the move takes it back to `index`.
+                let landed = len.checked_sub(1)?;
+                let mut landed_path = seq_path.clone();
+                landed_path.push(Seg::Index(landed));
+                let mut ops = vec![EditOp::AppendItem {
+                    seq_path: seq_path.clone(),
+                    value,
+                }];
+                ops.extend(self.comment_restores(&item_path, &landed_path));
+                if landed != *index {
+                    ops.push(EditOp::MoveItem {
+                        seq_path: seq_path.clone(),
+                        from: landed,
+                        to: *index,
+                    });
+                }
+                ops
+            }
+            EditOp::InsertKey { map_path, key, .. } => {
+                let mut path = map_path.clone();
+                path.push(Seg::Key(key.clone()));
+                match self.value_at(&path) {
+                    // An insert onto a key that is already there is an
+                    // overwrite on an upserting backend (the case `EditOp`
+                    // leaves unspecified), and inverts as one.
+                    Some(old) => vec![EditOp::ReplaceValue {
+                        path,
+                        value: old.clone(),
+                    }],
+                    None => vec![EditOp::DeleteKey { path }],
+                }
+            }
+            EditOp::AppendItem { seq_path, .. } => vec![EditOp::RemoveItem {
+                seq_path: seq_path.clone(),
+                index: tree::seq_len(&self.value, seq_path)?,
+            }],
+            EditOp::MoveItem { seq_path, from, to } => vec![EditOp::MoveItem {
+                seq_path: seq_path.clone(),
+                from: *to,
+                to: *from,
+            }],
+            EditOp::ReorderKeys { map_path, .. } => vec![EditOp::ReorderKeys {
+                map_path: map_path.clone(),
+                keys: tree::map_keys(&self.value, map_path)?,
+            }],
+            EditOp::RenameKey { path, new_key } => {
+                let Some(Seg::Key(old)) = path.last() else {
+                    return None;
+                };
+                let mut renamed = path[..path.len() - 1].to_vec();
+                renamed.push(Seg::Key(new_key.clone()));
+                vec![EditOp::RenameKey {
+                    path: renamed,
+                    new_key: old.clone(),
+                }]
+            }
+            EditOp::SetLeadingComment { path, .. } => vec![EditOp::SetLeadingComment {
+                path: path.clone(),
+                text: self.backend.leading_comment(path).ok().flatten(),
+            }],
+            EditOp::SetTrailingComment { path, .. } => vec![EditOp::SetTrailingComment {
+                path: path.clone(),
+                text: self.backend.trailing_comment(path).ok().flatten(),
+            }],
+        })
+    }
+
+    /// The comment ops that put `from`'s comments onto the node at `to` — how
+    /// a deleted entry comes back with what was written above it.
+    ///
+    /// Only for comments that are actually there: a backend that reads none
+    /// (or a format with no comment syntax) contributes nothing, rather than a
+    /// pair of removals the undo would have to survive.
+    fn comment_restores(&self, from: &[Seg], to: &[Seg]) -> Vec<EditOp> {
+        let mut ops = Vec::new();
+        if let Ok(Some(text)) = self.backend.leading_comment(from) {
+            ops.push(EditOp::SetLeadingComment {
+                path: to.to_vec(),
+                text: Some(text),
+            });
+        }
+        if let Ok(Some(text)) = self.backend.trailing_comment(from) {
+            ops.push(EditOp::SetTrailingComment {
+                path: to.to_vec(),
+                text: Some(text),
+            });
+        }
+        ops
+    }
+
     /// Shared tail of a successful mutation: refresh the view, re-anchor
     /// selection, mark dirty, set the status line.
     fn after_edit(&mut self, anchor: &[Seg], msg: &str) {
@@ -1488,7 +1828,9 @@ impl<B: Backend> Model<B> {
             return;
         }
         self.select_path(anchor);
-        self.dirty = true;
+        // Derived from the bytes, not set: undoing back to what was saved is
+        // a clean document, and no journal depth can say that for itself.
+        self.dirty = self.source_snapshot() != self.saved_source;
         self.status = msg.to_string();
     }
 }
@@ -2852,5 +3194,192 @@ b = 2
 
         // The left pane can always mark the row the right one was opened from.
         assert!(model.parent_page().position_of(model.focus()).is_some());
+    }
+
+    // ── undo and redo ─────────────────────────────────────────────────────
+
+    /// The sequence every round-trip test below drives: one op of each kind
+    /// that does not delete a node, so the source is expected back byte for
+    /// byte. Returns nothing — the assertions are the caller's.
+    fn edit_everything(model: &mut Model<FigBackend>) {
+        let server = |k: &str| vec![Seg::Key("server".into()), Seg::Key(k.into())];
+        model.set_scalar_text(&server("host"), "example.com");
+        model.set_value_at(&[Seg::Key("version".into())], Value::Int(2));
+        model.append_item_text(&server("tags"), "gamma");
+        model.insert_key_text(&server("limits"), "burst", "5");
+        model.set_trailing_comment(&server("port"), Some("dev only"));
+        model.set_leading_comment(&[Seg::Key("title".into())], Some("renamed"));
+        let mut tags = server("tags");
+        model.select_row(0);
+        model.focus_on(&tags);
+        tags.push(Seg::Index(0));
+        model.focus_on(&tags);
+        model.move_selected_down();
+    }
+
+    #[test]
+    fn undoing_every_edit_leaves_the_document_that_was_opened() {
+        let mut model = sample_model();
+        let opened = model.value.clone();
+        edit_everything(&mut model);
+        assert_ne!(model.value, opened, "the edits did something");
+        assert_eq!(model.history_len(), 7);
+
+        while model.history_len() > 0 {
+            model.undo();
+        }
+        assert_eq!(model.value, opened, "back to the value tree it opened with");
+        // Nothing was deleted, so the bytes come back too — the comments, the
+        // key order, and the blank lines included.
+        assert_eq!(model.source_snapshot(), SAMPLE);
+        // And undoing back to what was saved reads as clean, however deep the
+        // journal got on the way.
+        assert!(!model.dirty);
+    }
+
+    /// A rename undoes by *value* and not always by bytes: fig's editor writes
+    /// the key back through its own quoting rules, so a bare `enabled` renamed
+    /// away and back can return as `"enabled"`. The task that asked for this
+    /// journal says so — a byte-exact undo is a splice log in fig, not an
+    /// inverse op here.
+    #[test]
+    fn a_rename_undoes_to_the_same_key_if_not_always_the_same_spelling() {
+        let mut model = sample_model();
+        let opened = model.value.clone();
+        model.rename_key(&[Seg::Key("enabled".into())], "on");
+        assert!(model.value_at(&[Seg::Key("on".into())]).is_some());
+        model.undo();
+        assert_eq!(model.value, opened);
+        assert!(model.source_snapshot().contains("enabled"));
+    }
+
+    #[test]
+    fn redo_replays_to_the_bytes_the_edits_produced() {
+        let mut model = sample_model();
+        edit_everything(&mut model);
+        let edited = model.source_snapshot();
+        let depth = model.history_len();
+
+        for _ in 0..depth {
+            model.undo();
+        }
+        assert_eq!(model.redo_len(), depth);
+        for _ in 0..depth {
+            model.redo();
+        }
+        assert_eq!(model.source_snapshot(), edited);
+        assert_eq!(model.history_len(), depth);
+        assert_eq!(model.redo_len(), 0);
+    }
+
+    #[test]
+    fn a_fresh_edit_clears_what_was_undone() {
+        let mut model = sample_model();
+        model.set_value_at(&[Seg::Key("version".into())], Value::Int(2));
+        model.undo();
+        assert_eq!(model.redo_len(), 1);
+        model.set_value_at(&[Seg::Key("version".into())], Value::Int(3));
+        assert_eq!(model.redo_len(), 0);
+        model.redo();
+        assert_eq!(model.status, "nothing to redo");
+        assert_eq!(
+            model.value_at(&[Seg::Key("version".into())]),
+            Some(&Value::Int(3))
+        );
+    }
+
+    #[test]
+    fn a_deleted_entry_comes_back_with_its_comment_and_its_position() {
+        let mut model = sample_model();
+        let opened = model.value.clone();
+        // A mapping entry, whose leading comment is the document's own note on
+        // it, and a sequence item, which comes back by index.
+        model.select_row(0);
+        model.focus_on(&[Seg::Key("title".into())]);
+        model.delete_selected();
+        let tags = vec![Seg::Key("server".into()), Seg::Key("tags".into())];
+        let mut first = tags.clone();
+        first.push(Seg::Index(0));
+        model.focus_on(&first);
+        model.delete_selected();
+        assert_eq!(model.seq_len(&tags), 1);
+
+        model.undo();
+        model.undo();
+        assert_eq!(model.value, opened, "both nodes back, in their old places");
+        assert_eq!(
+            model
+                .leading_comment_at(&[Seg::Key("title".into())])
+                .as_deref(),
+            Some("flower sample config — comments and formatting below should survive edits"),
+        );
+    }
+
+    #[test]
+    fn a_derived_key_declines_the_undo_as_it_declined_the_edit() {
+        let backend = FigBackend::open(SAMPLE.as_bytes(), Format::Toml).expect("open backend");
+        let mut model = Model::with_managed(backend, Vec::new(), vec!["version".to_string()])
+            .expect("build model");
+        let before = model.source_snapshot();
+
+        model.set_value_at(&[Seg::Key("version".into())], Value::Int(2));
+        assert!(model.status.starts_with("rejected:"), "{}", model.status);
+        // Declined edits are not edits: there is nothing to undo, and undoing
+        // does nothing.
+        assert_eq!(model.history_len(), 0);
+        assert_eq!(model.edit_seq(), 0);
+        model.undo();
+        assert_eq!(model.status, "nothing to undo");
+        model.redo();
+        assert_eq!(model.status, "nothing to redo");
+        assert_eq!(model.source_snapshot(), before);
+        assert!(!model.dirty);
+    }
+
+    #[test]
+    fn the_sequence_number_advances_on_every_change_in_either_direction() {
+        let mut model = sample_model();
+        assert_eq!(model.edit_seq(), 0);
+        model.set_value_at(&[Seg::Key("version".into())], Value::Int(2));
+        assert_eq!(model.edit_seq(), 1);
+        model.undo();
+        assert_eq!(model.edit_seq(), 2, "an undo is a change, not a rewind");
+        model.redo();
+        assert_eq!(model.edit_seq(), 3);
+        // A refusal is not a change.
+        model.undo();
+        model.undo();
+        assert_eq!(model.edit_seq(), 4);
+    }
+
+    #[test]
+    fn a_save_is_not_a_history_boundary() {
+        let mut model = sample_model();
+        model.set_value_at(&[Seg::Key("version".into())], Value::Int(2));
+        model.mark_saved();
+        assert!(!model.dirty);
+        model.set_value_at(&[Seg::Key("version".into())], Value::Int(3));
+        assert!(model.dirty);
+
+        // Undo runs back through the save — and past it, into edits made before
+        // the document was written.
+        model.undo();
+        assert!(!model.dirty, "back at the saved bytes");
+        model.undo();
+        assert!(model.dirty, "and before them, which is a change again");
+        assert_eq!(model.source_snapshot(), SAMPLE);
+    }
+
+    #[test]
+    fn undo_puts_the_cursor_back_where_the_edit_was_made() {
+        let mut model = sample_model();
+        let port = vec![Seg::Key("server".into()), Seg::Key("port".into())];
+        model.focus_on(&port);
+        model.set_scalar_text(&port, "9090");
+        // Somewhere else entirely, the way a user would be by the time they
+        // reach for undo.
+        model.focus_on(&[Seg::Key("title".into())]);
+        model.undo();
+        assert_eq!(model.selected_path().as_deref(), Some(&port[..]));
     }
 }

@@ -207,6 +207,42 @@ public final class FlowerModel: ObservableObject {
         apply(doc.pageDelete(id: item.id))
     }
 
+    // ── history ───────────────────────────────────────────────────────────────
+
+    /// Undo the most recent edit, wherever in the document it was made — the
+    /// frame that comes back is the page it happened on, so the row that
+    /// changes is the row on screen.
+    ///
+    /// A save is not a boundary: this runs back through one, and `isDirty` is
+    /// recomputed from the bytes, so undoing to the saved text reports clean
+    /// again.
+    public func undo() {
+        if editingId != nil { cancelEdit() }
+        if renamingId != nil { cancelRename() }
+        apply(doc.undo())
+    }
+
+    /// Redo the most recently undone edit. Cleared — and so a no-op — once a
+    /// fresh edit has been committed on top.
+    public func redo() {
+        if editingId != nil { cancelEdit() }
+        if renamingId != nil { cancelRename() }
+        apply(doc.redo())
+    }
+
+    /// Whether there is anything to undo — what an Undo control enables from.
+    public var canUndo: Bool { pages.undoDepth > 0 }
+    /// Whether there is anything to redo.
+    public var canRedo: Bool { pages.redoDepth > 0 }
+
+    /// A number that goes up on every successful commit, undo and redo.
+    ///
+    /// A host holding flower beside another editor keeps one ordered history
+    /// by recording which editor's number moved, and dispatches each undo to
+    /// whichever's turn it is — neither editor having to know the other is
+    /// there.
+    public var editSeq: UInt64 { pages.editSeq }
+
     // ── key rename ────────────────────────────────────────────────────────────
 
     /// Open `item`'s key for renaming. A no-op on a sequence item, which has an

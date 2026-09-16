@@ -848,7 +848,7 @@ fn room_for(indent: usize, name: &[Span<'static>], width: u16) -> usize {
 
 fn draw_footer<B: Backend>(f: &mut Frame, model: &Model<B>, area: Rect) {
     // Kept short enough to survive an 80-column terminal alongside the status.
-    let hints = "  j/k · l/h in/out · e edit · c/C comment · x del · s save · q quit";
+    let hints = "  j/k · l/h · e edit · c/C comment · x del · u/U undo · s save · q quit";
     let line = match &model.mode {
         Mode::Editing { buffer, slot, .. } => {
             let badge = match slot {

@@ -11,7 +11,7 @@ part_of: '[Tasks](/docs/tasks/tasks.md)'
 
 **Status: done** — `Model` keeps the journal, `undo`/`redo`/`history_len`/
 `edit_seq` are the surface, `u`/`U` drive it in the widget and `undo()`/`redo()`
-in `FlowerModel`. Landed in COMMIT_HASH.
+in `FlowerModel`. Landed in `cba74c3`.
 
 **Where this starts.** `Model::commit` is the only way an edit reaches a
 backend: it applies one `EditOp`, refreshes the value tree, and sets the

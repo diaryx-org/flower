@@ -85,8 +85,12 @@ fn normal<B: Backend>(model: &mut Model<B>, code: KeyCode) -> Outcome {
         // vi's `u`, and `U` for the way back — the pair flower-core journals
         // ([`Model::undo`](flower_core::Model::undo)). A save is not a
         // boundary: `u` runs back through one.
-        KeyCode::Char('u') => model.undo(),
-        KeyCode::Char('U') => model.redo(),
+        KeyCode::Char('u') => {
+            model.undo();
+        }
+        KeyCode::Char('U') => {
+            model.redo();
+        }
         KeyCode::Char('j') | KeyCode::Down => model.page_move_down(),
         KeyCode::Char('k') | KeyCode::Up => model.page_move_up(),
         KeyCode::Char('l') | KeyCode::Right | KeyCode::Enter | KeyCode::Char(' ') => {

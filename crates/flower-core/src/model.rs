@@ -1945,16 +1945,20 @@ impl<B: Backend> Model<B> {
     /// document already held, and a vocabulary that has since tightened is not
     /// a reason to strand a user one edit away from where they were.
     ///
-    /// A no-op with a status when there is nothing to undo.
-    pub fn undo(&mut self) {
+    /// Returns whether the document moved: `false` when there was nothing to
+    /// undo, or the inverse was refused, and in either case with a status
+    /// saying which. A host composing two editors dispatches an undo to one of
+    /// them and needs to know whether it landed without snapshotting
+    /// [`edit_seq`](Self::edit_seq) around the call.
+    pub fn undo(&mut self) -> bool {
         let Some(change) = self.undo_stack.pop() else {
             self.status = "nothing to undo".to_string();
-            return;
+            return false;
         };
         if let Some(key) = self.managed_key_of(&change.inverse) {
             self.status = format!("rejected: `{key}` is maintained by the workspace");
             self.undo_stack.push(change);
-            return;
+            return false;
         }
         let ids = self.identities();
         match self.apply_all(&change.inverse) {
@@ -1964,25 +1968,28 @@ impl<B: Backend> Model<B> {
                 self.redo_stack.push(change);
                 self.after_edit(&anchor, "undone", ids);
                 self.reveal(&anchor);
+                true
             }
             Err(e) => {
                 self.status = format!("rejected: {e}");
                 self.undo_stack.push(change);
+                false
             }
         }
     }
 
     /// Redo the most recently undone edit. Cleared — and so a no-op — once a
-    /// fresh edit has been committed on top.
-    pub fn redo(&mut self) {
+    /// fresh edit has been committed on top. Returns whether the document
+    /// moved, as [`undo`](Self::undo) does.
+    pub fn redo(&mut self) -> bool {
         let Some(change) = self.redo_stack.pop() else {
             self.status = "nothing to redo".to_string();
-            return;
+            return false;
         };
         if let Some(key) = self.managed_key_of(std::slice::from_ref(&change.forward)) {
             self.status = format!("rejected: `{key}` is maintained by the workspace");
             self.redo_stack.push(change);
-            return;
+            return false;
         }
         let ids = self.identities();
         match self.apply_all(std::slice::from_ref(&change.forward)) {
@@ -1992,10 +1999,12 @@ impl<B: Backend> Model<B> {
                 self.undo_stack.push(change);
                 self.after_edit(&anchor, "redone", ids);
                 self.reveal(&anchor);
+                true
             }
             Err(e) => {
                 self.status = format!("rejected: {e}");
                 self.redo_stack.push(change);
+                false
             }
         }
     }
@@ -4205,6 +4214,18 @@ b = 2
         model.undo();
         assert!(model.dirty, "and before them, which is a change again");
         assert_eq!(model.source_snapshot(), SAMPLE);
+    }
+
+    #[test]
+    fn undo_and_redo_say_whether_the_document_moved() {
+        let mut model = Model::new(FigBackend::open(b"a = 1\n", Format::Toml).unwrap()).unwrap();
+        assert!(!model.undo(), "nothing to undo yet");
+        assert!(!model.redo(), "nothing to redo yet");
+        model.set_value_at(&[Seg::Key("a".into())], Value::Int(2));
+        assert!(model.undo(), "the edit was there to undo");
+        assert!(!model.undo(), "and only once");
+        assert!(model.redo(), "the undone edit was there to redo");
+        assert!(!model.redo(), "and only once");
     }
 
     #[test]

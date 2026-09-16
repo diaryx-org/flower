@@ -1,6 +1,17 @@
+---
+part_of: id:org/kv2bv2m
+title: flower
+contents:
+- '[flower on diaryx.org](/www/index.md)'
+- '[Audiences](/vocab/audiences.md)'
+- '[Tasks](/docs/tasks/tasks.md)'
+config: .config/prov.yaml
+registry: registry.yaml
+id: rkhvqqw
+---
 # flower
 
-A structural TUI editor for config files, built on [`fig`](../fig).
+A structural TUI editor for config files, built on [`fig`](https://github.com/diaryx-org/fig).
 
 Where a text editor edits characters, **flower edits the tree.** You navigate the
 parsed config structurally — into mappings, along sequences, down to scalars —
@@ -205,7 +216,7 @@ pub trait Backend {
 
 - `FigBackend` (in flower-core) drives a raw `fig::Editor` — a standalone config
   file.
-- A **prov backend** (`ProvBackend`, in the [`provui`](../provui) repo) drives
+- A **prov backend** (`ProvBackend`, in the [`provui`](https://github.com/diaryx-org/provui) repo) drives
   the *metadata region* of a prov document through prov's carrier-aware
   `MetaEditor`, leaving the prose body untouched. That composition (flower for
   metadata + leaf for the body, over one prov document) is proven by a headless
@@ -227,7 +238,7 @@ app-specific bridge lives in provui, not here — flower doesn't depend on prov.
   row with a toggle — needs fig to read and write the dangling anchor and to
   comment a node out (and back in) at the byte level, since only fig has the
   spans to do that losslessly. Filed as fig's
-  [`dangling-comments-and-comment-out-ops`](../fig/docs/tasks/dangling-comments-and-comment-out-ops.md)
+  [`dangling-comments-and-comment-out-ops`](https://github.com/diaryx-org/fig/blob/main/docs/tasks/dangling-comments-and-comment-out-ops.md)
   and, on this side, [`disabled-entries`](docs/tasks/disabled-entries.md).
 - **Comment as help text**: the Swift page view already lets a schema
   description win over the leading comment for the sentence under a name; the

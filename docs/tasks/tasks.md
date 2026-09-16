@@ -5,6 +5,7 @@ created: 2026-09-07
 updated: 2026-09-07
 contents:
   - "[Show a commented-out entry as a disabled row](disabled-entries.md)"
+part_of: '[flower](/README.md)'
 ---
 
 # Tasks

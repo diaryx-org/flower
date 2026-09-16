@@ -5,6 +5,7 @@ status: open
 created: 2026-09-07
 updated: 2026-09-07
 blocked_by: "[fig: dangling-comments-and-comment-out-ops](https://github.com/diaryx-org/fig/blob/main/docs/tasks/dangling-comments-and-comment-out-ops.md)"
+part_of: '[Tasks](/docs/tasks/tasks.md)'
 ---
 
 # Show a commented-out entry as a disabled row

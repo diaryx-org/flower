@@ -14,7 +14,7 @@ use fig::Value;
 use crate::annotate::{self, Annotation};
 use crate::backend::{Backend, EditOp};
 use crate::page::{self, InlineBudget, Page, PageItem};
-use crate::schema::{FieldRule, Schema};
+use crate::schema::{self, Choice, FieldRule, FieldRuleExt, Schema};
 use crate::tree::{self, Row, Seg};
 use fig_schema::{Issue, SegPat, Validation};
 
@@ -37,6 +37,23 @@ pub enum ViewMode {
 /// Interaction mode: normal navigation, or editing one text field of a node.
 pub enum Mode {
     Normal,
+    /// Picking a value off a list rather than typing one
+    /// ([`Model::begin_choose`]).
+    ///
+    /// A mode of its own rather than an editor seeded with a list, because the
+    /// two take different keys: everything printable is a *filter* here and a
+    /// value there, and `Enter` commits a row rather than a buffer.
+    Choosing {
+        /// The node being chosen for.
+        path: Vec<Seg>,
+        /// Everything on offer, unfiltered and in the order it was offered.
+        choices: Vec<Choice>,
+        /// Which of the *filtered* choices the cursor is on — see
+        /// [`Model::visible_choices`].
+        selected: usize,
+        /// What has been typed to narrow the list.
+        filter: String,
+    },
     Editing {
         buffer: String,
         /// The node being edited. Held here rather than re-read from the
@@ -1003,7 +1020,10 @@ impl<B: Backend> Model<B> {
             return;
         };
         if item.is_scalar() {
-            self.begin_edit();
+            // The picker where there is one, the text field where there is not
+            // — see `begin_choose`, which is the fallback rather than a second
+            // key to bind.
+            self.begin_choose();
             return;
         }
         // A group header opens nothing (see `PageItem::is_drill`), so `l` on one
@@ -1132,8 +1152,163 @@ impl<B: Backend> Model<B> {
             self.rebuild_rows();
             self.select_path(&path);
         } else {
-            self.begin_edit();
+            self.begin_choose();
         }
+    }
+
+    // ── choosing ──────────────────────────────────────────────────────────
+
+    /// The values a picker at `path` should offer, or `None` when there is no
+    /// list to offer and a value must be typed.
+    ///
+    /// Two sources, in order. A [`Constraint::Enum`](crate::Constraint::Enum)
+    /// rule answers from its own terms — retired ones included, flagged in the
+    /// choice's `detail`, because a term already written in the document has to
+    /// stay re-choosable. Otherwise the backend is asked
+    /// ([`Backend::candidates`]), which is where a reference field's
+    /// candidates come from; a backend over a standalone file has none.
+    ///
+    /// **A list's append position answers too.** Asked about a sequence, this
+    /// re-asks about its first item (`path.0`) — a rule written with
+    /// [`PathPat::each_item_of`](fig_schema::PathPat::each_item_of) is
+    /// index-agnostic, so the placeholder matches whatever governs the items,
+    /// which is the same trick the commit funnel's validation uses. A frontend
+    /// offering "add to this list" therefore gets the list's vocabulary without
+    /// having to guess an index that does not exist yet.
+    pub fn choices_at(&self, path: &[Seg]) -> Option<Vec<Choice>> {
+        if let Some((terms, _)) = self.rule_at(path).and_then(|r| r.enum_constraint()) {
+            let choices = schema::choices_of(terms);
+            if !choices.is_empty() {
+                return Some(choices);
+            }
+        }
+        if let Ok(Some(candidates)) = self.backend.candidates(path)
+            && !candidates.is_empty()
+        {
+            return Some(candidates);
+        }
+        // A sequence has no vocabulary of its own; its *items* may.
+        if matches!(self.value_at(path), Some(Value::Seq(_))) {
+            let mut item = path.to_vec();
+            item.push(Seg::Index(0));
+            return self.choices_at(&item);
+        }
+        None
+    }
+
+    /// Open the picker on the selected node, or fall back to
+    /// [`begin_edit`](Self::begin_edit) when there is nothing to pick from.
+    ///
+    /// The fallback is the point: a host binds *one* key and gets a list where
+    /// there is a list and a text field where there is not, rather than having
+    /// to ask first and bind two. A closed vocabulary makes the picker the only
+    /// route to a value that validates, and free text stays reachable anyway
+    /// ([`begin_edit`](Self::begin_edit)) — what is typed goes through the same
+    /// validation the picker's values would.
+    pub fn begin_choose(&mut self) {
+        let Some(path) = self.selected_path() else {
+            return;
+        };
+        let Some(choices) = self.choices_at(&path) else {
+            self.begin_edit();
+            return;
+        };
+        if self.value_at(&path).is_some_and(page::is_container) {
+            // A container with an item vocabulary is a list to add to, not a
+            // value to replace — an affordance that is not built yet.
+            self.begin_edit();
+            return;
+        }
+        self.mode = Mode::Choosing {
+            path,
+            choices,
+            selected: 0,
+            filter: String::new(),
+        };
+    }
+
+    /// The choices the picker is currently showing — everything offered, cut to
+    /// what the filter matches. Empty outside [`Mode::Choosing`].
+    pub fn visible_choices(&self) -> Vec<&Choice> {
+        match &self.mode {
+            Mode::Choosing {
+                choices, filter, ..
+            } => choices.iter().filter(|c| c.matches(filter)).collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    /// The choice under the picker's cursor, if any.
+    pub fn choice_selected(&self) -> Option<&Choice> {
+        match &self.mode {
+            Mode::Choosing { selected, .. } => self.visible_choices().get(*selected).copied(),
+            _ => None,
+        }
+    }
+
+    /// Move the picker's cursor down one filtered row.
+    pub fn choose_next(&mut self) {
+        let len = self.visible_choices().len();
+        if let Mode::Choosing { selected, .. } = &mut self.mode
+            && *selected + 1 < len
+        {
+            *selected += 1;
+        }
+    }
+
+    /// Move the picker's cursor up one filtered row.
+    pub fn choose_prev(&mut self) {
+        if let Mode::Choosing { selected, .. } = &mut self.mode {
+            *selected = selected.saturating_sub(1);
+        }
+    }
+
+    /// Narrow the picker by one more typed character (case-insensitive
+    /// substring of the label). The cursor returns to the top of what is left,
+    /// so what is highlighted is always a row that is on screen.
+    pub fn choose_push(&mut self, c: char) {
+        if let Mode::Choosing {
+            filter, selected, ..
+        } = &mut self.mode
+        {
+            filter.push(c);
+            *selected = 0;
+        }
+    }
+
+    /// Undo one character of the picker's filter.
+    pub fn choose_backspace(&mut self) {
+        if let Mode::Choosing {
+            filter, selected, ..
+        } = &mut self.mode
+        {
+            filter.pop();
+            *selected = 0;
+        }
+    }
+
+    /// Commit the choice under the cursor, replacing the node's value.
+    ///
+    /// A no-op (beyond leaving the picker) when the filter has cut the list to
+    /// nothing: there is no value to write, and inventing one from what was
+    /// typed would be the free-text path wearing the picker's clothes.
+    pub fn choose_commit(&mut self) {
+        let chosen = self.choice_selected().map(|c| c.value.clone());
+        let Mode::Choosing { path, .. } = &self.mode else {
+            return;
+        };
+        let path = path.clone();
+        self.mode = Mode::Normal;
+        match chosen {
+            Some(value) => self.set_value_at(&path, value),
+            None => self.status = "nothing matches".to_string(),
+        }
+    }
+
+    /// Leave the picker, writing nothing.
+    pub fn choose_cancel(&mut self) {
+        self.mode = Mode::Normal;
+        self.status = "choice cancelled".to_string();
     }
 
     // ── editing ───────────────────────────────────────────────────────────────
@@ -1941,6 +2116,7 @@ fn op_target(op: &EditOp) -> Option<(Vec<Seg>, &Value)> {
 mod tests {
     use super::*;
     use crate::backend::FigBackend;
+    use crate::schema::Constraint;
     use fig::Format;
 
     const SAMPLE: &str = "\
@@ -3239,6 +3415,201 @@ b = 2
 
         // The left pane can always mark the row the right one was opened from.
         assert!(model.parent_page().position_of(model.focus()).is_some());
+    }
+
+    // ── the picker ────────────────────────────────────────────────────────
+
+    /// A backend that answers for a link field, the way a workspace-aware one
+    /// would — the injection point `Backend::candidates` exists to be.
+    struct WithCandidates(FigBackend);
+
+    impl Backend for WithCandidates {
+        fn apply(&mut self, op: EditOp) -> Result<(), crate::backend::BackendError> {
+            self.0.apply(op)
+        }
+        fn to_value(&self) -> Result<Value, crate::backend::BackendError> {
+            self.0.to_value()
+        }
+        fn source(&self) -> Result<String, crate::backend::BackendError> {
+            self.0.source()
+        }
+        fn candidates(
+            &self,
+            path: &[Seg],
+        ) -> Result<Option<Vec<Choice>>, crate::backend::BackendError> {
+            // Keyed on the relation, not on the index, so the append position
+            // is answered by the same arm the third item is.
+            Ok(match path.first() {
+                Some(Seg::Key(k)) if k == "contents" => Some(vec![
+                    Choice::plain("id:prov/1ch2991").detail("prov"),
+                    Choice::plain("id:fig/9qk2s1z").detail("fig"),
+                ]),
+                _ => None,
+            })
+        }
+    }
+
+    fn status_schema() -> Schema {
+        use fig_schema::{PathPat, Term};
+        Schema::new(vec![
+            FieldRule::new(PathPat::key("status")).constraint(Constraint::Enum {
+                values: vec![
+                    Term::value("active").description("being worked on"),
+                    Term::value("archived").retired(true),
+                ],
+                closed: true,
+            }),
+            FieldRule::new(PathPat::each_item_of("audience")).constraint(Constraint::Enum {
+                values: vec![Term::value("public"), Term::value("private")],
+                closed: true,
+            }),
+        ])
+    }
+
+    #[test]
+    fn an_enum_field_offers_its_terms_and_a_retired_one_says_so() {
+        let backend = FigBackend::open(
+            b"status = \"active\"\naudience = [\"public\"]\n",
+            Format::Toml,
+        )
+        .expect("open");
+        let mut model = Model::new(backend).expect("model");
+        model.set_schema(status_schema());
+
+        let choices = model
+            .choices_at(&[Seg::Key("status".into())])
+            .expect("a vocabulary");
+        assert_eq!(
+            choices.iter().map(|c| c.label.as_str()).collect::<Vec<_>>(),
+            ["active", "archived"]
+        );
+        assert_eq!(choices[0].detail.as_deref(), Some("being worked on"));
+        // Retired, and still offered: a document already holding one has to be
+        // able to re-choose it without retyping.
+        assert_eq!(choices[1].detail.as_deref(), Some("retired"));
+
+        // An each-item rule answers for an item…
+        let item = [Seg::Key("audience".into()), Seg::Index(0)];
+        assert_eq!(model.choices_at(&item).map(|c| c.len()), Some(2));
+        // …for the append position, which resolves to nothing…
+        let append = [Seg::Key("audience".into()), Seg::Index(1)];
+        assert_eq!(model.choices_at(&append).map(|c| c.len()), Some(2));
+        // …and for the list itself, through the same placeholder.
+        assert_eq!(
+            model
+                .choices_at(&[Seg::Key("audience".into())])
+                .map(|c| c.len()),
+            Some(2)
+        );
+        // A field nothing governs has nothing to offer.
+        assert!(model.choices_at(&[Seg::Key("nope".into())]).is_none());
+    }
+
+    #[test]
+    fn the_picker_filters_commits_and_falls_back_to_free_text() {
+        let backend = FigBackend::open(b"status = \"active\"\ntitle = \"a note\"\n", Format::Toml)
+            .expect("open");
+        let mut model = Model::new(backend).expect("model");
+        model.set_schema(status_schema());
+        model.focus_on(&[Seg::Key("status".into())]);
+
+        model.begin_choose();
+        assert!(matches!(model.mode, Mode::Choosing { .. }));
+        assert_eq!(model.visible_choices().len(), 2);
+        assert_eq!(
+            model.choice_selected().map(|c| c.label.as_str()),
+            Some("active")
+        );
+        model.choose_next();
+        assert_eq!(
+            model.choice_selected().map(|c| c.label.as_str()),
+            Some("archived")
+        );
+        model.choose_prev();
+
+        // Narrowing is a case-insensitive substring of the label, and puts the
+        // cursor back on a row that is still there.
+        for c in "ARCH".chars() {
+            model.choose_push(c);
+        }
+        assert_eq!(model.visible_choices().len(), 1);
+        assert_eq!(
+            model.choice_selected().map(|c| c.label.as_str()),
+            Some("archived")
+        );
+        model.choose_backspace();
+        assert_eq!(model.visible_choices().len(), 1);
+
+        model.choose_commit();
+        assert!(matches!(model.mode, Mode::Normal));
+        assert!(model.source_snapshot().contains("status = \"archived\""));
+        // A retired term is a member, so it applies with a warning rather than
+        // being refused.
+        assert!(model.status.contains("retired"), "{}", model.status);
+
+        // Cancelling writes nothing.
+        let before = model.source_snapshot();
+        model.begin_choose();
+        model.choose_cancel();
+        assert_eq!(model.source_snapshot(), before);
+
+        // And a field with no vocabulary falls through to the text field, so a
+        // host binds one key for both.
+        model.focus_on(&[Seg::Key("title".into())]);
+        model.begin_choose();
+        assert!(matches!(
+            model.mode,
+            Mode::Editing {
+                slot: EditSlot::Value,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn a_backend_answers_for_a_link_field_the_schema_cannot() {
+        let backend = WithCandidates(
+            FigBackend::open(b"contents = [\"id:prov/1ch2991\"]\n", Format::Toml).expect("open"),
+        );
+        let mut model = Model::new(backend).expect("model");
+        let item = [Seg::Key("contents".into()), Seg::Index(0)];
+
+        let choices = model.choices_at(&item).expect("the workspace answered");
+        assert_eq!(choices.len(), 2);
+        assert_eq!(choices[1].detail.as_deref(), Some("fig"));
+        // The append position is the same question with a different index.
+        assert!(
+            model
+                .choices_at(&[Seg::Key("contents".into()), Seg::Index(1)])
+                .is_some()
+        );
+        // A path the host does not answer for has no picker.
+        assert!(model.choices_at(&[Seg::Key("title".into())]).is_none());
+
+        model.focus_on(&item);
+        model.begin_choose();
+        for c in "fig".chars() {
+            model.choose_push(c);
+        }
+        model.choose_commit();
+        assert!(model.source_snapshot().contains("id:fig/9qk2s1z"));
+    }
+
+    #[test]
+    fn a_filter_that_matches_nothing_commits_nothing() {
+        let backend = FigBackend::open(b"status = \"active\"\n", Format::Toml).expect("open");
+        let mut model = Model::new(backend).expect("model");
+        model.set_schema(status_schema());
+        model.focus_on(&[Seg::Key("status".into())]);
+        model.begin_choose();
+        for c in "zzz".chars() {
+            model.choose_push(c);
+        }
+        assert!(model.visible_choices().is_empty());
+        model.choose_commit();
+        assert_eq!(model.status, "nothing matches");
+        assert!(model.source_snapshot().contains("status = \"active\""));
+        assert!(!model.dirty);
     }
 
     // ── annotations ───────────────────────────────────────────────────────

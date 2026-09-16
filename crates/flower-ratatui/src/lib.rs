@@ -44,6 +44,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
+use ratatui::widgets::{Block, Borders, Clear};
 
 use flower_core::annotate::Severity;
 use flower_core::{Backend, EditSlot, ItemKind, Mode, Model, Page, PageItem, VKind};
@@ -140,6 +141,12 @@ pub fn draw_in<B: Backend>(f: &mut Frame, area: Rect, model: &Model<B>, header: 
     let [head, body, foot] = bands(area);
     draw_header(f, model, header, head);
     draw_pages(f, model, body);
+    // Over the page rather than beside it: the list belongs to the row it is
+    // for, and a pane that made room for it would move every other row on the
+    // page the moment a picker opened.
+    if matches!(model.mode, Mode::Choosing { .. }) {
+        draw_choices(f, model, body);
+    }
     draw_footer(f, model, foot);
 }
 
@@ -874,12 +881,115 @@ fn room_for(indent: usize, name: &[Span<'static>], width: u16) -> usize {
     (width as usize).saturating_sub(indent + name_width(name) + RIGHT_GUTTER + 2)
 }
 
+// ── the picker ───────────────────────────────────────────────────────────────
+
+/// The choices overlay: a bordered list over the page area, with the filter on
+/// the title line so what has been typed and what is left of the list read
+/// together.
+///
+/// Sized to what it holds and capped by the room, rather than to a fraction of
+/// the frame: a vocabulary of three terms in a box eight rows tall is mostly
+/// box.
+fn draw_choices<B: Backend>(f: &mut Frame, model: &Model<B>, area: Rect) {
+    let choices = model.visible_choices();
+    let selected = match &model.mode {
+        Mode::Choosing { selected, .. } => *selected,
+        _ => return,
+    };
+    let filter = match &model.mode {
+        Mode::Choosing { filter, .. } => filter.as_str(),
+        _ => "",
+    };
+
+    // Narrow enough to read as an overlay, wide enough for a term and its
+    // gloss — and never wider than the pane it is drawn over.
+    let width = area.width.saturating_sub(8).clamp(20, 56);
+    let rows = (choices.len().max(1) as u16 + 2).min(area.height.saturating_sub(2));
+    let box_area = Rect {
+        x: area.x + (area.width.saturating_sub(width)) / 2,
+        y: area.y + 1,
+        width,
+        height: rows.max(3),
+    };
+
+    let title = if filter.is_empty() {
+        " choose ".to_string()
+    } else {
+        format!(" choose: {filter} ")
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(Span::styled(
+            title,
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ))
+        .border_style(Style::default().fg(Color::Yellow));
+    let inner = block.inner(box_area);
+    f.render_widget(Clear, box_area);
+    f.render_widget(block, box_area);
+
+    if choices.is_empty() {
+        f.render_widget(Line::from(Span::styled(" nothing matches", dim())), inner);
+        return;
+    }
+    // Scrolled only as far as it must be to keep the cursor on screen, the way
+    // the page's own list is.
+    let room = inner.height as usize;
+    let first = selected.saturating_sub(room.saturating_sub(1));
+    let lines: Vec<Line<'static>> = choices
+        .iter()
+        .enumerate()
+        .skip(first)
+        .take(room)
+        .map(|(i, choice)| {
+            let mark = if i == selected { "› " } else { "  " };
+            let mut spans = vec![
+                Span::styled(mark, Style::default().fg(Color::Yellow)),
+                Span::styled(
+                    choice.label.clone(),
+                    if i == selected {
+                        Style::default()
+                            .fg(Color::White)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default()
+                    },
+                ),
+            ];
+            if let Some(detail) = &choice.detail {
+                let used = 2 + choice.label.chars().count();
+                let text = fit(
+                    &format!("  {detail}"),
+                    (inner.width as usize).saturating_sub(used),
+                );
+                if !text.is_empty() {
+                    spans.push(Span::styled(text, dim()));
+                }
+            }
+            Line::from(spans)
+        })
+        .collect();
+    f.render_widget(Text::from(lines), inner);
+}
+
 // ── footer ───────────────────────────────────────────────────────────────────
 
 fn draw_footer<B: Backend>(f: &mut Frame, model: &Model<B>, area: Rect) {
     // Kept short enough to survive an 80-column terminal alongside the status.
     let hints = "  j/k · l/h · e edit · c/C comment · x del · u/U undo · s save · q quit";
     let line = match &model.mode {
+        Mode::Choosing { .. } => Line::from(vec![
+            Span::styled(
+                " choose ",
+                Style::default().bg(Color::Yellow).fg(Color::Black),
+            ),
+            Span::styled(
+                "   (type to filter · j/k or ↑/↓ · Enter to choose · Esc to cancel)",
+                dim(),
+            ),
+        ]),
         Mode::Editing { buffer, slot, .. } => {
             let badge = match slot {
                 EditSlot::Value => " edit ",
@@ -1039,6 +1149,43 @@ timeout = 30.5
 
         // A row with no finding of its own carries no marker.
         assert!(!out.contains("! host"), "{out}");
+    }
+
+    #[test]
+    fn the_picker_draws_over_the_page_with_its_filter_on_the_frame() {
+        use flower_core::schema::{Constraint, Schema};
+        use flower_core::{FieldRule, PathPat, Term};
+
+        let backend = FigBackend::open(b"status = \"draft\"\n", fig::Format::Toml).expect("open");
+        let mut model = Model::new(backend).expect("model");
+        model.set_view(ViewMode::Pages);
+        model.set_schema(Schema::new(vec![
+            FieldRule::new(PathPat::key("status")).constraint(Constraint::Enum {
+                values: vec![
+                    Term::value("draft").description("not yet published"),
+                    Term::value("published"),
+                ],
+                closed: true,
+            }),
+        ]));
+        model.focus_on(&[Seg::Key("status".into())]);
+        model.begin_choose();
+
+        let out = render(&model, 60, 12);
+        assert!(out.contains("choose"), "{out}");
+        assert!(out.contains("draft"), "{out}");
+        assert!(out.contains("published"), "{out}");
+        assert!(
+            out.contains("not yet published"),
+            "the gloss is on the row:\n{out}"
+        );
+        assert!(out.contains("Enter to choose"), "{out}");
+
+        model.choose_push('p');
+        model.choose_push('u');
+        let out = render(&model, 60, 12);
+        assert!(out.contains("choose: pu"), "{out}");
+        assert!(!out.contains("not yet published"), "filtered out:\n{out}");
     }
 
     #[test]

@@ -71,7 +71,8 @@ Deliberately not here yet — see the roadmap.
 | `l` (or →) | open the container as a page; on a scalar, edit it |
 | `h` (or ← / `Esc`) | back to the page that listed the container you opened |
 | `Enter` / `Space` | ← same as `l` |
-| `e` | edit the selected scalar |
+| `e` | pick a value for the selected scalar where it has a vocabulary, else edit it |
+| `E` | edit the selected scalar as free text, vocabulary or not |
 | `c` | edit the comment after the selected value (one line; empty removes it) |
 | `C` | edit the comment block above the selected node (empty removes it) |
 | `x` | delete the selected entry or item |
@@ -85,6 +86,13 @@ terminal doesn't, because depth there costs an indent column every row below
 pays for, where a page spends it once on a breadcrumb.
 
 In edit mode: type to change the value, `Enter` to commit, `Esc` to cancel.
+
+In the picker: type to filter the list (a case-insensitive substring of the
+label), `j`/`k` or ↑/↓ to walk it, `Enter` to choose, `Esc` to cancel. What is
+offered is the schema's vocabulary for the field — retired terms included, and
+flagged — or, for a link field, whatever the backend could enumerate
+(`Backend::candidates`); a field with neither opens the text line instead, so
+one key does both.
 
 ## Usage
 
@@ -238,9 +246,12 @@ app-specific bridge lives in provui, not here — flower doesn't depend on prov.
 
 ## Roadmap
 
-- **Value-editing affordances**: type-aware widgets (bool toggle, enum picker,
-  number stepper) instead of one free-text field; today's edit coerces by
-  literal shape, which a schema layer would fix.
+- **Value-editing affordances**: the **enum picker** has landed — `e` on a field
+  with a vocabulary opens a filtered list, in the TUI and as a menu in the Swift
+  rows — and a reference field's candidates arrive through
+  `Backend::candidates`, the injection point a single-document core needs for a
+  list of *other* documents. A bool toggle and a number stepper are still one
+  free-text field in the TUI.
 - **Insert**: add keys / append sequence items (`fig` already exposes the ops).
 - **Reorder / move**: `move_key`, `reorder_keys`, `move_item`.
 - **Commented-out entries**: a `# port = 8080` is, to fig, the leading comment

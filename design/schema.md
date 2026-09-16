@@ -223,11 +223,15 @@ FigBackend experience is unchanged.
 
 ## Open questions
 
-- **Reference pickers need workspace context.** A `Reference` field's picker is
-  populated from *other documents*, which `flower-core` (single-document, no fs)
-  cannot enumerate. Likely the schema carries the relation identity and the
-  candidate list is supplied by the embedder (provui) — another injected input,
-  like `hidden_keys`.
+- ~~**Reference pickers need workspace context.**~~ **Settled.** The schema
+  carries the relation identity, and the candidates are supplied by the
+  embedder through `Backend::candidates(path) -> Option<Vec<Choice>>` — the
+  backend rather than a setter on the model, because the backend is already the
+  component that knows where the document came from, and a list of candidates
+  goes stale the moment the workspace changes. `FigBackend`, over a standalone
+  file, returns `None` and the field stays free text. `Model::choices_at`
+  answers from the vocabulary first and the backend second, and a list's append
+  position is answered by the same call.
 - **Per-value tint** (`public`=green) implies the enum picker colours each option;
   confirm the Swift theme can express semantic tints per row *and* per option.
 - **`reify: true` vocabularies** model each term as a real node. Does the field

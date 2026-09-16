@@ -178,6 +178,24 @@ final class FlowerModelTests: XCTestCase {
         XCTAssertNil(item(model, "version")?.annotationSeverity)
     }
 
+    func testChoicesAreEmptyWithoutASchemaAndSetChoiceStillWrites() throws {
+        // No schema behind a bare TOML file and no workspace behind a
+        // `FigBackend`, so nothing can enumerate a field's values: every row is
+        // free text, which is what `enumOptions` being empty means.
+        let model = try makeModel()
+        guard let title = item(model, "title") else {
+            return XCTFail("no title row")
+        }
+        XCTAssertTrue(title.enumOptions.isEmpty)
+        XCTAssertFalse(model.hasChoices(title))
+        XCTAssertTrue(model.choices(for: title).isEmpty)
+
+        // `setChoice` goes through the picker's commit either way: text that
+        // matches no offered choice is written as typed.
+        model.setChoice(title, "bough")
+        XCTAssertTrue(model.source().contains("title = \"bough\""))
+    }
+
     func testThemeColoursValuesByKind() {
         let theme = FlowerTheme.default
         // Distinct kinds map to distinct colours; containers use chrome (secondary).

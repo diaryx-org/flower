@@ -51,6 +51,84 @@ impl Validate for Constraint {
     }
 }
 
+/// One offered value for a field, and how it reads.
+///
+/// What a picker is a list of. Two very different things produce them and a
+/// frontend renders both the same way: a controlled vocabulary's terms, which
+/// the schema carries, and a reference field's candidates, which it cannot —
+/// a link points at *other documents*, and flower-core is one document with no
+/// filesystem, so the host answers ([`Backend::candidates`](crate::Backend::candidates)).
+/// That is the injection point `design/schema.md` filed as the open question.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Choice {
+    /// What committing this writes into the document — a `Value`, not a string,
+    /// because a vocabulary of numbers or booleans is as legal as one of names.
+    pub value: Value,
+    /// What the list shows, and what a filter matches against.
+    pub label: String,
+    /// A second line: a term's gloss, `retired` for one no longer offered, the
+    /// title of the document a link points at. `None` when there is nothing to
+    /// add.
+    pub detail: Option<String>,
+}
+
+impl Choice {
+    /// A choice whose label is its own value text.
+    pub fn new(value: Value, label: impl Into<String>) -> Self {
+        Self {
+            value,
+            label: label.into(),
+            detail: None,
+        }
+    }
+
+    /// A string choice that shows and stores the same text.
+    pub fn plain(value: impl Into<String>) -> Self {
+        let value = value.into();
+        Self::new(Value::Str(value.clone()), value)
+    }
+
+    /// Set the second line.
+    pub fn detail(mut self, detail: impl Into<String>) -> Self {
+        self.detail = Some(detail.into());
+        self
+    }
+
+    /// Whether this choice matches a picker's filter — a case-insensitive
+    /// substring of the label.
+    ///
+    /// On the label rather than on the stored value, because the label is what
+    /// the reader can see: filtering a list of link targets by their ids would
+    /// be filtering on the one part of the row nobody is reading.
+    pub fn matches(&self, filter: &str) -> bool {
+        filter.is_empty() || self.label.to_lowercase().contains(&filter.to_lowercase())
+    }
+}
+
+/// The choices a controlled vocabulary offers, in the order it declares them.
+///
+/// A retired term is *offered*, and flagged: it is still legal where it is
+/// already written (validating one warns rather than rejects), so leaving it
+/// out of the list would make a document holding one unre-choosable from the
+/// picker — the reader would have to retype what is already there.
+pub fn choices_of(terms: &[Term]) -> Vec<Choice> {
+    terms
+        .iter()
+        .map(|t| {
+            let detail = match (t.retired, t.description.as_deref()) {
+                (true, Some(d)) => Some(format!("retired — {d}")),
+                (true, None) => Some("retired".to_string()),
+                (false, d) => d.map(str::to_string),
+            };
+            Choice {
+                value: Value::Str(t.value.clone()),
+                label: t.display_label().to_string(),
+                detail,
+            }
+        })
+        .collect()
+}
+
 /// Convenience accessors for a flower [`FieldRule`], mirroring what used to be
 /// inherent methods before [`fig_schema::FieldRule`] became generic. A local
 /// trait, since inherent impls can't be added to a foreign generic type.

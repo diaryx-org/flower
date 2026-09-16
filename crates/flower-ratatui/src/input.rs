@@ -59,6 +59,10 @@ pub fn handle_key<B: Backend>(model: &mut Model<B>, key: KeyEvent) -> Outcome {
         editing(model, key.code);
         return Outcome::Continue;
     }
+    if matches!(model.mode, Mode::Choosing { .. }) {
+        choosing(model, key.code);
+        return Outcome::Continue;
+    }
     normal(model, key.code)
 }
 
@@ -67,7 +71,14 @@ fn normal<B: Backend>(model: &mut Model<B>, code: KeyCode) -> Outcome {
     match code {
         KeyCode::Char('q') => return Outcome::Quit,
         KeyCode::Char('s') => return Outcome::Save,
-        KeyCode::Char('e') => model.begin_edit(),
+        // The picker where the field has one, the text field where it does not
+        // — one key, because `begin_choose` falls back
+        // ([`Model::begin_choose`](flower_core::Model::begin_choose)). `E` is
+        // the way past it: a value typed by hand goes through the same
+        // validation a chosen one would, and an open vocabulary is a list of
+        // suggestions rather than the whole of what is legal.
+        KeyCode::Char('e') => model.begin_choose(),
+        KeyCode::Char('E') => model.begin_edit(),
         KeyCode::Char('c') => model.begin_edit_trailing_comment(),
         KeyCode::Char('C') => model.begin_edit_leading_comment(),
         KeyCode::Char('x') => model.delete_selected(),
@@ -113,7 +124,7 @@ fn normal<B: Backend>(model: &mut Model<B>, code: KeyCode) -> Outcome {
 /// [`Outcome::Continue`].
 pub fn handle_mouse<B: Backend>(model: &mut Model<B>, area: Rect, mouse: MouseEvent) -> Outcome {
     let at = Position::new(mouse.column, mouse.row);
-    if !area.contains(at) || matches!(model.mode, Mode::Editing { .. }) {
+    if !area.contains(at) || matches!(model.mode, Mode::Editing { .. } | Mode::Choosing { .. }) {
         return Outcome::Continue;
     }
     match mouse.kind {
@@ -143,6 +154,25 @@ fn click<B: Backend>(model: &mut Model<B>, hit: Hit) {
             model.page_enter();
             model.page_select(i);
         }
+    }
+}
+
+/// Driving the picker: the same `j`/`k` the page takes, arrows for a reader
+/// who is typing, everything else printable narrowing the list.
+///
+/// `j` and `k` are movement here and not filter text, which is the one
+/// asymmetry with the edit line — a vi-shaped list that could not be walked
+/// with `j` would be a list nobody could walk without reaching for the arrows,
+/// and a filter is reached for by typing a word, not by typing one letter.
+fn choosing<B: Backend>(model: &mut Model<B>, code: KeyCode) {
+    match code {
+        KeyCode::Char('j') | KeyCode::Down => model.choose_next(),
+        KeyCode::Char('k') | KeyCode::Up => model.choose_prev(),
+        KeyCode::Char(c) => model.choose_push(c),
+        KeyCode::Backspace => model.choose_backspace(),
+        KeyCode::Enter => model.choose_commit(),
+        KeyCode::Esc => model.choose_cancel(),
+        _ => {}
     }
 }
 
@@ -291,6 +321,48 @@ max_connections = 100
         press(&mut m, KeyCode::Char('u'));
         assert!(matches!(m.mode, Mode::Editing { .. }));
         press(&mut m, KeyCode::Esc);
+    }
+
+    #[test]
+    fn e_opens_the_picker_where_there_is_one_and_shift_e_types_anyway() {
+        use flower_core::schema::{Constraint, Schema};
+        use flower_core::{FieldRule, PathPat, Term};
+
+        let backend = FigBackend::open(b"status = \"draft\"\n", fig::Format::Toml).expect("open");
+        let mut m = Model::new(backend).expect("model");
+        m.set_view(ViewMode::Pages);
+        m.set_schema(Schema::new(vec![
+            FieldRule::new(PathPat::key("status")).constraint(Constraint::Enum {
+                values: vec![Term::value("draft"), Term::value("published")],
+                closed: true,
+            }),
+        ]));
+        m.focus_on(&[Seg::Key("status".into())]);
+
+        assert_eq!(press(&mut m, KeyCode::Char('e')), Outcome::Continue);
+        assert!(matches!(m.mode, Mode::Choosing { .. }));
+        // Typing narrows, `j`/`k` walk, Enter commits.
+        for c in "pub".chars() {
+            press(&mut m, KeyCode::Char(c));
+        }
+        assert_eq!(m.visible_choices().len(), 1);
+        press(&mut m, KeyCode::Enter);
+        assert!(
+            m.source_snapshot().contains("status = \"published\""),
+            "{}",
+            m.source_snapshot()
+        );
+
+        // `E` is the way to free text on the same field.
+        press(&mut m, KeyCode::Char('E'));
+        assert!(matches!(m.mode, Mode::Editing { .. }));
+        press(&mut m, KeyCode::Esc);
+
+        // Esc leaves the picker without writing.
+        press(&mut m, KeyCode::Char('e'));
+        press(&mut m, KeyCode::Esc);
+        assert!(matches!(m.mode, Mode::Normal));
+        assert!(m.source_snapshot().contains("status = \"published\""));
     }
 
     // ── the mouse ──────────────────────────────────────────────────────

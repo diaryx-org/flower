@@ -30,7 +30,7 @@ pub use backend::{Backend, BackendError, EditOp, FigBackend};
 pub use format::detect;
 pub use model::{EditSlot, Mode, Model, ViewMode};
 pub use page::{InlineBudget, ItemKind, Page, PageItem};
-pub use schema::{Constraint, FieldRule, FieldRuleExt, Schema};
+pub use schema::{Choice, Constraint, FieldRule, FieldRuleExt, Schema};
 pub use tree::{Row, VKind};
 
 // The generic, prov-agnostic pieces (path matching, field type, controlled

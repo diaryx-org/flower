@@ -602,6 +602,30 @@ public protocol FlowerDocProtocol : AnyObject {
     func pageBack()  -> PagesView
     
     /**
+     * The values the field `id` names may be set to, as rows a picker draws —
+     * a schema's vocabulary (retired terms flagged in `detail`), or whatever
+     * the backend can enumerate for a link field. Empty when the field is free
+     * text.
+     *
+     * Asked of a *list* it answers with the vocabulary its items take, so the
+     * same call serves "change this entry" and "what may I add here".
+     */
+    func pageChoices(id: String)  -> [ChoiceView]
+    
+    /**
+     * Commit `value_text` to the field `id` names, preferring the offered
+     * choice it names.
+     *
+     * Matched against the choices' value text and then their labels, so a host
+     * can send back whichever of the two its menu had in hand. Text that
+     * matches neither is written as typed, coerced and validated exactly as
+     * [`page_set_value`](Self::page_set_value) would — an open vocabulary is a
+     * list of suggestions, and a closed one refuses at the funnel rather than
+     * here.
+     */
+    func pageChoose(id: String, valueText: String)  -> PagesView
+    
+    /**
      * Delete the mapping entry or sequence item `id` names.
      */
     func pageDelete(id: String)  -> PagesView
@@ -1045,6 +1069,43 @@ open func pageAt(id: String) -> PageView {
 open func pageBack() -> PagesView {
     return try!  FfiConverterTypePagesView.lift(try! rustCall() {
     uniffi_flower_ffi_fn_method_flowerdoc_page_back(self.uniffiClonePointer(),$0
+    )
+})
+}
+    
+    /**
+     * The values the field `id` names may be set to, as rows a picker draws —
+     * a schema's vocabulary (retired terms flagged in `detail`), or whatever
+     * the backend can enumerate for a link field. Empty when the field is free
+     * text.
+     *
+     * Asked of a *list* it answers with the vocabulary its items take, so the
+     * same call serves "change this entry" and "what may I add here".
+     */
+open func pageChoices(id: String) -> [ChoiceView] {
+    return try!  FfiConverterSequenceTypeChoiceView.lift(try! rustCall() {
+    uniffi_flower_ffi_fn_method_flowerdoc_page_choices(self.uniffiClonePointer(),
+        FfiConverterString.lower(id),$0
+    )
+})
+}
+    
+    /**
+     * Commit `value_text` to the field `id` names, preferring the offered
+     * choice it names.
+     *
+     * Matched against the choices' value text and then their labels, so a host
+     * can send back whichever of the two its menu had in hand. Text that
+     * matches neither is written as typed, coerced and validated exactly as
+     * [`page_set_value`](Self::page_set_value) would — an open vocabulary is a
+     * list of suggestions, and a closed one refuses at the funnel rather than
+     * here.
+     */
+open func pageChoose(id: String, valueText: String) -> PagesView {
+    return try!  FfiConverterTypePagesView.lift(try! rustCall() {
+    uniffi_flower_ffi_fn_method_flowerdoc_page_choose(self.uniffiClonePointer(),
+        FfiConverterString.lower(id),
+        FfiConverterString.lower(valueText),$0
     )
 })
 }
@@ -1524,6 +1585,105 @@ public func FfiConverterTypeAnnotationInput_lower(_ value: AnnotationInput) -> R
 
 
 /**
+ * One row of a picker: what it writes, what it reads as, and the second line.
+ */
+public struct ChoiceView {
+    /**
+     * The text to hand [`FlowerDoc::page_choose`] — and what the value will
+     * read as once chosen.
+     */
+    public var value: String
+    /**
+     * What the list shows.
+     */
+    public var label: String
+    /**
+     * A term's gloss, `retired` for one no longer offered, or the title of the
+     * document a link points at.
+     */
+    public var detail: String?
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * The text to hand [`FlowerDoc::page_choose`] — and what the value will
+         * read as once chosen.
+         */value: String, 
+        /**
+         * What the list shows.
+         */label: String, 
+        /**
+         * A term's gloss, `retired` for one no longer offered, or the title of the
+         * document a link points at.
+         */detail: String?) {
+        self.value = value
+        self.label = label
+        self.detail = detail
+    }
+}
+
+
+
+extension ChoiceView: Equatable, Hashable {
+    public static func ==(lhs: ChoiceView, rhs: ChoiceView) -> Bool {
+        if lhs.value != rhs.value {
+            return false
+        }
+        if lhs.label != rhs.label {
+            return false
+        }
+        if lhs.detail != rhs.detail {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(value)
+        hasher.combine(label)
+        hasher.combine(detail)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeChoiceView: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> ChoiceView {
+        return
+            try ChoiceView(
+                value: FfiConverterString.read(from: &buf), 
+                label: FfiConverterString.read(from: &buf), 
+                detail: FfiConverterOptionString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: ChoiceView, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.value, into: &buf)
+        FfiConverterString.write(value.label, into: &buf)
+        FfiConverterOptionString.write(value.detail, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeChoiceView_lift(_ buf: RustBuffer) throws -> ChoiceView {
+    return try FfiConverterTypeChoiceView.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeChoiceView_lower(_ value: ChoiceView) -> RustBuffer {
+    return FfiConverterTypeChoiceView.lower(value)
+}
+
+
+/**
  * A step of a page's breadcrumb: the container it names, and the id to open it.
  */
 public struct CrumbView {
@@ -1844,6 +2004,23 @@ public struct PageItemView {
      * row. `None` when there is none.
      */
     public var annotationMessage: String?
+    /**
+     * The labels this field may be set to, when something can enumerate them —
+     * a schema's vocabulary, or a backend answering for a link field. Empty
+     * means free text.
+     *
+     * A host renders a menu from these and commits with
+     * [`FlowerDoc::page_choose`]; the full rows, with the gloss under each
+     * term, are [`FlowerDoc::page_choices`].
+     */
+    public var enumOptions: [String]
+    /**
+     * Whether [`enum_options`](Self::enum_options) is the whole of what is
+     * legal. An **open** list is suggestions over a wider space — a menu that
+     * offered only those would be hiding legal values — so a host keeps a
+     * "type something else" route to the same field.
+     */
+    public var isClosedEnum: Bool
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -1935,7 +2112,22 @@ public struct PageItemView {
         /**
          * What the finding says, one line, written for whoever is looking at the
          * row. `None` when there is none.
-         */annotationMessage: String?) {
+         */annotationMessage: String?, 
+        /**
+         * The labels this field may be set to, when something can enumerate them —
+         * a schema's vocabulary, or a backend answering for a link field. Empty
+         * means free text.
+         *
+         * A host renders a menu from these and commits with
+         * [`FlowerDoc::page_choose`]; the full rows, with the gloss under each
+         * term, are [`FlowerDoc::page_choices`].
+         */enumOptions: [String], 
+        /**
+         * Whether [`enum_options`](Self::enum_options) is the whole of what is
+         * legal. An **open** list is suggestions over a wider space — a menu that
+         * offered only those would be hiding legal values — so a host keeps a
+         * "type something else" route to the same field.
+         */isClosedEnum: Bool) {
         self.id = id
         self.label = label
         self.title = title
@@ -1952,6 +2144,8 @@ public struct PageItemView {
         self.trailingComment = trailingComment
         self.annotationSeverity = annotationSeverity
         self.annotationMessage = annotationMessage
+        self.enumOptions = enumOptions
+        self.isClosedEnum = isClosedEnum
     }
 }
 
@@ -2007,6 +2201,12 @@ extension PageItemView: Equatable, Hashable {
         if lhs.annotationMessage != rhs.annotationMessage {
             return false
         }
+        if lhs.enumOptions != rhs.enumOptions {
+            return false
+        }
+        if lhs.isClosedEnum != rhs.isClosedEnum {
+            return false
+        }
         return true
     }
 
@@ -2027,6 +2227,8 @@ extension PageItemView: Equatable, Hashable {
         hasher.combine(trailingComment)
         hasher.combine(annotationSeverity)
         hasher.combine(annotationMessage)
+        hasher.combine(enumOptions)
+        hasher.combine(isClosedEnum)
     }
 }
 
@@ -2053,7 +2255,9 @@ public struct FfiConverterTypePageItemView: FfiConverterRustBuffer {
                 leadingComment: FfiConverterOptionString.read(from: &buf), 
                 trailingComment: FfiConverterOptionString.read(from: &buf), 
                 annotationSeverity: FfiConverterOptionString.read(from: &buf), 
-                annotationMessage: FfiConverterOptionString.read(from: &buf)
+                annotationMessage: FfiConverterOptionString.read(from: &buf), 
+                enumOptions: FfiConverterSequenceString.read(from: &buf), 
+                isClosedEnum: FfiConverterBool.read(from: &buf)
         )
     }
 
@@ -2074,6 +2278,8 @@ public struct FfiConverterTypePageItemView: FfiConverterRustBuffer {
         FfiConverterOptionString.write(value.trailingComment, into: &buf)
         FfiConverterOptionString.write(value.annotationSeverity, into: &buf)
         FfiConverterOptionString.write(value.annotationMessage, into: &buf)
+        FfiConverterSequenceString.write(value.enumOptions, into: &buf)
+        FfiConverterBool.write(value.isClosedEnum, into: &buf)
     }
 }
 
@@ -2797,6 +3003,31 @@ fileprivate struct FfiConverterSequenceTypeAnnotationInput: FfiConverterRustBuff
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypeChoiceView: FfiConverterRustBuffer {
+    typealias SwiftType = [ChoiceView]
+
+    public static func write(_ value: [ChoiceView], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeChoiceView.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [ChoiceView] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [ChoiceView]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeChoiceView.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeCrumbView: FfiConverterRustBuffer {
     typealias SwiftType = [CrumbView]
 
@@ -2927,6 +3158,12 @@ private var initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_flower_ffi_checksum_method_flowerdoc_page_back() != 62597) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_flower_ffi_checksum_method_flowerdoc_page_choices() != 5935) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_flower_ffi_checksum_method_flowerdoc_page_choose() != 42486) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_flower_ffi_checksum_method_flowerdoc_page_delete() != 53944) {

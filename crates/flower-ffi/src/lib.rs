@@ -76,7 +76,10 @@ use std::sync::{Arc, Mutex};
 use fig::{Format, Value};
 use flower_core::annotate::Severity;
 use flower_core::page::{self, InlineBudget, Page, PageItem};
-use flower_core::{Annotation, Backend, FigBackend, ItemKind, Model, Seg, VKind, ViewMode};
+use flower_core::schema::FieldRuleExt;
+use flower_core::{
+    Annotation, Backend, Choice, FigBackend, ItemKind, Model, Seg, VKind, ViewMode, tree,
+};
 
 uniffi::setup_scaffolding!();
 
@@ -226,6 +229,32 @@ pub struct PageItemView {
     /// What the finding says, one line, written for whoever is looking at the
     /// row. `None` when there is none.
     pub annotation_message: Option<String>,
+    /// The labels this field may be set to, when something can enumerate them —
+    /// a schema's vocabulary, or a backend answering for a link field. Empty
+    /// means free text.
+    ///
+    /// A host renders a menu from these and commits with
+    /// [`FlowerDoc::page_choose`]; the full rows, with the gloss under each
+    /// term, are [`FlowerDoc::page_choices`].
+    pub enum_options: Vec<String>,
+    /// Whether [`enum_options`](Self::enum_options) is the whole of what is
+    /// legal. An **open** list is suggestions over a wider space — a menu that
+    /// offered only those would be hiding legal values — so a host keeps a
+    /// "type something else" route to the same field.
+    pub is_closed_enum: bool,
+}
+
+/// One row of a picker: what it writes, what it reads as, and the second line.
+#[derive(uniffi::Record, Clone)]
+pub struct ChoiceView {
+    /// The text to hand [`FlowerDoc::page_choose`] — and what the value will
+    /// read as once chosen.
+    pub value: String,
+    /// What the list shows.
+    pub label: String,
+    /// A term's gloss, `retired` for one no longer offered, or the title of the
+    /// document a link points at.
+    pub detail: Option<String>,
 }
 
 /// One host finding on its way *in* — the peer of the two `annotation_` fields
@@ -673,7 +702,7 @@ impl FlowerDoc {
             };
         };
         let selected = (path == m.focus()).then(|| m.page_selected());
-        page_view_of(&m.page_at(&path), selected)
+        page_view_with(&m, &m.page_at(&path), selected)
     }
 
     /// Pop back to the parent page, restoring the cursor to the container you came
@@ -785,6 +814,53 @@ impl FlowerDoc {
                 Some(Value::Map(_)) => m.insert_key_text(&path, &key, &text),
                 Some(Value::Seq(_)) => m.append_item_text(&path, &text),
                 _ => m.set_status("can only add to a mapping or a sequence"),
+            }
+        }
+        pages_of(&m)
+    }
+
+    /// The values the field `id` names may be set to, as rows a picker draws —
+    /// a schema's vocabulary (retired terms flagged in `detail`), or whatever
+    /// the backend can enumerate for a link field. Empty when the field is free
+    /// text.
+    ///
+    /// Asked of a *list* it answers with the vocabulary its items take, so the
+    /// same call serves "change this entry" and "what may I add here".
+    pub fn page_choices(&self, id: String) -> Vec<ChoiceView> {
+        let m = self.lock();
+        let Some(path) = path_for_id_anywhere(&m, &id) else {
+            return Vec::new();
+        };
+        m.choices_at(&path)
+            .unwrap_or_default()
+            .iter()
+            .map(choice_view_of)
+            .collect()
+    }
+
+    /// Commit `value_text` to the field `id` names, preferring the offered
+    /// choice it names.
+    ///
+    /// Matched against the choices' value text and then their labels, so a host
+    /// can send back whichever of the two its menu had in hand. Text that
+    /// matches neither is written as typed, coerced and validated exactly as
+    /// [`page_set_value`](Self::page_set_value) would — an open vocabulary is a
+    /// list of suggestions, and a closed one refuses at the funnel rather than
+    /// here.
+    pub fn page_choose(&self, id: String, value_text: String) -> PagesView {
+        let mut m = self.lock();
+        m.set_view(ViewMode::Pages);
+        if let Some(path) = path_for_id_anywhere(&m, &id) {
+            m.focus_on(&path);
+            let chosen = m.choices_at(&path).and_then(|choices| {
+                choices
+                    .iter()
+                    .find(|c| choice_text(c) == value_text || c.label == value_text)
+                    .map(|c| c.value.clone())
+            });
+            match chosen {
+                Some(value) => m.set_value_at(&path, value),
+                None => m.set_scalar_text(&path, &value_text),
             }
         }
         pages_of(&m)
@@ -979,12 +1055,12 @@ pub fn path_id(path: &[Seg]) -> String {
 /// out of marks the row you opened, which is a trace and not a selection; a peek
 /// is a preview of something not yet opened, so it has none at all.
 pub fn pages_of<B: Backend>(model: &Model<B>) -> PagesView {
-    let page = page_view_of(model.page(), Some(model.page_selected()));
+    let page = page_view_with(model, model.page(), Some(model.page_selected()));
     let parent = (!model.focus().is_empty()).then(|| {
         let parent = model.parent_page();
-        page_view_of(parent, parent.position_of(model.focus()))
+        page_view_with(model, parent, parent.position_of(model.focus()))
     });
-    let peek = model.peek_page().map(|p| page_view_of(&p, None));
+    let peek = model.peek_page().map(|p| page_view_with(model, &p, None));
 
     PagesView {
         page,
@@ -1058,6 +1134,59 @@ pub fn item_view_of(item: &PageItem) -> PageItemView {
             .as_ref()
             .map(|a| severity_name(a.severity).to_string()),
         annotation_message: item.annotation.as_ref().map(|a| a.message.clone()),
+        // Nothing to offer without a model to ask — see `item_view_with`.
+        enum_options: Vec::new(),
+        is_closed_enum: false,
+    }
+}
+
+/// [`item_view_of`], plus what the model can say about the row that the page
+/// projection cannot: the values it may be set to.
+///
+/// A second function rather than a parameter on the first, so an embedder
+/// holding a `PageItem` and no model still has the projection it had before.
+pub fn item_view_with<B: Backend>(model: &Model<B>, item: &PageItem) -> PageItemView {
+    let mut view = item_view_of(item);
+    if let Some(choices) = model.choices_at(&item.path) {
+        view.enum_options = choices.into_iter().map(|c| c.label).collect();
+        view.is_closed_enum = model
+            .rule_at(&item.path)
+            .and_then(|r| r.enum_constraint())
+            .is_some_and(|(_, closed)| closed);
+    }
+    view
+}
+
+/// [`page_view_of`], with each row's choices filled in from the model.
+pub fn page_view_with<B: Backend>(
+    model: &Model<B>,
+    page: &Page,
+    selected: Option<usize>,
+) -> PageView {
+    PageView {
+        focus: path_id(&page.focus),
+        crumbs: crumbs_of(page),
+        items: page
+            .items
+            .iter()
+            .map(|i| item_view_with(model, i))
+            .collect(),
+        selected: selected.map(|i| i as u32),
+        demoted: page.demoted,
+    }
+}
+
+/// The text a [`Choice`]'s value is written and matched by — the whole scalar,
+/// never an abbreviation of it.
+fn choice_text(choice: &Choice) -> String {
+    tree::edit_seed(&choice.value)
+}
+
+fn choice_view_of(choice: &Choice) -> ChoiceView {
+    ChoiceView {
+        value: choice_text(choice),
+        label: choice.label.clone(),
+        detail: choice.detail.clone(),
     }
 }
 
@@ -1240,6 +1369,51 @@ tags = [\"alpha\", \"beta\"]
         let view = doc.redo();
         assert_eq!(view.redo_depth, 0);
         assert!(doc.source().contains("version = 42"));
+    }
+
+    #[test]
+    fn a_picker_crosses_the_binding_as_rows_and_comes_back_as_a_value() {
+        use flower_core::schema::{Constraint, Schema};
+        use flower_core::{FieldRule, PathPat, Term};
+
+        let doc = doc();
+        {
+            let mut m = doc.lock();
+            m.set_schema(Schema::new(vec![
+                FieldRule::new(PathPat::key("title")).constraint(Constraint::Enum {
+                    values: vec![
+                        Term::value("flower").description("this one"),
+                        Term::value("bough").retired(true),
+                    ],
+                    closed: true,
+                }),
+            ]));
+        }
+
+        let choices = doc.page_choices("title".to_string());
+        assert_eq!(
+            choices.iter().map(|c| c.label.as_str()).collect::<Vec<_>>(),
+            ["flower", "bough"]
+        );
+        assert_eq!(choices[0].detail.as_deref(), Some("this one"));
+        assert_eq!(choices[1].detail.as_deref(), Some("retired"));
+
+        // The row carries the same list, so a host can draw a menu without a
+        // second crossing.
+        let view = doc.pages();
+        let title = view.page.items.iter().find(|i| i.id == "title").unwrap();
+        assert_eq!(title.enum_options, vec!["flower", "bough"]);
+        assert!(title.is_closed_enum);
+
+        let view = doc.page_choose("title".to_string(), "bough".to_string());
+        assert!(doc.source().contains("title = \"bough\""));
+        assert!(view.status.contains("retired"), "{}", view.status);
+
+        // A field with no vocabulary is free text, and choosing on it writes
+        // what was typed.
+        assert!(doc.page_choices("version".to_string()).is_empty());
+        doc.page_choose("version".to_string(), "9".to_string());
+        assert!(doc.source().contains("version = 9"));
     }
 
     #[test]

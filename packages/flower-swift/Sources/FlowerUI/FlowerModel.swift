@@ -177,14 +177,28 @@ public final class FlowerModel: ObservableObject {
     /// list has no half-typed state to hold, so it goes straight to the document
     /// rather than through the edit buffer.
     ///
-    /// This binding carries no schema of its own — `PageItemView` has no
-    /// vocabulary to offer — so nothing here reaches it yet. It exists because
-    /// the intent belongs to the protocol rather than to the host that first
-    /// needed it, and a host that *does* resolve a schema drives the same view
-    /// through the same call.
+    /// Routed through `pageChoose`, so what is sent may be either the label a
+    /// menu showed or the text a term stores; anything matching neither is
+    /// written as typed and validated the same way. A row's own
+    /// ``PageItemView/enumOptions`` is where the menu's items come from, and
+    /// ``choices(for:)`` is the same list with each term's gloss.
     public func setChoice(_ item: PageItemView, _ value: String) {
-        apply(doc.pageSetValue(id: item.id, text: value))
+        apply(doc.pageChoose(id: item.id, valueText: value))
     }
+
+    /// The values `item` may be set to, as rows a picker draws: a schema's
+    /// vocabulary (retired terms flagged in `detail`), or whatever the backend
+    /// can enumerate for a link field. Empty when the field is free text.
+    ///
+    /// Asked of a list it answers with the vocabulary its *items* take, so the
+    /// same call serves "change this entry" and "what may I add here".
+    public func choices(for item: PageItemView) -> [ChoiceView] {
+        doc.pageChoices(id: item.id)
+    }
+
+    /// Whether `item` has a list to pick from at all — what a host shows a menu
+    /// rather than a text field for.
+    public func hasChoices(_ item: PageItemView) -> Bool { !item.enumOptions.isEmpty }
 
     /// Set the comment block above `item` — one comment line per line of
     /// `text` — replacing whatever block was there. An empty `text` removes it.

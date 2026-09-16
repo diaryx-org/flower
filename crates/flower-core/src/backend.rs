@@ -199,6 +199,28 @@ pub trait Backend {
         let _ = path;
         Ok(None)
     }
+
+    /// The values a picker at `path` should offer, when the backend can
+    /// enumerate them. `None` — the default — means it cannot, and a frontend
+    /// falls back to free text.
+    ///
+    /// **The injection point for a reference field.** A controlled vocabulary
+    /// is in the schema, so [`Model::choices_at`](crate::Model::choices_at)
+    /// answers those itself; a link field's candidates are *other documents*,
+    /// which a single-document, filesystem-free core can never enumerate. The
+    /// backend is the component that knows where the document came from, so it
+    /// is the one that can ask the workspace — a prov backend answers a
+    /// `contents` or `part_of` path with the archive's nodes;
+    /// [`FigBackend`], over a standalone file, has nothing to offer and says so.
+    ///
+    /// Asked about the *item* path for a list — `contents.4`, or the append
+    /// position `contents.<len>` — so one answer serves both replacing an entry
+    /// and adding one. A backend that keys on the relation rather than on the
+    /// index sees the same path either way.
+    fn candidates(&self, path: &[Seg]) -> Result<Option<Vec<crate::schema::Choice>>, BackendError> {
+        let _ = path;
+        Ok(None)
+    }
 }
 
 /// A [`Backend`] over a standalone config file, backed by [`fig::Editor`].

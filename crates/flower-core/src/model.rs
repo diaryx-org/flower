@@ -11,6 +11,7 @@ use std::collections::{HashMap, HashSet};
 use anyhow::Result;
 use fig::Value;
 
+use crate::annotate::{self, Annotation};
 use crate::backend::{Backend, EditOp};
 use crate::page::{self, InlineBudget, Page, PageItem};
 use crate::schema::{FieldRule, Schema};
@@ -101,6 +102,9 @@ pub struct Model<B> {
     /// [`set_demoted`](Self::set_demoted) — a key nothing can meaningfully edit
     /// is the clearest case there is for sinking it below the ones you can.
     demoted: HashSet<String>,
+    /// What the host has to say about particular nodes — host state, re-attached
+    /// to the rows on every rebuild ([`annotate`](crate::annotate)).
+    annotations: Vec<Annotation>,
     /// The schema governing this document, if any — from the backend
     /// ([`Backend::schema`]) or injected by the embedder ([`Model::set_schema`]).
     /// Drives type-directed parsing and commit-time value validation; absent, the
@@ -257,6 +261,7 @@ impl<B: Backend> Model<B> {
             demoted: derived.iter().cloned().collect(),
             derived: derived.into_iter().collect(),
             schema,
+            annotations: Vec::new(),
             selected: 0,
             mode: Mode::Normal,
             // Nothing has happened yet, so there is nothing to report. See
@@ -397,6 +402,40 @@ impl<B: Backend> Model<B> {
         self.schema.as_ref().and_then(|s| s.rule_for(path))
     }
 
+    /// Hand the model the host's findings about this document, replacing
+    /// whatever it was given last — a broken link, a duplicate id, a rule only
+    /// a workspace can check ([`annotate`](crate::annotate)).
+    ///
+    /// Out-of-band like [`set_schema`](Self::set_schema) and
+    /// [`set_demoted`](Self::set_demoted), and for the same reason: flower-core
+    /// is one document with no filesystem, so it can never compute one of
+    /// these. They are re-attached to the rows on every rebuild, so an edit
+    /// does not wipe the markers out from under a reader — but nothing here
+    /// re-checks them either, so a host refreshes after a save (or whenever its
+    /// own check finishes) by calling this again. An empty list clears them.
+    pub fn set_annotations(&mut self, annotations: Vec<Annotation>) {
+        self.annotations = annotations;
+        self.rebuild_rows();
+        self.rebuild_pages();
+    }
+
+    /// The findings the host last supplied, in the order it gave them.
+    pub fn annotations(&self) -> &[Annotation] {
+        &self.annotations
+    }
+
+    /// The finding that applies at `path`: the one addressed exactly at it, or
+    /// failing that the one at its nearest annotated ancestor.
+    ///
+    /// The inheriting answer, for a caller *asking about a node* — an item of a
+    /// list is in trouble when the list is. The rows carry the exact answer
+    /// instead ([`PageItem::annotation`](crate::PageItem::annotation)), because
+    /// a marker that came down a subtree would point at every row but the one
+    /// that is wrong.
+    pub fn annotation_at(&self, path: &[Seg]) -> Option<&Annotation> {
+        annotate::applying_at(&self.annotations, path)
+    }
+
     /// The kind of the document root, for a frontend deciding how to add a
     /// top-level entry: `"map"`, `"seq"`, or `"scalar"`.
     pub fn root_kind(&self) -> &'static str {
@@ -521,6 +560,9 @@ impl<B: Backend> Model<B> {
 
     fn rebuild_rows(&mut self) {
         self.rows = tree::build_rows(&self.value, &self.collapsed, &self.hidden);
+        for row in &mut self.rows {
+            row.annotation = annotate::exactly_at(&self.annotations, &row.path).cloned();
+        }
         if self.selected >= self.rows.len() {
             self.selected = self.rows.len().saturating_sub(1);
         }
@@ -892,6 +934,9 @@ impl<B: Backend> Model<B> {
         for item in &mut page.items {
             item.leading_comment = self.backend.leading_comment(&item.path).ok().flatten();
             item.trailing_comment = self.backend.trailing_comment(&item.path).ok().flatten();
+            // The host's findings ride the same pass, and for the same reason:
+            // neither is in the value tree `build_page` is a function of.
+            item.annotation = annotate::exactly_at(&self.annotations, &item.path).cloned();
         }
     }
 
@@ -3194,6 +3239,67 @@ b = 2
 
         // The left pane can always mark the row the right one was opened from.
         assert!(model.parent_page().position_of(model.focus()).is_some());
+    }
+
+    // ── annotations ───────────────────────────────────────────────────────
+
+    #[test]
+    fn a_finding_marks_the_row_it_names_and_survives_an_edit() {
+        use crate::annotate::Severity;
+        let mut model = sample_model();
+        let port = vec![Seg::Key("server".into()), Seg::Key("port".into())];
+        let tags = vec![Seg::Key("server".into()), Seg::Key("tags".into())];
+        model.set_annotations(vec![
+            Annotation::error(port.clone(), "already in use"),
+            Annotation::warning(tags.clone(), "two of these are retired"),
+        ]);
+
+        let page = model.page_at(&[Seg::Key("server".into())]);
+        let at = |path: &[Seg]| {
+            page.items
+                .iter()
+                .find(|i| i.path == path)
+                .unwrap_or_else(|| panic!("no item for {path:?}"))
+                .annotation
+                .clone()
+        };
+        assert_eq!(at(&port).map(|a| a.severity), Some(Severity::Error));
+        assert_eq!(
+            at(&tags).map(|a| a.message),
+            Some("two of these are retired".to_string())
+        );
+        // A finding on the list marks the list, and not each of its items.
+        let mut first = tags.clone();
+        first.push(Seg::Index(0));
+        assert_eq!(at(&first), None);
+        // …though a caller asking about the item is told what governs it.
+        assert_eq!(
+            model.annotation_at(&first).map(|a| a.severity),
+            Some(Severity::Warning)
+        );
+
+        // They are the host's state, not the document's: an edit re-attaches
+        // them rather than clearing them.
+        model.set_scalar_text(&port, "9090");
+        let page = model.page_at(&[Seg::Key("server".into())]);
+        assert!(
+            page.items
+                .iter()
+                .any(|i| i.path == port && i.annotation.is_some())
+        );
+        assert_eq!(model.annotations().len(), 2);
+
+        // The tree projection is marked the same way.
+        model.select_row(0);
+        assert!(
+            model
+                .rows
+                .iter()
+                .any(|r| r.path == port && r.annotation.is_some())
+        );
+
+        model.set_annotations(Vec::new());
+        assert!(model.rows.iter().all(|r| r.annotation.is_none()));
     }
 
     // ── undo and redo ─────────────────────────────────────────────────────

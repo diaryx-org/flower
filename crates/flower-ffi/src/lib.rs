@@ -74,8 +74,9 @@
 use std::sync::{Arc, Mutex};
 
 use fig::{Format, Value};
+use flower_core::annotate::Severity;
 use flower_core::page::{self, InlineBudget, Page, PageItem};
-use flower_core::{Backend, FigBackend, ItemKind, Model, Seg, VKind, ViewMode};
+use flower_core::{Annotation, Backend, FigBackend, ItemKind, Model, Seg, VKind, ViewMode};
 
 uniffi::setup_scaffolding!();
 
@@ -213,6 +214,36 @@ pub struct PageItemView {
     /// The same-line comment after the value (`port = 8080 # dev`), marker
     /// stripped. Single-line by construction.
     pub trailing_comment: Option<String>,
+    /// How loudly the host's finding about this node reads — `"error"`,
+    /// `"warning"`, `"info"` — or `None` when there is none
+    /// ([`FlowerDoc::set_annotations`]).
+    ///
+    /// Two flat fields rather than a nested record, because the FFI-free page
+    /// views in `FlowerPagesUI` describe a row through a protocol of scalars: a
+    /// nested record would put a binding type in the protocol and take the
+    /// "no binding behind it" property of that target away.
+    pub annotation_severity: Option<String>,
+    /// What the finding says, one line, written for whoever is looking at the
+    /// row. `None` when there is none.
+    pub annotation_message: Option<String>,
+}
+
+/// One host finding on its way *in* — the peer of the two `annotation_` fields
+/// a [`PageItemView`] carries on the way out.
+///
+/// `id` is the dotted path the rest of this binding names nodes by, and is
+/// resolved against the whole document rather than against the pages that
+/// happen to be live: a check reports on the file, not on what is on screen.
+/// An id that names nothing is dropped — a host need not prune its findings
+/// against a tree it does not own.
+#[derive(uniffi::Record, Clone)]
+pub struct AnnotationInput {
+    pub id: String,
+    /// `"error"`, `"warning"`, or `"info"`, case-insensitively. Anything else
+    /// is read as `"info"`: an unrecognised level is still something the host
+    /// wanted said.
+    pub severity: String,
+    pub message: String,
 }
 
 /// A step of a page's breadcrumb: the container it names, and the id to open it.
@@ -759,6 +790,31 @@ impl FlowerDoc {
         pages_of(&m)
     }
 
+    /// Hand the document the host's findings about it, replacing whatever it
+    /// was given last — a broken link, a duplicate id, anything only a
+    /// workspace can check. An empty list clears them.
+    ///
+    /// They are host state: an edit re-attaches them rather than clearing them,
+    /// so a row keeps its marker while the reader types, and nothing here
+    /// re-checks anything. Call it again after a save, or whenever the host's
+    /// own check finishes.
+    pub fn set_annotations(&self, annotations: Vec<AnnotationInput>) -> PagesView {
+        let mut m = self.lock();
+        let resolved = annotations
+            .into_iter()
+            .filter_map(|a| {
+                let path = path_for_id_anywhere(&m, &a.id)?;
+                Some(Annotation::new(
+                    path,
+                    parse_severity(&a.severity),
+                    a.message,
+                ))
+            })
+            .collect();
+        m.set_annotations(resolved);
+        pages_of(&m)
+    }
+
     // ── history ───────────────────────────────────────────────────────────
 
     /// Undo the most recent edit, wherever in the document it was made, and
@@ -997,7 +1053,70 @@ pub fn item_view_of(item: &PageItem) -> PageItemView {
         demoted: item.demoted,
         leading_comment: item.leading_comment.clone(),
         trailing_comment: item.trailing_comment.clone(),
+        annotation_severity: item
+            .annotation
+            .as_ref()
+            .map(|a| severity_name(a.severity).to_string()),
+        annotation_message: item.annotation.as_ref().map(|a| a.message.clone()),
     }
+}
+
+/// The renderer class id for a finding's severity — the vocabulary
+/// [`AnnotationInput::severity`] takes, read back.
+pub fn severity_name(severity: Severity) -> &'static str {
+    match severity {
+        Severity::Error => "error",
+        Severity::Warning => "warning",
+        Severity::Info => "info",
+    }
+}
+
+fn parse_severity(name: &str) -> Severity {
+    match name.to_ascii_lowercase().as_str() {
+        "error" => Severity::Error,
+        "warning" | "warn" => Severity::Warning,
+        _ => Severity::Info,
+    }
+}
+
+/// The path `id` names anywhere in the document, not just on a live pane.
+///
+/// [`path_for_id`] answers from the pages the model has in hand, which is right
+/// for an op the user just tapped and wrong for a list of findings: a check
+/// reports on nodes nobody has navigated to. So this falls back to a walk of
+/// the tree, matching the same printed form.
+fn path_for_id_anywhere<B: Backend>(model: &Model<B>, id: &str) -> Option<Vec<Seg>> {
+    if let Some(path) = path_for_id(model, id) {
+        return Some(path);
+    }
+    fn walk(node: &Value, at: &mut Vec<Seg>, id: &str) -> Option<Vec<Seg>> {
+        if path_id(at) == id {
+            return Some(at.clone());
+        }
+        let children: Vec<Seg> = match node {
+            Value::Map(entries) => entries
+                .iter()
+                .filter_map(|(k, _)| match k {
+                    Value::Str(s) => Some(Seg::Key(s.clone())),
+                    _ => None,
+                })
+                .collect(),
+            Value::Seq(items) => (0..items.len()).map(Seg::Index).collect(),
+            _ => return None,
+        };
+        for seg in children {
+            at.push(seg);
+            let child = flower_core::tree::value_at(node, &at[at.len() - 1..]);
+            if let Some(child) = child
+                && let Some(found) = walk(child, at, id)
+            {
+                return Some(found);
+            }
+            at.pop();
+        }
+        None
+    }
+    walk(model.value_at(&[])?, &mut Vec::new(), id)
 }
 
 /// The fig path a page-view `id` names.
@@ -1061,6 +1180,66 @@ tags = [\"alpha\", \"beta\"]
 
     fn row_index(v: &DocView, id: &str) -> u32 {
         v.rows.iter().position(|r| r.id == id).unwrap() as u32
+    }
+
+    #[test]
+    fn a_finding_reaches_the_row_it_names_wherever_it_is() {
+        let doc = doc();
+        // `server.port` is on no page the model has live at the root, which is
+        // exactly the case a check reports on.
+        let view = doc.set_annotations(vec![
+            AnnotationInput {
+                id: "server.port".to_string(),
+                severity: "Error".to_string(),
+                message: "already in use".to_string(),
+            },
+            AnnotationInput {
+                id: "nothing.here".to_string(),
+                severity: "warning".to_string(),
+                message: "dropped".to_string(),
+            },
+        ]);
+        assert!(
+            view.page
+                .items
+                .iter()
+                .all(|i| i.annotation_message.is_none()),
+            "the root page names no annotated node"
+        );
+
+        let page = doc.page_at("server".to_string());
+        let port = page
+            .items
+            .iter()
+            .find(|i| i.id == "server.port")
+            .expect("port is on server's page");
+        assert_eq!(port.annotation_severity.as_deref(), Some("error"));
+        assert_eq!(port.annotation_message.as_deref(), Some("already in use"));
+
+        // An id that names nothing is dropped rather than held.
+        let view = doc.pages();
+        assert_eq!(view.undo_depth, 0);
+        doc.set_annotations(Vec::new());
+        let page = doc.page_at("server".to_string());
+        assert!(page.items.iter().all(|i| i.annotation_severity.is_none()));
+    }
+
+    #[test]
+    fn undo_and_redo_cross_the_binding_as_a_whole_frame() {
+        let doc = doc();
+        let view = doc.page_set_value("version".to_string(), "42".to_string());
+        assert_eq!(view.undo_depth, 1);
+        assert_eq!(view.edit_seq, 1);
+        assert!(view.dirty);
+
+        let view = doc.undo();
+        assert_eq!(view.redo_depth, 1);
+        assert!(!view.dirty, "back at the bytes it opened with");
+        assert!(doc.source().contains("version = 1"));
+
+        let view = doc.redo();
+        assert_eq!(view.redo_depth, 0);
+        assert!(doc.source().contains("version = 42"));
     }
 
     #[test]

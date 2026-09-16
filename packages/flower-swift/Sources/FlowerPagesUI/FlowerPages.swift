@@ -967,6 +967,19 @@ private struct PageRow<Model: PageDriving>: View {
         } else {
             VStack(alignment: .leading, spacing: 1) {
                 nameLine
+                // What the host found about this row, when it found anything.
+                // Above the note, and in the severity's colour: a finding is
+                // about *this document as it stands*, where a description is
+                // about the field in general, and the one that can be acted on
+                // reads first.
+                if let message = item.annotationMessage {
+                    let mark = theme.marker(forSeverity: item.annotationSeverity ?? "info")
+                    Label(message, systemImage: mark.symbol)
+                        .font(.system(size: 11))
+                        .foregroundStyle(mark.color)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                }
                 // The schema's help text, or failing that the comment the file
                 // wrote above the entry. One line: a row is a row, and a
                 // paragraph under one of them would turn a list you scan into a

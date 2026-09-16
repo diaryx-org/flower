@@ -156,6 +156,28 @@ final class FlowerModelTests: XCTestCase {
         XCTAssertFalse(model.canRedo)
     }
 
+    func testAnnotationsMarkTheirRowsAndSurviveAnEdit() throws {
+        let model = try makeModel()
+        model.setAnnotations([
+            AnnotationInput(id: "version", severity: "error", message: "already in use")
+        ])
+        XCTAssertEqual(item(model, "version")?.annotationSeverity, "error")
+        XCTAssertEqual(item(model, "version")?.annotationMessage, "already in use")
+        XCTAssertNil(item(model, "title")?.annotationMessage)
+
+        // Host state, not document state: an edit re-attaches them.
+        guard let version = item(model, "version") else {
+            return XCTFail("no version row")
+        }
+        model.beginEdit(version)
+        model.editBuffer = "42"
+        model.commitEdit()
+        XCTAssertEqual(item(model, "version")?.annotationMessage, "already in use")
+
+        model.clearAnnotations()
+        XCTAssertNil(item(model, "version")?.annotationSeverity)
+    }
+
     func testThemeColoursValuesByKind() {
         let theme = FlowerTheme.default
         // Distinct kinds map to distinct colours; containers use chrome (secondary).

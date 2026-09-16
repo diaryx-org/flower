@@ -207,6 +207,24 @@ public final class FlowerModel: ObservableObject {
         apply(doc.pageDelete(id: item.id))
     }
 
+    // ── the host's findings ───────────────────────────────────────────────────
+
+    /// Hand the document what the host found about it — a link that resolves to
+    /// nothing, an id two documents share, anything only a workspace can check
+    /// — replacing whatever it was given last. An empty array clears them.
+    ///
+    /// Each `id` is the dotted path a row is named by, resolved against the
+    /// whole document rather than against the pages on screen; one that names
+    /// nothing is dropped. They survive editing (a row keeps its marker while
+    /// the reader types) and nothing here re-checks them, so call it again
+    /// after a save or whenever the host's own check finishes.
+    public func setAnnotations(_ annotations: [AnnotationInput]) {
+        apply(doc.setAnnotations(annotations: annotations))
+    }
+
+    /// Clear every finding.
+    public func clearAnnotations() { setAnnotations([]) }
+
     // ── history ───────────────────────────────────────────────────────────────
 
     /// Undo the most recent edit, wherever in the document it was made — the

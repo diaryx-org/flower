@@ -17,6 +17,7 @@
 //!   The document as a settings menu, and the one that stays legible when it is
 //!   deep — or, under a generous budget, the whole document on one page.
 
+pub mod annotate;
 pub mod backend;
 pub mod format;
 pub mod model;
@@ -24,6 +25,7 @@ pub mod page;
 pub mod schema;
 pub mod tree;
 
+pub use annotate::Annotation;
 pub use backend::{Backend, BackendError, EditOp, FigBackend};
 pub use format::detect;
 pub use model::{EditSlot, Mode, Model, ViewMode};

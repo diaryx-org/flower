@@ -45,6 +45,7 @@ use ratatui::layout::{Constraint, Layout, Position, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 
+use flower_core::annotate::Severity;
 use flower_core::{Backend, EditSlot, ItemKind, Mode, Model, Page, PageItem, VKind};
 
 /// Below this width a two-pane split leaves neither pane usable, so the page view
@@ -89,6 +90,24 @@ fn value_style(kind: VKind) -> Style {
         VKind::Map | VKind::Seq => Color::DarkGray,
     };
     Style::default().fg(color)
+}
+
+/// The glyph and colour a host's finding is drawn with, before the name.
+///
+/// One column, always the same column, whatever the severity: a marker that
+/// changed width would shift every name on the page the moment a check ran,
+/// and the point of it is to be scannable down the left edge rather than to be
+/// read. The message itself goes in the footer, where there is room for a
+/// sentence.
+fn marker_of(severity: Severity) -> (&'static str, Style) {
+    match severity {
+        Severity::Error => (
+            "!",
+            Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+        ),
+        Severity::Warning => ("?", Style::default().fg(Color::Yellow)),
+        Severity::Info => ("·", dim()),
+    }
 }
 
 fn dim() -> Style {
@@ -816,13 +835,24 @@ fn tail_start(indent: usize, name: &[Span<'static>], col: usize) -> usize {
 /// a list of twenty steps the title is what you are reading and the index is what
 /// you check afterwards.
 fn name_spans(item: &PageItem) -> Vec<Span<'static>> {
+    let mut spans = match &item.annotation {
+        // Before the name rather than after the value: a finding is about the
+        // field, and a column of markers is read down the edge of the page
+        // without reading a single row.
+        Some(a) => {
+            let (glyph, style) = marker_of(a.severity);
+            vec![Span::styled(format!("{glyph} "), style)]
+        }
+        None => Vec::new(),
+    };
     match &item.title {
-        Some(title) => vec![
-            Span::styled(format!("{} ", item.label), dim()),
-            Span::styled(title.clone(), key_style()),
-        ],
-        None => vec![Span::styled(item.label.clone(), key_style())],
+        Some(title) => {
+            spans.push(Span::styled(format!("{} ", item.label), dim()));
+            spans.push(Span::styled(title.clone(), key_style()));
+        }
+        None => spans.push(Span::styled(item.label.clone(), key_style())),
     }
+    spans
 }
 
 /// `text` cut to `room` columns, with an ellipsis where it was cut. Empty when
@@ -878,6 +908,16 @@ fn draw_footer<B: Backend>(f: &mut Frame, model: &Model<B>, area: Rect) {
                 spans.push(Span::styled(
                     format!(" {} ", model.status),
                     Style::default().fg(Color::Black).bg(Color::Green),
+                ));
+            } else if let Some(a) = model.page_item().and_then(|i| i.annotation.as_ref()) {
+                // The marker says *that* there is something; this says what.
+                // Only while the status has nothing of its own: a refusal is
+                // about the keystroke just pressed, and a finding will still be
+                // there on the next frame.
+                let (_, style) = marker_of(a.severity);
+                spans.push(Span::styled(
+                    format!(" {} ", a.message),
+                    style.add_modifier(Modifier::BOLD),
                 ));
             }
             spans.push(Span::styled(hints, dim()));
@@ -968,6 +1008,37 @@ timeout = 30.5
         assert!(!out.contains("host = "), "{out}");
         assert!(!out.contains("▾ "), "{out}");
         assert!(!out.contains("v pages") && !out.contains("v tree"), "{out}");
+    }
+
+    #[test]
+    fn a_host_finding_marks_its_row_and_names_itself_in_the_footer() {
+        use flower_core::Annotation;
+        use flower_core::annotate::Severity;
+
+        let mut model = model();
+        let port = vec![Seg::Key("server".into()), Seg::Key("port".into())];
+        model.set_annotations(vec![
+            Annotation::new(port.clone(), Severity::Error, "already in use"),
+            Annotation::new(vec![Seg::Key("title".into())], Severity::Info, "fine"),
+        ]);
+        model.focus_on(&port);
+
+        let out = render(&model, 76, 14);
+        assert!(
+            out.contains("! port"),
+            "the marker sits before the name:\n{out}"
+        );
+        // The selected row's message takes the footer, the status being empty.
+        assert!(out.contains("already in use"), "{out}");
+
+        // A refusal is about the keystroke just pressed and wins the bar back.
+        model.set_status("rejected: nope");
+        let out = render(&model, 76, 14);
+        assert!(out.contains("rejected: nope"), "{out}");
+        assert!(!out.contains("already in use"), "{out}");
+
+        // A row with no finding of its own carries no marker.
+        assert!(!out.contains("! host"), "{out}");
     }
 
     #[test]

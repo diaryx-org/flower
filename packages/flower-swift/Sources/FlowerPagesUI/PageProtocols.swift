@@ -176,6 +176,21 @@ public protocol PageItemDisplaying: Identifiable where ID == String {
 
     /// The same-line comment after the value, marker stripped. One line.
     var trailingComment: String? { get }
+
+    // ── what the host found, for a host that checks ──────────────────────────
+    //
+    // A schema says what a value *may* be, one field at a time. A finding says
+    // what is wrong with the document as it stands — a link that resolves to
+    // nothing, an id two documents share — and no single-document editor can
+    // work one out: they are facts about a workspace. So the host computes them
+    // and the row draws them, the same division as every other injected input.
+
+    /// How loudly the host's finding about this row reads: `error`, `warning`,
+    /// or `info`. `nil` — the default — when there is none.
+    var annotationSeverity: String? { get }
+
+    /// What the finding says, one line. `nil` when there is none.
+    var annotationMessage: String? { get }
 }
 
 public extension PageItemDisplaying {
@@ -189,6 +204,8 @@ public extension PageItemDisplaying {
     var linkLabel: String? { nil }
     var leadingComment: String? { nil }
     var trailingComment: String? { nil }
+    var annotationSeverity: String? { nil }
+    var annotationMessage: String? { nil }
 
     /// The sentence a row shows under its name: the schema's description where
     /// there is one, else the first line of the comment above the node. `nil`

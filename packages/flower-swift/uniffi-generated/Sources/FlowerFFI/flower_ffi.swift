@@ -702,6 +702,18 @@ public protocol FlowerDocProtocol : AnyObject {
     func select(index: UInt32)  -> DocView
     
     /**
+     * Hand the document the host's findings about it, replacing whatever it
+     * was given last — a broken link, a duplicate id, anything only a
+     * workspace can check. An empty list clears them.
+     *
+     * They are host state: an edit re-attaches them rather than clearing them,
+     * so a row keeps its marker while the reader types, and nothing here
+     * re-checks anything. Call it again after a save, or whenever the host's
+     * own check finishes.
+     */
+    func setAnnotations(annotations: [AnnotationInput])  -> PagesView
+    
+    /**
      * Set how much of a container's subtree the page projection inlines rather
      * than drills: at most `rows` rows per inlined subtree (every descendant is
      * one — nested headers included), reaching at most `depth` ranks of inset.
@@ -1229,6 +1241,24 @@ open func select(index: UInt32) -> DocView {
 }
     
     /**
+     * Hand the document the host's findings about it, replacing whatever it
+     * was given last — a broken link, a duplicate id, anything only a
+     * workspace can check. An empty list clears them.
+     *
+     * They are host state: an edit re-attaches them rather than clearing them,
+     * so a row keeps its marker while the reader types, and nothing here
+     * re-checks anything. Call it again after a save, or whenever the host's
+     * own check finishes.
+     */
+open func setAnnotations(annotations: [AnnotationInput]) -> PagesView {
+    return try!  FfiConverterTypePagesView.lift(try! rustCall() {
+    uniffi_flower_ffi_fn_method_flowerdoc_set_annotations(self.uniffiClonePointer(),
+        FfiConverterSequenceTypeAnnotationInput.lower(annotations),$0
+    )
+})
+}
+    
+    /**
      * Set how much of a container's subtree the page projection inlines rather
      * than drills: at most `rows` rows per inlined subtree (every descendant is
      * one — nested headers included), reaching at most `depth` ranks of inset.
@@ -1396,6 +1426,100 @@ public func FfiConverterTypeFlowerDoc_lift(_ pointer: UnsafeMutableRawPointer) t
 #endif
 public func FfiConverterTypeFlowerDoc_lower(_ value: FlowerDoc) -> UnsafeMutableRawPointer {
     return FfiConverterTypeFlowerDoc.lower(value)
+}
+
+
+/**
+ * One host finding on its way *in* — the peer of the two `annotation_` fields
+ * a [`PageItemView`] carries on the way out.
+ *
+ * `id` is the dotted path the rest of this binding names nodes by, and is
+ * resolved against the whole document rather than against the pages that
+ * happen to be live: a check reports on the file, not on what is on screen.
+ * An id that names nothing is dropped — a host need not prune its findings
+ * against a tree it does not own.
+ */
+public struct AnnotationInput {
+    public var id: String
+    /**
+     * `"error"`, `"warning"`, or `"info"`, case-insensitively. Anything else
+     * is read as `"info"`: an unrecognised level is still something the host
+     * wanted said.
+     */
+    public var severity: String
+    public var message: String
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(id: String, 
+        /**
+         * `"error"`, `"warning"`, or `"info"`, case-insensitively. Anything else
+         * is read as `"info"`: an unrecognised level is still something the host
+         * wanted said.
+         */severity: String, message: String) {
+        self.id = id
+        self.severity = severity
+        self.message = message
+    }
+}
+
+
+
+extension AnnotationInput: Equatable, Hashable {
+    public static func ==(lhs: AnnotationInput, rhs: AnnotationInput) -> Bool {
+        if lhs.id != rhs.id {
+            return false
+        }
+        if lhs.severity != rhs.severity {
+            return false
+        }
+        if lhs.message != rhs.message {
+            return false
+        }
+        return true
+    }
+
+    public func hash(into hasher: inout Hasher) {
+        hasher.combine(id)
+        hasher.combine(severity)
+        hasher.combine(message)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeAnnotationInput: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> AnnotationInput {
+        return
+            try AnnotationInput(
+                id: FfiConverterString.read(from: &buf), 
+                severity: FfiConverterString.read(from: &buf), 
+                message: FfiConverterString.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: AnnotationInput, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.id, into: &buf)
+        FfiConverterString.write(value.severity, into: &buf)
+        FfiConverterString.write(value.message, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAnnotationInput_lift(_ buf: RustBuffer) throws -> AnnotationInput {
+    return try FfiConverterTypeAnnotationInput.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeAnnotationInput_lower(_ value: AnnotationInput) -> RustBuffer {
+    return FfiConverterTypeAnnotationInput.lower(value)
 }
 
 
@@ -1704,6 +1828,22 @@ public struct PageItemView {
      * stripped. Single-line by construction.
      */
     public var trailingComment: String?
+    /**
+     * How loudly the host's finding about this node reads — `"error"`,
+     * `"warning"`, `"info"` — or `None` when there is none
+     * ([`FlowerDoc::set_annotations`]).
+     *
+     * Two flat fields rather than a nested record, because the FFI-free page
+     * views in `FlowerPagesUI` describe a row through a protocol of scalars: a
+     * nested record would put a binding type in the protocol and take the
+     * "no binding behind it" property of that target away.
+     */
+    public var annotationSeverity: String?
+    /**
+     * What the finding says, one line, written for whoever is looking at the
+     * row. `None` when there is none.
+     */
+    public var annotationMessage: String?
 
     // Default memberwise initializers are never public by default, so we
     // declare one manually.
@@ -1781,7 +1921,21 @@ public struct PageItemView {
         /**
          * The same-line comment after the value (`port = 8080 # dev`), marker
          * stripped. Single-line by construction.
-         */trailingComment: String?) {
+         */trailingComment: String?, 
+        /**
+         * How loudly the host's finding about this node reads — `"error"`,
+         * `"warning"`, `"info"` — or `None` when there is none
+         * ([`FlowerDoc::set_annotations`]).
+         *
+         * Two flat fields rather than a nested record, because the FFI-free page
+         * views in `FlowerPagesUI` describe a row through a protocol of scalars: a
+         * nested record would put a binding type in the protocol and take the
+         * "no binding behind it" property of that target away.
+         */annotationSeverity: String?, 
+        /**
+         * What the finding says, one line, written for whoever is looking at the
+         * row. `None` when there is none.
+         */annotationMessage: String?) {
         self.id = id
         self.label = label
         self.title = title
@@ -1796,6 +1950,8 @@ public struct PageItemView {
         self.demoted = demoted
         self.leadingComment = leadingComment
         self.trailingComment = trailingComment
+        self.annotationSeverity = annotationSeverity
+        self.annotationMessage = annotationMessage
     }
 }
 
@@ -1845,6 +2001,12 @@ extension PageItemView: Equatable, Hashable {
         if lhs.trailingComment != rhs.trailingComment {
             return false
         }
+        if lhs.annotationSeverity != rhs.annotationSeverity {
+            return false
+        }
+        if lhs.annotationMessage != rhs.annotationMessage {
+            return false
+        }
         return true
     }
 
@@ -1863,6 +2025,8 @@ extension PageItemView: Equatable, Hashable {
         hasher.combine(demoted)
         hasher.combine(leadingComment)
         hasher.combine(trailingComment)
+        hasher.combine(annotationSeverity)
+        hasher.combine(annotationMessage)
     }
 }
 
@@ -1887,7 +2051,9 @@ public struct FfiConverterTypePageItemView: FfiConverterRustBuffer {
                 chain: FfiConverterSequenceString.read(from: &buf), 
                 demoted: FfiConverterBool.read(from: &buf), 
                 leadingComment: FfiConverterOptionString.read(from: &buf), 
-                trailingComment: FfiConverterOptionString.read(from: &buf)
+                trailingComment: FfiConverterOptionString.read(from: &buf), 
+                annotationSeverity: FfiConverterOptionString.read(from: &buf), 
+                annotationMessage: FfiConverterOptionString.read(from: &buf)
         )
     }
 
@@ -1906,6 +2072,8 @@ public struct FfiConverterTypePageItemView: FfiConverterRustBuffer {
         FfiConverterBool.write(value.demoted, into: &buf)
         FfiConverterOptionString.write(value.leadingComment, into: &buf)
         FfiConverterOptionString.write(value.trailingComment, into: &buf)
+        FfiConverterOptionString.write(value.annotationSeverity, into: &buf)
+        FfiConverterOptionString.write(value.annotationMessage, into: &buf)
     }
 }
 
@@ -2604,6 +2772,31 @@ fileprivate struct FfiConverterSequenceString: FfiConverterRustBuffer {
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
+fileprivate struct FfiConverterSequenceTypeAnnotationInput: FfiConverterRustBuffer {
+    typealias SwiftType = [AnnotationInput]
+
+    public static func write(_ value: [AnnotationInput], into buf: inout [UInt8]) {
+        let len = Int32(value.count)
+        writeInt(&buf, len)
+        for item in value {
+            FfiConverterTypeAnnotationInput.write(item, into: &buf)
+        }
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> [AnnotationInput] {
+        let len: Int32 = try readInt(&buf)
+        var seq = [AnnotationInput]()
+        seq.reserveCapacity(Int(len))
+        for _ in 0 ..< len {
+            seq.append(try FfiConverterTypeAnnotationInput.read(from: &buf))
+        }
+        return seq
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
 fileprivate struct FfiConverterSequenceTypeCrumbView: FfiConverterRustBuffer {
     typealias SwiftType = [CrumbView]
 
@@ -2779,6 +2972,9 @@ private var initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_flower_ffi_checksum_method_flowerdoc_select() != 42705) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_flower_ffi_checksum_method_flowerdoc_set_annotations() != 49099) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_flower_ffi_checksum_method_flowerdoc_set_inline_budget() != 12151) {

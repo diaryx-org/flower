@@ -123,6 +123,11 @@ pub struct Row {
     pub expanded: bool,
     /// The fig path to this node from the document root.
     pub path: Vec<Seg>,
+    /// What the host has to say about this node, if anything
+    /// ([`annotate`](crate::annotate)). Filled by the model after the rows are
+    /// built — [`build_rows`] is a function of the value tree, and a finding
+    /// is not in it — so a row list built from a bare `Value` carries none.
+    pub annotation: Option<crate::annotate::Annotation>,
 }
 
 impl Row {
@@ -268,6 +273,7 @@ fn push_node(
         preview: preview(v),
         expanded,
         path: path.clone(),
+        annotation: None,
     });
 
     if expanded {

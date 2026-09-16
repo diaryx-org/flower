@@ -365,6 +365,16 @@ pub struct PageItem {
     /// marker stripped. Filled the same way as
     /// [`leading_comment`](Self::leading_comment).
     pub trailing_comment: Option<String>,
+    /// What the host has to say about this node — a broken link, a duplicate
+    /// id, anything only a workspace can know ([`annotate`](crate::annotate)).
+    ///
+    /// Addressed **exactly**: a finding on a list marks the list's row and not
+    /// each of its items, which would put one error's glyph on ninety-five
+    /// rows. An item is marked when the host says so about the item.
+    ///
+    /// Not [`build_page`]'s to fill either — the same pass that reads comments
+    /// attaches these, for the same reason: the value tree holds neither.
+    pub annotation: Option<crate::annotate::Annotation>,
 }
 
 impl PageItem {
@@ -1036,6 +1046,7 @@ fn item(
         summary: is_container(v).then(|| flow(v, SUMMARY_BUDGET)).flatten(),
         leading_comment: None,
         trailing_comment: None,
+        annotation: None,
     }
 }
 

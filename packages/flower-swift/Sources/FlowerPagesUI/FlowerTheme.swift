@@ -44,6 +44,19 @@ public struct FlowerTheme {
         }
     }
 
+    /// The SF Symbol and colour a host's finding is drawn with, by severity —
+    /// the SwiftUI peer of the TUI's `!` / `?` / `·` markers.
+    ///
+    /// An unknown severity reads as the mildest one rather than as nothing: a
+    /// host that invented a level still meant to say something.
+    public func marker(forSeverity severity: String) -> (symbol: String, color: Color) {
+        switch severity {
+        case "error": return ("exclamationmark.triangle.fill", .red)
+        case "warning": return ("exclamationmark.circle.fill", .orange)
+        default: return ("info.circle", .secondary)
+        }
+    }
+
     /// The SF Symbol shown at the head of a row: a disclosure state for
     /// containers, a small dot for scalars.
     public func symbol(isContainer: Bool, expanded: Bool) -> String {

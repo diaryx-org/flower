@@ -416,6 +416,11 @@ RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_rename_key(void*_Nonnull ptr, u
 RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_select(void*_Nonnull ptr, uint32_t index, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_SET_ANNOTATIONS
+#define UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_SET_ANNOTATIONS
+RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_set_annotations(void*_Nonnull ptr, RustBuffer annotations, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_SET_INLINE_BUDGET
 #define UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_SET_INLINE_BUDGET
 RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_set_inline_budget(void*_Nonnull ptr, uint32_t rows, uint32_t depth, RustCallStatus *_Nonnull out_status
@@ -913,6 +918,12 @@ uint16_t uniffi_flower_ffi_checksum_method_flowerdoc_rename_key(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_CHECKSUM_METHOD_FLOWERDOC_SELECT
 #define UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_CHECKSUM_METHOD_FLOWERDOC_SELECT
 uint16_t uniffi_flower_ffi_checksum_method_flowerdoc_select(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_CHECKSUM_METHOD_FLOWERDOC_SET_ANNOTATIONS
+#define UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_CHECKSUM_METHOD_FLOWERDOC_SET_ANNOTATIONS
+uint16_t uniffi_flower_ffi_checksum_method_flowerdoc_set_annotations(void
     
 );
 #endif

@@ -54,6 +54,11 @@ Early prototype. Working today:
   as through a keystroke and undoing to the saved text reads as clean again. A
   host pairing flower with another editor interleaves the two histories by
   `Model::edit_seq`.
+- Draw the **host's findings** beside the rows they are about: a workspace
+  check (a link that resolves to nothing, an id two documents share) is a fact
+  flower cannot compute, so the embedder hands it over — `Model::set_annotations`
+  — and every row that names one carries a marker, with its message in the
+  status line.
 - Save (writes fig's edited source back to disk).
 
 Deliberately not here yet — see the roadmap.

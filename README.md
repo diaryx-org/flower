@@ -273,12 +273,16 @@ app-specific bridge lives in provui, not here — flower doesn't depend on prov.
   same renderer, curated. The "advanced" rank is the piece that has landed: it is
   a set of keys the embedder names, and a schema would be where a document
   declares its own instead.
-- **Stable identity for a sequence item**: a path addresses one by index, so
-  reordering or deleting an earlier sibling silently re-points every id after it.
-  Core re-finds the *cursor* across an edit, but a breadcrumb and a navigation
-  stack hold ids, so a screen you pushed can come to name a different item. A
-  per-item identity (fig has none today) would fix both, and the tree's row ids
-  with it.
+- **Stable identity for a sequence item**: half done. A path still addresses an
+  item by index, but the model now records what the item *was* — the backend's
+  own key (`Backend::item_key`, which a workspace-aware backend answers with a
+  link target or a record id) or, failing that, the title the row already shows
+  it by — and re-points the open page and the remembered cursors onto it after
+  every edit, undo and redo. A reorder or the deletion of an earlier sibling no
+  longer turns a page you opened into a different item. What remains is the ids
+  a *host* holds: a navigation stack's path is still indices, and the tree's row
+  ids with it, so a host that wants to survive a reorder asks `Model::item_key`
+  and re-resolves as the model does.
 - **Native frontend affordances** (`FlowerUI`): today it edits scalars in one
   inline text field. Next: type-aware widgets (bool toggle, number stepper, enum
   picker), keyboard navigation, insert/reorder, and comment *editing* — the

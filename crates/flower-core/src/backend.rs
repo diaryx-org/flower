@@ -221,6 +221,26 @@ pub trait Backend {
         let _ = path;
         Ok(None)
     }
+
+    /// A stable identity for item `index` of the sequence at `seq_path`, if the
+    /// backend has one. `None` — the default — leaves the model to infer one.
+    ///
+    /// A path addresses a sequence item by *position*, so reordering a list or
+    /// deleting an earlier sibling silently re-points every path after it: a
+    /// page opened on item 2 goes on showing item 2, which is now a different
+    /// item. fig has no per-item identity to fix that with, and inventing one
+    /// in the model would mean inventing it for documents that already have
+    /// one — so this is the seam. A backend over a list of links returns the
+    /// link target; one over a list of records returns the record's id.
+    ///
+    /// Only an identity is wanted here, not a label: two items that return the
+    /// same string are indistinguishable to everything that uses this, and the
+    /// first of them wins. Return `None` for an item you cannot name uniquely
+    /// rather than something approximate.
+    fn item_key(&self, seq_path: &[Seg], index: usize) -> Result<Option<String>, BackendError> {
+        let _ = (seq_path, index);
+        Ok(None)
+    }
 }
 
 /// A [`Backend`] over a standalone config file, backed by [`fig::Editor`].

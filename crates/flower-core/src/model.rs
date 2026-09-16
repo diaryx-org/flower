@@ -200,6 +200,20 @@ pub struct Model<B> {
     saved_source: String,
 }
 
+/// What the page view was pointing at, by identity, at the moment an edit was
+/// applied — see [`Model::identities`].
+///
+/// A path addresses a sequence item by position, so a reorder or a delete of an
+/// earlier sibling re-points every path after it. Holding the *keys* alongside
+/// the indices is what lets the model put the cursor and the open page back on
+/// the item they were on rather than on whatever has since taken its number.
+struct Identities {
+    /// One entry per segment of the focus.
+    focus: Vec<Option<String>>,
+    /// The remembered cursors, each with the keys of its own path.
+    memory: Vec<(Vec<Seg>, Vec<Option<String>>)>,
+}
+
 /// One committed edit, with what it takes to undo it and to do it again.
 ///
 /// The inverse is a *list* because two ops in [`EditOp`]'s vocabulary do not
@@ -562,14 +576,131 @@ impl<B: Backend> Model<B> {
         self.dirty = false;
     }
 
+    // ── stable identity for a sequence item ───────────────────────────────
+
+    /// A stable identity for item `index` of the sequence at `seq_path`, or
+    /// `None` when nothing can name it.
+    ///
+    /// The backend first ([`Backend::item_key`]) — it is the component that may
+    /// have a real identity to hand — and otherwise the projection's own guess:
+    /// a mapping item is named by whichever of its fields best names it on a
+    /// page ([`page::title_keys`]/[`page::title_of`], the same answer the row
+    /// already shows), and a scalar item by its own text. Neither is guaranteed
+    /// unique, which is why every use of this treats a repeat as "the first
+    /// one": a list of five identical strings has nothing to tell its items
+    /// apart with, and behaving as though it did would be worse than falling
+    /// back to the index.
+    ///
+    /// Public because a host holding an id of its own — a navigation stack, a
+    /// breadcrumb — needs the same answer the model re-resolves against.
+    pub fn item_key(&self, seq_path: &[Seg], index: usize) -> Option<String> {
+        if let Ok(Some(key)) = self.backend.item_key(seq_path, index) {
+            return Some(key);
+        }
+        let Some(Value::Seq(items)) = self.value_at(seq_path) else {
+            return None;
+        };
+        let item = items.get(index)?;
+        match item {
+            Value::Map(_) => page::title_of(&page::title_keys(items), item),
+            Value::Seq(_) => None,
+            scalar => Some(tree::edit_seed(scalar)),
+        }
+    }
+
+    /// The identity of every indexed step of `path`, taken against the tree as
+    /// it stands — `None` at a step that is a key, or an item nothing names.
+    fn keys_along(&self, path: &[Seg]) -> Vec<Option<String>> {
+        path.iter()
+            .enumerate()
+            .map(|(i, seg)| match seg {
+                Seg::Index(index) => self.item_key(&path[..i], *index),
+                Seg::Key(_) => None,
+            })
+            .collect()
+    }
+
+    /// `path`, with every indexed step moved to wherever the item it named has
+    /// ended up.
+    ///
+    /// A step whose item is gone, or that nothing could name, keeps its index
+    /// and is left to the clamping the rebuild already does: a page whose
+    /// container was deleted pops to the nearest surviving ancestor, which is
+    /// the behaviour that was there before identity was.
+    fn resolve_against(&self, path: &[Seg], keys: &[Option<String>]) -> Vec<Seg> {
+        let mut out: Vec<Seg> = Vec::with_capacity(path.len());
+        for (i, seg) in path.iter().enumerate() {
+            match (seg, keys.get(i).and_then(Option::as_ref)) {
+                (Seg::Index(index), Some(want)) => {
+                    let len = self.seq_len(&out);
+                    let found = (0..len).find(|j| self.item_key(&out, *j).as_ref() == Some(want));
+                    out.push(Seg::Index(found.unwrap_or(*index)));
+                }
+                _ => out.push(seg.clone()),
+            }
+        }
+        out
+    }
+
+    /// Where the page view is standing, by identity rather than by index — what
+    /// an edit elsewhere in the document must not be allowed to re-point.
+    ///
+    /// Taken *before* an edit is applied, because an identity is read off the
+    /// tree the path was taken against, and restored after: see
+    /// [`restore_identities`](Self::restore_identities).
+    fn identities(&self) -> Identities {
+        Identities {
+            focus: self.keys_along(&self.focus),
+            memory: self
+                .page_memory
+                .keys()
+                .map(|path| (path.clone(), self.keys_along(path)))
+                .collect(),
+        }
+    }
+
+    /// Move [`focus`](Self::focus) and the remembered cursors onto whatever the
+    /// items they named have become.
+    ///
+    /// Run against the *new* tree, so every `item_key` call here reads the
+    /// document as the edit left it. A reorder moves a path; a delete of an
+    /// earlier sibling shifts it down; an append leaves it alone — and none of
+    /// the three is a special case, because all three are "where did the thing
+    /// I was looking at go".
+    fn restore_identities(&mut self, ids: Identities) {
+        self.focus = self.resolve_against(&self.focus.clone(), &ids.focus);
+        let memory = std::mem::take(&mut self.page_memory);
+        self.page_memory = ids
+            .memory
+            .into_iter()
+            .filter_map(|(path, keys)| {
+                let selected = memory.get(&path)?;
+                Some((self.resolve_against(&path, &keys), *selected))
+            })
+            .collect();
+    }
+
     // ── view derivation ───────────────────────────────────────────────────────
 
     /// Re-derive `value` + `rows` from the backend's current tree.
     fn reload(&mut self) -> Result<()> {
+        self.reload_keeping(None)
+    }
+
+    /// [`reload`](Self::reload), re-pointing the page view's paths at the items
+    /// they named before the edit when `ids` says what those were.
+    ///
+    /// Between reading the tree and rebuilding the pages, because the focus a
+    /// page is built from must already be the corrected one — rebuilding twice
+    /// would draw one frame of the wrong page.
+    fn reload_keeping(&mut self, ids: Option<Identities>) -> Result<()> {
         self.value = self
             .backend
             .to_value()
             .map_err(|e| anyhow::anyhow!("reading value tree: {e}"))?;
+        if let Some(ids) = ids {
+            self.restore_identities(ids);
+        }
         self.rebuild_rows();
         self.rebuild_pages();
         Ok(())
@@ -1740,6 +1871,9 @@ impl<B: Backend> Model<B> {
         // inverse is a statement about the document the op is addressed
         // against, and after the splice that document is gone.
         let inverse = self.invert(&op);
+        // Taken before the splice: an item's identity is read off the tree the
+        // path was taken against.
+        let ids = self.identities();
         match self.backend.apply(op.clone()) {
             Ok(()) => {
                 match inverse {
@@ -1760,7 +1894,7 @@ impl<B: Backend> Model<B> {
                 // ahead of us.
                 self.redo_stack.clear();
                 self.edit_seq += 1;
-                self.after_edit(&anchor, msg);
+                self.after_edit(&anchor, msg, ids);
                 // A soft-warn overrides the success status so the user sees it.
                 if let Some(why) = warn {
                     self.status = why.to_string();
@@ -1822,12 +1956,13 @@ impl<B: Backend> Model<B> {
             self.undo_stack.push(change);
             return;
         }
+        let ids = self.identities();
         match self.apply_all(&change.inverse) {
             Ok(()) => {
                 self.edit_seq += 1;
                 let anchor = change.anchor.clone();
                 self.redo_stack.push(change);
-                self.after_edit(&anchor, "undone");
+                self.after_edit(&anchor, "undone", ids);
                 self.reveal(&anchor);
             }
             Err(e) => {
@@ -1849,12 +1984,13 @@ impl<B: Backend> Model<B> {
             self.redo_stack.push(change);
             return;
         }
+        let ids = self.identities();
         match self.apply_all(std::slice::from_ref(&change.forward)) {
             Ok(()) => {
                 self.edit_seq += 1;
                 let anchor = change.anchor.clone();
                 self.undo_stack.push(change);
-                self.after_edit(&anchor, "redone");
+                self.after_edit(&anchor, "redone", ids);
                 self.reveal(&anchor);
             }
             Err(e) => {
@@ -1900,6 +2036,13 @@ impl<B: Backend> Model<B> {
             return;
         }
         match self.view {
+            // Already on screen, in either of the two ways it can be: the page
+            // lists it (`after_edit` has just put the cursor on it), or it is
+            // the container the cursor is standing *inside*. Navigating in
+            // either case would take a reader out of the page they were on to
+            // show them a row they can already see.
+            ViewMode::Pages
+                if self.focus.starts_with(anchor) || self.page.position_of(anchor).is_some() => {}
             ViewMode::Pages => self.focus_on(anchor),
             ViewMode::Tree => {
                 for i in 0..anchor.len() {
@@ -2042,8 +2185,8 @@ impl<B: Backend> Model<B> {
 
     /// Shared tail of a successful mutation: refresh the view, re-anchor
     /// selection, mark dirty, set the status line.
-    fn after_edit(&mut self, anchor: &[Seg], msg: &str) {
-        if let Err(e) = self.reload() {
+    fn after_edit(&mut self, anchor: &[Seg], msg: &str, ids: Identities) {
+        if let Err(e) = self.reload_keeping(Some(ids)) {
             self.status = format!("view refresh failed: {e}");
             return;
         }
@@ -3415,6 +3558,223 @@ b = 2
 
         // The left pane can always mark the row the right one was opened from.
         assert!(model.parent_page().position_of(model.focus()).is_some());
+    }
+
+    // ── stable identity for a sequence item ───────────────────────────────
+
+    /// Five items, each named by a field that tells it from the others — the
+    /// shape a page of a list actually has.
+    fn steps_model() -> Model<FigBackend> {
+        let src = concat!(
+            r#"{"steps": ["#,
+            r#"{"name": "alpha", "run": "a"},"#,
+            r#"{"name": "bravo", "run": "b"},"#,
+            r#"{"name": "charlie", "run": "c"},"#,
+            r#"{"name": "delta", "run": "d"},"#,
+            r#"{"name": "echo", "run": "e"}"#,
+            r#"], "tags": ["x", "y", "z"]}"#,
+        );
+        let backend = FigBackend::open(src.as_bytes(), Format::Json).expect("open");
+        let mut model = Model::new(backend).expect("model");
+        model.set_view(ViewMode::Pages);
+        // Nothing inlines, so each step is a page you can stand *in* — which is
+        // the case a reorder re-points and the one this is about.
+        model.set_inline_budget(InlineBudget::new(0, 0));
+        model
+    }
+
+    /// The name of the step the page is standing on, read out of the document.
+    fn focused_name(model: &Model<FigBackend>) -> Option<String> {
+        let mut path = model.focus().to_vec();
+        path.push(Seg::Key("name".into()));
+        match model.value_at(&path) {
+            Some(Value::Str(s)) => Some(s.clone()),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn a_reorder_does_not_re_point_the_page_you_have_open() {
+        let mut model = steps_model();
+        let steps = vec![Seg::Key("steps".into())];
+        let mut third = steps.clone();
+        third.push(Seg::Index(2));
+        model.focus_on(&third);
+        model.page_enter();
+        assert_eq!(focused_name(&model).as_deref(), Some("charlie"));
+
+        // `alpha` goes to the end, so everything above it shifts down one.
+        model.commit(
+            EditOp::MoveItem {
+                seq_path: steps.clone(),
+                from: 0,
+                to: 4,
+            },
+            steps.clone(),
+            "moved",
+        );
+        assert_eq!(model.focus(), [Seg::Key("steps".into()), Seg::Index(1)]);
+        assert_eq!(
+            focused_name(&model).as_deref(),
+            Some("charlie"),
+            "the page is still the step it was opened on"
+        );
+
+        // …and the undo puts it back, by the same rule in reverse.
+        model.undo();
+        assert_eq!(model.focus(), [Seg::Key("steps".into()), Seg::Index(2)]);
+        assert_eq!(focused_name(&model).as_deref(), Some("charlie"));
+    }
+
+    #[test]
+    fn deleting_an_earlier_sibling_does_not_re_point_it_either() {
+        let mut model = steps_model();
+        let steps = vec![Seg::Key("steps".into())];
+        let mut third = steps.clone();
+        third.push(Seg::Index(2));
+        model.focus_on(&third);
+        model.page_enter();
+
+        model.commit(
+            EditOp::RemoveItem {
+                seq_path: steps.clone(),
+                index: 0,
+            },
+            steps.clone(),
+            "deleted",
+        );
+        assert_eq!(model.focus(), [Seg::Key("steps".into()), Seg::Index(1)]);
+        assert_eq!(focused_name(&model).as_deref(), Some("charlie"));
+
+        // An append after it changes nothing, which is the third case and the
+        // one that must not move.
+        model.commit(
+            EditOp::AppendItem {
+                seq_path: steps.clone(),
+                value: Value::Map(vec![(
+                    Value::Str("name".into()),
+                    Value::Str("foxtrot".into()),
+                )]),
+            },
+            steps,
+            "appended",
+        );
+        assert_eq!(model.focus(), [Seg::Key("steps".into()), Seg::Index(1)]);
+        assert_eq!(focused_name(&model).as_deref(), Some("charlie"));
+    }
+
+    #[test]
+    fn a_page_the_edit_removed_falls_back_to_the_clamping_it_always_had() {
+        let mut model = steps_model();
+        let steps = vec![Seg::Key("steps".into())];
+        let mut third = steps.clone();
+        third.push(Seg::Index(2));
+        model.focus_on(&third);
+        model.page_enter();
+
+        model.commit(
+            EditOp::RemoveItem {
+                seq_path: steps.clone(),
+                index: 2,
+            },
+            steps,
+            "deleted",
+        );
+        // Nothing to re-find: the key `charlie` named is gone, so the index is
+        // kept and the page is whatever is at that index now — the clamping
+        // that was there before identity was. Identity buys back the cases
+        // where the item still exists, and claims nothing about the one where
+        // it does not.
+        assert_eq!(model.focus(), [Seg::Key("steps".into()), Seg::Index(2)]);
+        assert_eq!(focused_name(&model).as_deref(), Some("delta"));
+    }
+
+    #[test]
+    fn a_scalar_sequence_is_identified_by_its_text() {
+        let mut model = steps_model();
+        let tags = vec![Seg::Key("tags".into())];
+        assert_eq!(model.item_key(&tags, 0).as_deref(), Some("x"));
+        assert_eq!(model.item_key(&tags, 2).as_deref(), Some("z"));
+
+        model.commit(
+            EditOp::MoveItem {
+                seq_path: tags.clone(),
+                from: 0,
+                to: 2,
+            },
+            tags.clone(),
+            "moved",
+        );
+        // The text went with the item, so the key follows it to its new index.
+        assert_eq!(model.item_key(&tags, 2).as_deref(), Some("x"));
+        assert_eq!(model.item_key(&tags, 0).as_deref(), Some("y"));
+
+        // A mapping item takes the name the row already shows it by, and an
+        // item nothing can name has no key at all.
+        assert_eq!(
+            model.item_key(&[Seg::Key("steps".into())], 3).as_deref(),
+            Some("delta")
+        );
+        assert!(model.item_key(&[Seg::Key("nope".into())], 0).is_none());
+    }
+
+    #[test]
+    fn a_backend_key_wins_over_the_inferred_one() {
+        /// A backend that names an item by its link target, as one over a list
+        /// of references would.
+        struct WithKeys(FigBackend);
+        impl Backend for WithKeys {
+            fn apply(&mut self, op: EditOp) -> Result<(), crate::backend::BackendError> {
+                self.0.apply(op)
+            }
+            fn to_value(&self) -> Result<Value, crate::backend::BackendError> {
+                self.0.to_value()
+            }
+            fn source(&self) -> Result<String, crate::backend::BackendError> {
+                self.0.source()
+            }
+            fn item_key(
+                &self,
+                seq_path: &[Seg],
+                index: usize,
+            ) -> Result<Option<String>, crate::backend::BackendError> {
+                let mut path = seq_path.to_vec();
+                path.push(Seg::Index(index));
+                path.push(Seg::Key("id".into()));
+                Ok(match tree::value_at(&self.to_value()?, &path) {
+                    Some(Value::Str(s)) => Some(s.clone()),
+                    _ => None,
+                })
+            }
+        }
+
+        let src = r#"{"links": [{"id": "a", "name": "one"}, {"id": "b", "name": "one"}]}"#;
+        let backend = WithKeys(FigBackend::open(src.as_bytes(), Format::Json).expect("open"));
+        let mut model = Model::new(backend).expect("model");
+        model.set_view(ViewMode::Pages);
+        model.set_inline_budget(InlineBudget::new(0, 0));
+        let links = vec![Seg::Key("links".into())];
+
+        // Both items would infer the *same* title; the backend tells them apart.
+        assert_eq!(model.item_key(&links, 0).as_deref(), Some("a"));
+        assert_eq!(model.item_key(&links, 1).as_deref(), Some("b"));
+
+        let mut second = links.clone();
+        second.push(Seg::Index(1));
+        model.focus_on(&second);
+        model.page_enter();
+        model.commit(
+            EditOp::RemoveItem {
+                seq_path: links,
+                index: 0,
+            },
+            Vec::new(),
+            "deleted",
+        );
+        assert_eq!(model.focus(), [Seg::Key("links".into()), Seg::Index(0)]);
+        let mut id = model.focus().to_vec();
+        id.push(Seg::Key("id".into()));
+        assert_eq!(model.value_at(&id), Some(&Value::Str("b".into())));
     }
 
     // ── the picker ────────────────────────────────────────────────────────

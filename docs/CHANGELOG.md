@@ -44,6 +44,10 @@ bucket first. `docs/releasing.md` is how it is cut.
 - **core** — let a document that does not fit still fill the room it has ([`836c9bd`](https://github.com/diaryx-org/flower/commit/836c9bd5fb7b404f1f74b7a1f128c42a679725fd))
 - **ratatui** — take the mouse, and let the host forward it unread ([`b0ae212`](https://github.com/diaryx-org/flower/commit/b0ae212e904f18286da7c00a1f5f0108fc9120c5))
 - **ratatui** — draw a page the way a settings screen reads ([`9c09574`](https://github.com/diaryx-org/flower/commit/9c09574e2e1365ed84fdc4abe73814ca30245a81))
+- **core** — undo and redo through a journal of inverse edits ([`cba74c3`](https://github.com/diaryx-org/flower/commit/cba74c30d9f8b00e02d14fbf77e577f734a723e7))
+- **core** — per-row findings the host supplies and every row draws ([`8ca4577`](https://github.com/diaryx-org/flower/commit/8ca457703867a7fabdebc44843427dd8bf556562))
+- **core** — a picker for the fields that have a vocabulary to pick from ([`0fd1ce9`](https://github.com/diaryx-org/flower/commit/0fd1ce958b53d7ffbeae7b0ebf83944a9e6ae24a))
+- **core** — keep a page pointed at the item it was opened on across a reorder ([`aeab35f`](https://github.com/diaryx-org/flower/commit/aeab35f70305eb0678ccd913f0c480006c2d7b78))
 
 ### Behavioural changes
 
@@ -52,6 +56,37 @@ bucket first. `docs/releasing.md` is how it is cut.
 - flower-tui captures the mouse, so the terminal's own text selection needs its modifier (Shift, or Option in Ghostty and Terminal.app) while flower is running.
 
 - `hit_at` and `handle_mouse` can now answer with a member of a scalar sequence for a point on its chip, and the rows an item takes in a pane are no longer one per item — an embedder that restated the widget's layout must read `hit_at` instead.
+
+- `Model::dirty` is now derived from the source rather than
+latched by an edit: a document edited back to the bytes it was last saved with
+now reports clean where it previously stayed dirty until the next save. A host
+that relied on dirty meaning "an edit has happened since the save" should read
+`edit_seq()` instead.
+
+- the FFI `PagesView` record gains `undo_depth`, `redo_depth`
+and `edit_seq` fields. Swift code that only reads the record is unaffected; code
+that constructs one must supply them.
+
+- `flower_core::Row` and `flower_core::PageItem` gain an
+`annotation` field. Both are constructed by flower, so a consumer that only
+reads them is unaffected; code that builds one literally must add it.
+
+- the FFI `PageItemView` record gains `annotation_severity`
+and `annotation_message`. Swift code reading the record is unaffected; the
+`PageItemDisplaying` protocol's two new members are defaulted, so an existing
+empty conformance still compiles.
+
+- `flower_core::Mode` gains a `Choosing` variant, so a host
+that matches on it exhaustively must add an arm. A host that only asks whether
+the mode is `Editing` is unaffected.
+
+- `Model::page_enter` and `Model::activate` now open the
+picker on a scalar that has a vocabulary, where they always opened the text
+editor. A host that wants the old behaviour calls `begin_edit` directly.
+
+- the FFI `PageItemView` record gains `enum_options` and
+`is_closed_enum`. `FlowerPages` rows that were free text before now render as a
+menu wherever something can enumerate the field's values.
 
 <!-- git-cliff:end -->
 

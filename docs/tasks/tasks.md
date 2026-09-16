@@ -2,9 +2,10 @@
 title: Tasks
 description: Deferred work with a done state — a bug is a task with a repro
 created: 2026-09-07
-updated: 2026-09-07
+updated: 2026-09-15
 contents:
   - "[Show a commented-out entry as a disabled row](disabled-entries.md)"
+  - "[Undo and redo in the model](undo-journal.md)"
 part_of: '[flower](/README.md)'
 ---
 

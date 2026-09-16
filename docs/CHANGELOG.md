@@ -48,6 +48,7 @@ bucket first. `docs/releasing.md` is how it is cut.
 - **core** — per-row findings the host supplies and every row draws ([`8ca4577`](https://github.com/diaryx-org/flower/commit/8ca457703867a7fabdebc44843427dd8bf556562))
 - **core** — a picker for the fields that have a vocabulary to pick from ([`0fd1ce9`](https://github.com/diaryx-org/flower/commit/0fd1ce958b53d7ffbeae7b0ebf83944a9e6ae24a))
 - **core** — keep a page pointed at the item it was opened on across a reorder ([`aeab35f`](https://github.com/diaryx-org/flower/commit/aeab35f70305eb0678ccd913f0c480006c2d7b78))
+- **core** — undo and redo say whether the document moved ([`d551acf`](https://github.com/diaryx-org/flower/commit/d551acfbd14fe8cfab6f763de0e762c49e2ab82b))
 
 ### Behavioural changes
 

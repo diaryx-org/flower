@@ -4,7 +4,7 @@ description: Every edit reaches the backend through one `commit`, and nothing re
 status: done
 created: 2026-09-15
 updated: 2026-09-16
-part_of: '[Tasks](/docs/tasks/tasks.md)'
+part_of: '[Closed tasks](/docs/tasks/closed/closed.md)'
 ---
 
 # Undo and redo in the model

@@ -5,8 +5,8 @@ created: 2026-09-07
 updated: 2026-09-15
 contents:
   - "[Show a commented-out entry as a disabled row](disabled-entries.md)"
-  - "[Undo and redo in the model](undo-journal.md)"
   - "[Append a list item from the picker](append-from-the-picker.md)"
+  - '[Closed tasks](/docs/tasks/closed/closed.md)'
 part_of: '[flower](/README.md)'
 ---
 
@@ -15,4 +15,5 @@ part_of: '[flower](/README.md)'
 Deferred work, one file per item, each with a `status` of `open`,
 `in-progress`, `done` or `dropped`. `contents` above lists what is open;
 closing a task is setting its status and naming the commit or release that
-resolved it, not deleting the file. A bug is a task with a repro.
+resolved it, not deleting the file, and a closed task then moves to
+[Closed tasks](closed/closed.md) (`dx shelve`). A bug is a task with a repro.

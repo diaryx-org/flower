@@ -260,7 +260,7 @@ app-specific bridge lives in provui, not here — flower doesn't depend on prov.
   row with a toggle — needs fig to read and write the dangling anchor and to
   comment a node out (and back in) at the byte level, since only fig has the
   spans to do that losslessly. Filed as fig's
-  [`dangling-comments-and-comment-out-ops`](https://github.com/diaryx-org/fig/blob/main/docs/tasks/dangling-comments-and-comment-out-ops.md)
+  [`dangling-comments-and-comment-out-ops`](https://github.com/diaryx-org/fig/blob/main/docs/tasks/closed/dangling-comments-and-comment-out-ops.md)
   and, on this side, [`disabled-entries`](docs/tasks/disabled-entries.md).
 - **Comment as help text**: the Swift page view already lets a schema
   description win over the leading comment for the sentence under a name; the

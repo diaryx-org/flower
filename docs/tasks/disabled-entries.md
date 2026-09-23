@@ -4,7 +4,7 @@ description: A `# port = 8080` reads today as the leading comment of whatever en
 status: open
 created: 2026-09-07
 updated: 2026-09-07
-blocked_by: "[fig: dangling-comments-and-comment-out-ops](https://github.com/diaryx-org/fig/blob/main/docs/tasks/dangling-comments-and-comment-out-ops.md)"
+blocked_by: "[fig: dangling-comments-and-comment-out-ops](https://github.com/diaryx-org/fig/blob/main/docs/tasks/closed/dangling-comments-and-comment-out-ops.md)"
 part_of: '[Tasks](/docs/tasks/tasks.md)'
 ---
 

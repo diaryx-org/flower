@@ -44,8 +44,8 @@ pub enum Mode {
     /// two take different keys: everything printable is a *filter* here and a
     /// value there, and `Enter` commits a row rather than a buffer.
     Choosing {
-        /// The node being chosen for.
-        path: Vec<Seg>,
+        /// What the choice will be written to.
+        target: ChoiceTarget,
         /// Everything on offer, unfiltered and in the order it was offered.
         choices: Vec<Choice>,
         /// Which of the *filtered* choices the cursor is on — see
@@ -60,6 +60,9 @@ pub enum Mode {
         /// selection on commit, so an edit belongs to a *node* and not to
         /// whichever list the cursor happens to be in — the two projections
         /// index differently, and a commit must not care which one opened it.
+        ///
+        /// For [`EditSlot::NewItem`] this is the *list*: the item does not
+        /// exist until the commit makes it.
         path: Vec<Seg>,
         /// Which of the node's texts the buffer holds.
         slot: EditSlot,
@@ -83,6 +86,24 @@ pub enum EditSlot {
     /// The same-line comment after the value. Single-line; an empty buffer
     /// removes it.
     TrailingComment,
+    /// A new item for the list the editor was opened on
+    /// ([`Model::begin_append`]), coerced by the type its items take and
+    /// appended on commit. An empty buffer adds nothing.
+    NewItem,
+}
+
+/// Where a picker's choice lands: over the node it was opened on, or onto the
+/// end of a list as a new item.
+///
+/// An enum rather than a path and a flag, so [`Model::choose_commit`] has to
+/// say what each one writes — a replace that forgot it was an append would
+/// overwrite the whole list with one of its items.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ChoiceTarget {
+    /// Replace the value at this path ([`Model::begin_choose`]).
+    Replace(Vec<Seg>),
+    /// Append to the sequence at this path ([`Model::begin_choose_append`]).
+    Append(Vec<Seg>),
 }
 
 pub struct Model<B> {
@@ -1346,15 +1367,77 @@ impl<B: Backend> Model<B> {
         };
         if self.value_at(&path).is_some_and(page::is_container) {
             // A container with an item vocabulary is a list to add to, not a
-            // value to replace — an affordance that is not built yet.
+            // value to replace — that is `begin_choose_append`, a gesture of
+            // its own.
             self.begin_edit();
             return;
         }
         self.mode = Mode::Choosing {
-            path,
+            target: ChoiceTarget::Replace(path),
             choices,
             selected: 0,
             filter: String::new(),
+        };
+    }
+
+    /// The list an "add" gesture on the current selection adds to, if any.
+    ///
+    /// The selected node when it is a list; the list it is an item of when it
+    /// is one; and, on a page, the page's own container when that is a list —
+    /// so a list with nothing in it, whose page has no row to stand on, can
+    /// still be added to. `None` inside a mapping, where adding means naming a
+    /// key.
+    pub fn append_target(&self) -> Option<Vec<Seg>> {
+        let is_seq = |path: &[Seg]| matches!(self.value_at(path), Some(Value::Seq(_)));
+        if let Some(path) = self.selected_path() {
+            if is_seq(&path) {
+                return Some(path);
+            }
+            if let Some(Seg::Index(_)) = path.last() {
+                return Some(path[..path.len() - 1].to_vec());
+            }
+        }
+        (self.view == ViewMode::Pages && is_seq(&self.focus)).then(|| self.focus.clone())
+    }
+
+    /// Open the picker for a *new item* of the list at `seq_path`, or fall
+    /// back to [`begin_append`](Self::begin_append) when its items have no
+    /// vocabulary.
+    ///
+    /// What is offered is what [`choices_at`](Self::choices_at) answers for
+    /// the list — an each-item rule's terms, or the backend's candidates — and
+    /// [`choose_commit`](Self::choose_commit) appends rather than replaces. The
+    /// fallback is [`begin_choose`](Self::begin_choose)'s, for the same
+    /// reason: one key, a list where there is one.
+    pub fn begin_choose_append(&mut self, seq_path: &[Seg]) {
+        if !matches!(self.value_at(seq_path), Some(Value::Seq(_))) {
+            self.status = "can only add an item to a list".to_string();
+            return;
+        }
+        let Some(choices) = self.choices_at(seq_path) else {
+            self.begin_append(seq_path);
+            return;
+        };
+        self.mode = Mode::Choosing {
+            target: ChoiceTarget::Append(seq_path.to_vec()),
+            choices,
+            selected: 0,
+            filter: String::new(),
+        };
+    }
+
+    /// Open an empty editor for a new item of the list at `seq_path` — the
+    /// free-text half of [`begin_choose_append`](Self::begin_choose_append),
+    /// committed through [`append_item_text`](Self::append_item_text).
+    pub fn begin_append(&mut self, seq_path: &[Seg]) {
+        if !matches!(self.value_at(seq_path), Some(Value::Seq(_))) {
+            self.status = "can only add an item to a list".to_string();
+            return;
+        }
+        self.mode = Mode::Editing {
+            buffer: String::new(),
+            path: seq_path.to_vec(),
+            slot: EditSlot::NewItem,
         };
     }
 
@@ -1418,21 +1501,58 @@ impl<B: Backend> Model<B> {
         }
     }
 
-    /// Commit the choice under the cursor, replacing the node's value.
+    /// Commit the choice under the cursor: replacing the node's value, or
+    /// appending it to the list as a new item with the cursor on it — see
+    /// [`ChoiceTarget`].
     ///
     /// A no-op (beyond leaving the picker) when the filter has cut the list to
     /// nothing: there is no value to write, and inventing one from what was
     /// typed would be the free-text path wearing the picker's clothes.
     pub fn choose_commit(&mut self) {
         let chosen = self.choice_selected().map(|c| c.value.clone());
-        let Mode::Choosing { path, .. } = &self.mode else {
+        let Mode::Choosing { target, .. } = std::mem::replace(&mut self.mode, Mode::Normal) else {
             return;
         };
-        let path = path.clone();
-        self.mode = Mode::Normal;
-        match chosen {
-            Some(value) => self.set_value_at(&path, value),
-            None => self.status = "nothing matches".to_string(),
+        let Some(value) = chosen else {
+            self.status = "nothing matches".to_string();
+            return;
+        };
+        match target {
+            ChoiceTarget::Replace(path) => self.set_value_at(&path, value),
+            ChoiceTarget::Append(seq_path) => {
+                self.add_item(&seq_path, |m, at| m.append_item(at, value))
+            }
+        }
+    }
+
+    /// Append through `append`, then put the cursor on the new item, going to
+    /// it if it is not on screen — a list drawn as a row to drill into has its
+    /// items on a page of their own, and a tree node can be folded shut.
+    ///
+    /// Only for the add gestures, which a reader makes *in order to* look at
+    /// what they added. [`append_item`](Self::append_item) by path leaves the
+    /// page where it is, since a host adding programmatically has not asked to
+    /// move anyone. Nothing moves when the append was refused.
+    fn add_item(&mut self, seq_path: &[Seg], append: impl FnOnce(&mut Self, &[Seg])) {
+        let index = self.seq_len(seq_path);
+        append(self, seq_path);
+        if self.seq_len(seq_path) == index {
+            return;
+        }
+        let mut item = seq_path.to_vec();
+        item.push(Seg::Index(index));
+        if self.selected_path().as_deref() == Some(item.as_slice()) {
+            return;
+        }
+        match self.view {
+            ViewMode::Pages => self.focus_on(&item),
+            ViewMode::Tree => {
+                for i in 0..=seq_path.len() {
+                    self.collapsed.remove(&item[..i]);
+                }
+                self.rebuild_rows();
+                self.select_path(&item);
+            }
         }
     }
 
@@ -1483,7 +1603,9 @@ impl<B: Backend> Model<B> {
         let read = match slot {
             EditSlot::LeadingComment => self.backend.leading_comment(&path),
             EditSlot::TrailingComment => self.backend.trailing_comment(&path),
-            EditSlot::Value => unreachable!("begin_edit_comment is only called for a comment slot"),
+            EditSlot::Value | EditSlot::NewItem => {
+                unreachable!("begin_edit_comment is only called for a comment slot")
+            }
         };
         let seed = match read {
             Ok(text) => text.unwrap_or_default(),
@@ -1547,6 +1669,10 @@ impl<B: Backend> Model<B> {
                 let text = (!buffer.is_empty()).then_some(buffer.as_str());
                 self.set_trailing_comment(&path, text)
             }
+            // Unlike a comment, an empty item is a value — `""` — and not
+            // what anyone pressing Enter on an empty line meant to add.
+            EditSlot::NewItem if buffer.is_empty() => self.status = "nothing added".to_string(),
+            EditSlot::NewItem => self.add_item(&path, |m, at| m.append_item_text(at, &buffer)),
         }
     }
 
@@ -3962,6 +4088,192 @@ b = 2
         }
         model.choose_commit();
         assert!(model.source_snapshot().contains("id:fig/9qk2s1z"));
+    }
+
+    fn tags_schema() -> Schema {
+        use fig_schema::{PathPat, Term};
+        Schema::new(vec![
+            FieldRule::new(PathPat::each_item_of("tags")).constraint(Constraint::Enum {
+                values: vec![Term::value("a"), Term::value("b"), Term::value("c")],
+                closed: true,
+            }),
+        ])
+    }
+
+    fn tags_model() -> Model<FigBackend> {
+        let backend =
+            FigBackend::open(b"title = \"t\"\ntags = [\"a\"]\n", Format::Toml).expect("open");
+        let mut model = Model::new(backend).expect("model");
+        model.set_schema(tags_schema());
+        model
+    }
+
+    #[test]
+    fn a_list_gains_an_item_from_the_picker_with_no_typing() {
+        let mut model = tags_model();
+        let tags = vec![Seg::Key("tags".into())];
+        model.focus_on(&tags);
+        assert_eq!(model.append_target(), Some(tags.clone()));
+
+        model.begin_choose_append(&tags);
+        assert!(matches!(
+            model.mode,
+            Mode::Choosing {
+                target: ChoiceTarget::Append(_),
+                ..
+            }
+        ));
+        assert_eq!(model.visible_choices().len(), 3);
+        model.choose_next();
+        model.choose_commit();
+
+        assert!(model.source_snapshot().contains("tags = [\"a\", \"b\"]"));
+        let mut new = tags.clone();
+        new.push(Seg::Index(1));
+        assert_eq!(model.selected_path(), Some(new.clone()));
+
+        // Standing on an item, the list it is in is what gains one.
+        assert_eq!(model.append_target(), Some(tags.clone()));
+        // And undo takes the item back off, like any other append.
+        model.undo();
+        assert!(model.source_snapshot().contains("tags = [\"a\"]"));
+    }
+
+    #[test]
+    fn an_add_on_a_list_drawn_as_a_drill_row_goes_to_its_page() {
+        let mut model = tags_model();
+        // Nothing inlines, so the list is a row on the root page and its items
+        // are on a page of their own.
+        model.set_inline_budget(crate::page::InlineBudget {
+            rows: 0,
+            depth: 0,
+            page_rows: 0,
+        });
+        let tags = vec![Seg::Key("tags".into())];
+        model.focus_on(&tags);
+        assert!(model.focus().is_empty());
+
+        model.begin_choose_append(&tags);
+        model.choose_commit();
+        assert_eq!(model.focus(), tags.as_slice());
+        assert_eq!(
+            model.selected_path(),
+            Some(vec![Seg::Key("tags".into()), Seg::Index(1)])
+        );
+        // The way back is the ordinary one.
+        model.page_back();
+        assert!(model.focus().is_empty());
+    }
+
+    #[test]
+    fn a_reference_list_gains_a_backend_candidate_at_the_end() {
+        let backend = WithCandidates(
+            FigBackend::open(b"contents = [\"id:prov/1ch2991\"]\n", Format::Toml).expect("open"),
+        );
+        let mut model = Model::new(backend).expect("model");
+        let contents = vec![Seg::Key("contents".into())];
+        model.focus_on(&contents);
+
+        model.begin_choose_append(&contents);
+        for c in "fig".chars() {
+            model.choose_push(c);
+        }
+        model.choose_commit();
+
+        assert_eq!(
+            model.value_at(&contents),
+            Some(&Value::Seq(vec![
+                Value::Str("id:prov/1ch2991".into()),
+                Value::Str("id:fig/9qk2s1z".into()),
+            ]))
+        );
+        assert_eq!(
+            model.selected_path(),
+            Some(vec![Seg::Key("contents".into()), Seg::Index(1)])
+        );
+    }
+
+    #[test]
+    fn a_list_with_no_vocabulary_opens_an_empty_item_editor() {
+        let backend = FigBackend::open(b"notes = [\"one\"]\n", Format::Toml).expect("open");
+        let mut model = Model::new(backend).expect("model");
+        let notes = vec![Seg::Key("notes".into())];
+        model.focus_on(&notes);
+
+        model.begin_choose_append(&notes);
+        assert!(matches!(
+            model.mode,
+            Mode::Editing {
+                slot: EditSlot::NewItem,
+                ref buffer,
+                ..
+            } if buffer.is_empty()
+        ));
+        // Enter on nothing adds nothing, rather than an empty string.
+        model.edit_commit();
+        assert_eq!(model.status, "nothing added");
+        assert!(!model.dirty);
+
+        model.begin_append(&notes);
+        for c in "two".chars() {
+            model.edit_push(c);
+        }
+        model.edit_commit();
+        assert!(
+            model
+                .source_snapshot()
+                .contains("notes = [\"one\", \"two\"]")
+        );
+        assert_eq!(
+            model.selected_path(),
+            Some(vec![Seg::Key("notes".into()), Seg::Index(1)])
+        );
+    }
+
+    #[test]
+    fn a_refused_new_item_leaves_the_cursor_where_it_was() {
+        let mut model = tags_model();
+        let tags = vec![Seg::Key("tags".into())];
+        model.focus_on(&tags);
+        // Free text past a closed vocabulary is refused at the funnel…
+        model.begin_append(&tags);
+        for c in "zzz".chars() {
+            model.edit_push(c);
+        }
+        model.edit_commit();
+        assert!(model.status.starts_with("rejected"), "{}", model.status);
+        assert!(!model.dirty);
+        // …and the cursor is not carried onto the item that was already last.
+        assert_eq!(model.selected_path(), Some(tags));
+    }
+
+    #[test]
+    fn an_add_in_the_tree_opens_a_folded_list_onto_the_new_item() {
+        let mut model = tags_model();
+        let tags = vec![Seg::Key("tags".into())];
+        model.set_view(ViewMode::Tree);
+        let row = model.rows.iter().position(|r| r.path == tags).expect("row");
+        model.select_row(row);
+        model.collapsed.insert(tags.clone());
+        model.rebuild_rows();
+
+        model.begin_choose_append(&tags);
+        model.choose_commit();
+        assert_eq!(
+            model.selected_path(),
+            Some(vec![Seg::Key("tags".into()), Seg::Index(1)])
+        );
+    }
+
+    #[test]
+    fn only_a_list_takes_a_new_item() {
+        let mut model = tags_model();
+        let title = [Seg::Key("title".into())];
+        model.focus_on(&title);
+        assert_eq!(model.append_target(), None);
+        model.begin_choose_append(&title);
+        assert!(matches!(model.mode, Mode::Normal));
+        assert_eq!(model.status, "can only add an item to a list");
     }
 
     #[test]

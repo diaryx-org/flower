@@ -5,7 +5,6 @@ created: 2026-09-07
 updated: 2026-09-15
 contents:
   - "[Show a commented-out entry as a disabled row](disabled-entries.md)"
-  - "[Append a list item from the picker](append-from-the-picker.md)"
   - '[Closed tasks](/docs/tasks/closed/closed.md)'
 part_of: '[flower](/README.md)'
 ---

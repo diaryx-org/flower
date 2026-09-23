@@ -351,6 +351,11 @@ RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_page_choices(void*_Nonnull ptr,
 RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_page_choose(void*_Nonnull ptr, RustBuffer id, RustBuffer value_text, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_PAGE_CHOOSE_APPEND
+#define UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_PAGE_CHOOSE_APPEND
+RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_page_choose_append(void*_Nonnull ptr, RustBuffer id, RustBuffer value_text, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_PAGE_DELETE
 #define UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_PAGE_DELETE
 RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_page_delete(void*_Nonnull ptr, RustBuffer id, RustCallStatus *_Nonnull out_status
@@ -850,6 +855,12 @@ uint16_t uniffi_flower_ffi_checksum_method_flowerdoc_page_choices(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_CHECKSUM_METHOD_FLOWERDOC_PAGE_CHOOSE
 #define UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_CHECKSUM_METHOD_FLOWERDOC_PAGE_CHOOSE
 uint16_t uniffi_flower_ffi_checksum_method_flowerdoc_page_choose(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_CHECKSUM_METHOD_FLOWERDOC_PAGE_CHOOSE_APPEND
+#define UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_CHECKSUM_METHOD_FLOWERDOC_PAGE_CHOOSE_APPEND
+uint16_t uniffi_flower_ffi_checksum_method_flowerdoc_page_choose_append(void
     
 );
 #endif

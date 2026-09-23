@@ -626,6 +626,19 @@ public protocol FlowerDocProtocol : AnyObject {
     func pageChoose(id: String, valueText: String)  -> PagesView
     
     /**
+     * Append `value_text` to the **list** `id` names, preferring the offered
+     * choice it names — [`page_choose`](Self::page_choose) for a new item.
+     *
+     * The choices are the ones [`page_choices`](Self::page_choices) gives for
+     * the list, matched the same way; text that matches none is appended as
+     * typed, coerced by the type the list's items take. The frame comes back
+     * on the new item, on whichever page lists it — a reader who added
+     * something is looking for it. A no-op with a status hint when `id` is not
+     * a list.
+     */
+    func pageChooseAppend(id: String, valueText: String)  -> PagesView
+    
+    /**
      * Delete the mapping entry or sequence item `id` names.
      */
     func pageDelete(id: String)  -> PagesView
@@ -1104,6 +1117,26 @@ open func pageChoices(id: String) -> [ChoiceView] {
 open func pageChoose(id: String, valueText: String) -> PagesView {
     return try!  FfiConverterTypePagesView.lift(try! rustCall() {
     uniffi_flower_ffi_fn_method_flowerdoc_page_choose(self.uniffiClonePointer(),
+        FfiConverterString.lower(id),
+        FfiConverterString.lower(valueText),$0
+    )
+})
+}
+    
+    /**
+     * Append `value_text` to the **list** `id` names, preferring the offered
+     * choice it names — [`page_choose`](Self::page_choose) for a new item.
+     *
+     * The choices are the ones [`page_choices`](Self::page_choices) gives for
+     * the list, matched the same way; text that matches none is appended as
+     * typed, coerced by the type the list's items take. The frame comes back
+     * on the new item, on whichever page lists it — a reader who added
+     * something is looking for it. A no-op with a status hint when `id` is not
+     * a list.
+     */
+open func pageChooseAppend(id: String, valueText: String) -> PagesView {
+    return try!  FfiConverterTypePagesView.lift(try! rustCall() {
+    uniffi_flower_ffi_fn_method_flowerdoc_page_choose_append(self.uniffiClonePointer(),
         FfiConverterString.lower(id),
         FfiConverterString.lower(valueText),$0
     )
@@ -3164,6 +3197,9 @@ private var initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_flower_ffi_checksum_method_flowerdoc_page_choose() != 42486) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_flower_ffi_checksum_method_flowerdoc_page_choose_append() != 17598) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_flower_ffi_checksum_method_flowerdoc_page_delete() != 53944) {

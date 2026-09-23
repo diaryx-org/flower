@@ -866,6 +866,44 @@ impl FlowerDoc {
         pages_of(&m)
     }
 
+    /// Append `value_text` to the **list** `id` names, preferring the offered
+    /// choice it names — [`page_choose`](Self::page_choose) for a new item.
+    ///
+    /// The choices are the ones [`page_choices`](Self::page_choices) gives for
+    /// the list, matched the same way; text that matches none is appended as
+    /// typed, coerced by the type the list's items take. The frame comes back
+    /// on the new item, on whichever page lists it — a reader who added
+    /// something is looking for it. A no-op with a status hint when `id` is not
+    /// a list.
+    pub fn page_choose_append(&self, id: String, value_text: String) -> PagesView {
+        let mut m = self.lock();
+        m.set_view(ViewMode::Pages);
+        let Some(path) = path_for_id_anywhere(&m, &id) else {
+            return pages_of(&m);
+        };
+        if !matches!(m.value_at(&path), Some(Value::Seq(_))) {
+            m.set_status("can only add an item to a list");
+            return pages_of(&m);
+        }
+        let chosen = m.choices_at(&path).and_then(|choices| {
+            choices
+                .iter()
+                .find(|c| choice_text(c) == value_text || c.label == value_text)
+                .map(|c| c.value.clone())
+        });
+        let index = m.seq_len(&path);
+        match chosen {
+            Some(value) => m.append_item(&path, value),
+            None => m.append_item_text(&path, &value_text),
+        }
+        if m.seq_len(&path) > index {
+            let mut item = path;
+            item.push(Seg::Index(index));
+            m.focus_on(&item);
+        }
+        pages_of(&m)
+    }
+
     /// Hand the document the host's findings about it, replacing whatever it
     /// was given last — a broken link, a duplicate id, anything only a
     /// workspace can check. An empty list clears them.
@@ -1414,6 +1452,45 @@ tags = [\"alpha\", \"beta\"]
         assert!(doc.page_choices("version".to_string()).is_empty());
         doc.page_choose("version".to_string(), "9".to_string());
         assert!(doc.source().contains("version = 9"));
+    }
+
+    #[test]
+    fn a_list_gains_a_chosen_item_across_the_binding() {
+        use flower_core::schema::{Constraint, Schema};
+        use flower_core::{FieldRule, PathPat, Term};
+
+        let doc = FlowerDoc::new(
+            "title = \"t\"\ntags = [\"a\"]\n".to_string(),
+            "toml".to_string(),
+            Vec::new(),
+        )
+        .unwrap();
+        doc.lock().set_schema(Schema::new(vec![
+            FieldRule::new(PathPat::each_item_of("tags")).constraint(Constraint::Enum {
+                values: vec![Term::value("a"), Term::value("b"), Term::value("c")],
+                closed: true,
+            }),
+        ]));
+
+        // Asked of the list, the choices are what an item may be.
+        assert_eq!(doc.page_choices("tags".to_string()).len(), 3);
+        let view = doc.page_choose_append("tags".to_string(), "b".to_string());
+        assert!(
+            doc.source().contains("tags = [\"a\", \"b\"]"),
+            "{}",
+            doc.source()
+        );
+        // The frame comes back on the new item.
+        let item = &view.page.items[view.page.selected.expect("a cursor") as usize];
+        assert_eq!(item.id, "tags.1");
+
+        // A closed vocabulary still refuses free text, and nothing moves.
+        let view = doc.page_choose_append("tags".to_string(), "zzz".to_string());
+        assert!(view.status.starts_with("rejected"), "{}", view.status);
+        assert!(doc.source().contains("tags = [\"a\", \"b\"]"));
+
+        let view = doc.page_choose_append("title".to_string(), "b".to_string());
+        assert_eq!(view.status, "can only add an item to a list");
     }
 
     #[test]

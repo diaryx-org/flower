@@ -39,8 +39,8 @@ pub enum Outcome {
 ///
 /// Both modes are here. In [`Mode::Normal`] this is one flat table over the page
 /// projection — `j`/`k` walk the page, `l`/`h` push and pop one, and the keys
-/// that operate on a *node* (`e` edit, `c`/`C` its trailing / leading comment,
-/// `x` delete) resolve against the page cursor, while `u`/`U` undo and redo
+/// that operate on a *node* (`e` edit, `a` add to a list, `c`/`C` its trailing
+/// / leading comment, `x` delete) resolve against the page cursor, while `u`/`U` undo and redo
 /// whatever the document's own journal last recorded, wherever the cursor is. In [`Mode::Editing`] every
 /// printable character goes into the buffer, `Enter` commits and `Esc` cancels;
 /// nothing returns an outcome, since an edit in progress is entirely the
@@ -79,6 +79,14 @@ fn normal<B: Backend>(model: &mut Model<B>, code: KeyCode) -> Outcome {
         // suggestions rather than the whole of what is legal.
         KeyCode::Char('e') => model.begin_choose(),
         KeyCode::Char('E') => model.begin_edit(),
+        // The same split for a new item of the list the cursor is on or in:
+        // `a` offers the list's vocabulary where it has one, `A` is a blank
+        // line either way.
+        KeyCode::Char('a') | KeyCode::Char('A') => match model.append_target() {
+            Some(seq) if code == KeyCode::Char('a') => model.begin_choose_append(&seq),
+            Some(seq) => model.begin_append(&seq),
+            None => model.set_status("nothing here takes a new item — add to a list"),
+        },
         KeyCode::Char('c') => model.begin_edit_trailing_comment(),
         KeyCode::Char('C') => model.begin_edit_leading_comment(),
         KeyCode::Char('x') => model.delete_selected(),
@@ -367,6 +375,59 @@ max_connections = 100
         press(&mut m, KeyCode::Esc);
         assert!(matches!(m.mode, Mode::Normal));
         assert!(m.source_snapshot().contains("status = \"published\""));
+    }
+
+    #[test]
+    fn a_adds_to_a_list_from_the_picker_and_shift_a_types_one() {
+        use flower_core::schema::{Constraint, Schema};
+        use flower_core::{ChoiceTarget, EditSlot, FieldRule, PathPat, Term};
+
+        let backend =
+            FigBackend::open(b"title = \"t\"\ntags = [\"a\"]\n", fig::Format::Toml).expect("open");
+        let mut m = Model::new(backend).expect("model");
+        m.set_view(ViewMode::Pages);
+        m.set_schema(Schema::new(vec![
+            FieldRule::new(PathPat::each_item_of("tags")).constraint(Constraint::Enum {
+                values: vec![Term::value("a"), Term::value("b"), Term::value("c")],
+                closed: false,
+            }),
+        ]));
+        m.focus_on(&[Seg::Key("tags".into())]);
+
+        press(&mut m, KeyCode::Char('a'));
+        assert!(matches!(
+            m.mode,
+            Mode::Choosing {
+                target: ChoiceTarget::Append(_),
+                ..
+            }
+        ));
+        press(&mut m, KeyCode::Char('j'));
+        press(&mut m, KeyCode::Enter);
+        assert!(m.source_snapshot().contains("tags = [\"a\", \"b\"]"));
+        let second = vec![Seg::Key("tags".into()), Seg::Index(1)];
+        assert_eq!(m.selected_path(), Some(second));
+
+        // From an item, `A` adds a blank line's worth to the same list.
+        press(&mut m, KeyCode::Char('A'));
+        assert!(matches!(
+            m.mode,
+            Mode::Editing {
+                slot: EditSlot::NewItem,
+                ..
+            }
+        ));
+        for c in "d".chars() {
+            press(&mut m, KeyCode::Char(c));
+        }
+        press(&mut m, KeyCode::Enter);
+        assert!(m.source_snapshot().contains("tags = [\"a\", \"b\", \"d\"]"));
+
+        // A scalar in a mapping has no list to add to.
+        m.focus_on(&[Seg::Key("title".into())]);
+        press(&mut m, KeyCode::Char('a'));
+        assert!(matches!(m.mode, Mode::Normal));
+        assert!(m.status.starts_with("nothing here takes a new item"));
     }
 
     // ── the mouse ──────────────────────────────────────────────────────

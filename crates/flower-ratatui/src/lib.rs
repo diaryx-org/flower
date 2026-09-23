@@ -47,7 +47,7 @@ use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Clear};
 
 use flower_core::annotate::Severity;
-use flower_core::{Backend, EditSlot, ItemKind, Mode, Model, Page, PageItem, VKind};
+use flower_core::{Backend, ChoiceTarget, EditSlot, ItemKind, Mode, Model, Page, PageItem, VKind};
 
 /// Below this width a two-pane split leaves neither pane usable, so the page view
 /// collapses to the single-pane (push/pop) layout — the same interaction, one
@@ -900,6 +900,7 @@ fn draw_choices<B: Backend>(f: &mut Frame, model: &Model<B>, area: Rect) {
         Mode::Choosing { filter, .. } => filter.as_str(),
         _ => "",
     };
+    let verb = choosing_verb(model);
 
     // Narrow enough to read as an overlay, wide enough for a term and its
     // gloss — and never wider than the pane it is drawn over.
@@ -913,9 +914,9 @@ fn draw_choices<B: Backend>(f: &mut Frame, model: &Model<B>, area: Rect) {
     };
 
     let title = if filter.is_empty() {
-        " choose ".to_string()
+        format!(" {verb} ")
     } else {
-        format!(" choose: {filter} ")
+        format!(" {verb}: {filter} ")
     };
     let block = Block::default()
         .borders(Borders::ALL)
@@ -974,15 +975,28 @@ fn draw_choices<B: Backend>(f: &mut Frame, model: &Model<B>, area: Rect) {
     f.render_widget(Text::from(lines), inner);
 }
 
+/// What the picker is doing, in one word for its title and badge: choosing a
+/// value, or adding an item — the two commit differently, and a reader about
+/// to press Enter should know which.
+fn choosing_verb<B: Backend>(model: &Model<B>) -> &'static str {
+    match &model.mode {
+        Mode::Choosing {
+            target: ChoiceTarget::Append(_),
+            ..
+        } => "add",
+        _ => "choose",
+    }
+}
+
 // ── footer ───────────────────────────────────────────────────────────────────
 
 fn draw_footer<B: Backend>(f: &mut Frame, model: &Model<B>, area: Rect) {
     // Kept short enough to survive an 80-column terminal alongside the status.
-    let hints = "  j/k · l/h · e edit · c/C comment · x del · u/U undo · s save · q quit";
+    let hints = "  j/k · l/h · e edit · a add · c/C comment · x del · u/U undo · s save · q quit";
     let line = match &model.mode {
         Mode::Choosing { .. } => Line::from(vec![
             Span::styled(
-                " choose ",
+                format!(" {} ", choosing_verb(model)),
                 Style::default().bg(Color::Yellow).fg(Color::Black),
             ),
             Span::styled(
@@ -995,6 +1009,7 @@ fn draw_footer<B: Backend>(f: &mut Frame, model: &Model<B>, area: Rect) {
                 EditSlot::Value => " edit ",
                 EditSlot::TrailingComment => " comment ",
                 EditSlot::LeadingComment => " comment above ",
+                EditSlot::NewItem => " add ",
             };
             // A leading block may span lines, and the footer is one: the breaks
             // are shown as a mark rather than lost, so the block is at least

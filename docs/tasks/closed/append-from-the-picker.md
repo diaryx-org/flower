@@ -1,13 +1,23 @@
 ---
 title: Append a list item from the picker
 description: The picker replaces the value of the row it is opened on and nothing else; a list whose items have a vocabulary (a relation with candidates, an enum under `EachItem`) can answer `choices_at` for its append position already, and needs a `begin_choose_append` that commits an `AppendItem` so a reader can add a link by choosing rather than typing
-status: open
+status: done
 created: 2026-09-16
-updated: 2026-09-16
-part_of: '[Tasks](/docs/tasks/tasks.md)'
+updated: 2026-09-23
+part_of: '[Closed tasks](/docs/tasks/closed/closed.md)'
 ---
 
 # Append a list item from the picker
+
+**Status: done** — `Mode::Choosing` carries a `ChoiceTarget` (`Replace` or
+`Append`), `Model::begin_choose_append` opens it on a list and falls back to
+`begin_append`, a blank editor for a new item (`EditSlot::NewItem`); either
+commit lands the cursor on the new item, on its own page if the list was a row
+to drill into. `Model::append_target` says which list an add on the selection
+means. The widget binds `a` and `A`. The body below said `a` already opened
+free text; it did not — the widget had no add at all, so both keys are new.
+FFI `page_choose_append(id, value_text)` sits beside `page_choose`. Landed in
+the commit that sets this status.
 
 **Where this starts.** `0fd1ce9` gave the model a picker: `begin_choose` on
 a scalar with a vocabulary opens a `Mode::Choosing`, and `choose_commit`

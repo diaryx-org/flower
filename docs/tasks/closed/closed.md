@@ -3,6 +3,7 @@ title: Closed tasks
 part_of: '[Tasks](/docs/tasks/tasks.md)'
 contents:
 - '[Undo and redo in the model](/docs/tasks/closed/undo-journal.md)'
+- '[Append a list item from the picker](/docs/tasks/closed/append-from-the-picker.md)'
 ---
 
 # Closed tasks

@@ -43,6 +43,25 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## v0.6.2 — 2026-09-26
+
+### Breaking
+
+- **core** — append a list item from the picker ([`8056a26`](https://github.com/diaryx-org/flower/commit/8056a269e336cd4657543c2a0c5b7b51edeeebac))
+- **deps** — uniffi 0.32 ([`7b7f142`](https://github.com/diaryx-org/flower/commit/7b7f142c402ade67fdbaa83a108f359230bed362))
+
+### Behavioural changes
+
+- flower-ratatui's handle_key now acts on `a` and `A`
+in normal mode, which it previously ignored; a host that forwards every
+key gets the add gestures, and one that binds either key itself must
+keep intercepting it before forwarding.
+
+- the generated Swift objects are handle-based —
+`init(unsafeFromHandle:)`, `NoHandle`, `uniffiCloneHandle()` replace the
+raw-pointer spellings — and protocols and records conform to `Sendable`.
+
+
 ## v0.6.1 — 2026-09-22
 
 _No commits since the last tag._

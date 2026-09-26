@@ -12,7 +12,7 @@ description = "C-ABI / Swift frontend binding for flower: wraps the filesystem-f
 # embedder would copy `pages_of` and then drift from it.
 
 # staticlib -> the .a linked into the app (and force-loaded for tests).
-# cdylib    -> a .dylib for a host build and for `uniffi-bindgen --library` to
+# cdylib    -> a .dylib for a host build and for `uniffi-bindgen` to
 #              introspect the embedded UniFFI metadata.
 # lib       -> lets `cargo test` and the in-tree bindgen bin see the crate.
 [lib]
@@ -21,7 +21,7 @@ crate-type = ["staticlib", "cdylib", "lib"]
 # The bindings generator, kept in-tree so its version can never drift from the
 # `uniffi` runtime this crate links. Run via `scripts/*.sh`:
 #   cargo run -p flower-ffi --bin uniffi-bindgen -- \
-#     generate --library <dylib> --language swift --out-dir <dir>
+#     generate <dylib> --language swift --out-dir <dir>
 [[bin]]
 name = "uniffi-bindgen"
 path = "uniffi-bindgen.rs"
@@ -35,5 +35,5 @@ fig.workspace = true
 # The FFI machinery: `proc-macro` mode (no .udl file) — the view structs derive
 # `Record`, the handle derives `Object`, and `setup_scaffolding!()` emits the C
 # ABI. `cli` pulls in `uniffi_bindgen_main` for the bin target above.
-uniffi = { version = "0.28", features = ["cli"] }
+uniffi = { version = "0.32", features = ["cli"] }
 thiserror = "1"

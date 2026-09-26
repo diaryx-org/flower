@@ -8,3 +8,9 @@
 ffi_module_name = "flower_ffiFFI"
 # The dylib/staticlib symbol prefix — must match the crate's lib name.
 cdylib_name = "flower_ffi"
+
+# Kotlin's generated exception classes already have a `message` (Throwable's),
+# so a variant field of that name is declared twice and the binding does not
+# compile. Kotlin alone calls it `reason`; Swift keeps `message`.
+[bindings.kotlin.rename]
+"FlowerError.Open.message" = "reason"

@@ -39,6 +39,52 @@ fileprivate extension ForeignBytes {
     init(bufferPointer: UnsafeBufferPointer<UInt8>) {
         self.init(len: Int32(bufferPointer.count), data: bufferPointer.baseAddress)
     }
+
+    init(rawBufferPointer: UnsafeRawBufferPointer) {
+        self.init(
+            len: Int32(rawBufferPointer.count),
+            data: rawBufferPointer.baseAddress?.assumingMemoryBound(to: UInt8.self)
+        )
+    }
+}
+
+// Converter for `&[u8]` / `[ByRef] bytes` arguments.
+//
+// Conforms to `FfiConverter` so the compiler enforces the full converter
+// method set. Only the scope-bound `lower(_:_body:)` overload is sound —
+// zero-copy byte buffers only flow foreign -> Rust, and only in argument
+// position. The four protocol-witness methods (`lift`, `lower`, `read`,
+// `write`) `fatalError` at runtime if anyone reaches them.
+//
+// The scope-bound `lower` takes a closure because the `ForeignBytes`
+// pointer is only guaranteed valid for the duration of
+// `Data.withUnsafeBytes`. Callers must run the full FFI call inside
+// the closure body.
+fileprivate enum FfiConverterByRefBytes: FfiConverter {
+    typealias SwiftType = Data
+    typealias FfiType = ForeignBytes
+
+    static func lower<R>(_ value: Data, _ body: (ForeignBytes) throws -> R) rethrows -> R {
+        return try value.withUnsafeBytes { rawBuf in
+            try body(ForeignBytes(rawBufferPointer: rawBuf))
+        }
+    }
+
+    static func lower(_ value: Data) -> ForeignBytes {
+        fatalError("ByRef bytes cannot use the plain lower: returning ForeignBytes escapes the Data.withUnsafeBytes scope. Use the scope-bound lower(_:_body:) overload instead.")
+    }
+
+    static func lift(_ value: ForeignBytes) throws -> Data {
+        fatalError("ByRef bytes cannot be lifted: zero-copy &[u8] only flows foreign->Rust")
+    }
+
+    static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> Data {
+        fatalError("ByRef bytes cannot be read from a buffer: zero-copy &[u8] is only supported in argument position, not nested in records/options/etc.")
+    }
+
+    static func write(_ value: Data, into buf: inout [UInt8]) {
+        fatalError("ByRef bytes cannot be written to a buffer: zero-copy &[u8] is only supported in argument position, not nested in records/options/etc.")
+    }
 }
 
 // For every type used in the interface, we provide helper methods for conveniently
@@ -281,7 +327,7 @@ private func makeRustCall<T, E: Swift.Error>(
     _ callback: (UnsafeMutablePointer<RustCallStatus>) -> T,
     errorHandler: ((RustBuffer) throws -> E)?
 ) throws -> T {
-    uniffiEnsureInitialized()
+    uniffiEnsureFlowerFfiInitialized()
     var callStatus = RustCallStatus.init()
     let returnedVal = callback(&callStatus)
     try uniffiCheckCallStatus(callStatus: callStatus, errorHandler: errorHandler)
@@ -352,18 +398,29 @@ private func uniffiTraitInterfaceCallWithError<T, E>(
         callStatus.pointee.errorBuf = FfiConverterString.lower(String(describing: error))
     }
 }
-fileprivate class UniffiHandleMap<T> {
-    private var map: [UInt64: T] = [:]
+// Initial value and increment amount for handles. 
+// These ensure that SWIFT handles always have the lowest bit set
+fileprivate let UNIFFI_HANDLEMAP_INITIAL: UInt64 = 1
+fileprivate let UNIFFI_HANDLEMAP_DELTA: UInt64 = 2
+
+fileprivate final class UniffiHandleMap<T>: @unchecked Sendable {
+    // All mutation happens with this lock held, which is why we implement @unchecked Sendable.
     private let lock = NSLock()
-    private var currentHandle: UInt64 = 1
+    private var map: [UInt64: T] = [:]
+    private var currentHandle: UInt64 = UNIFFI_HANDLEMAP_INITIAL
 
     func insert(obj: T) -> UInt64 {
         lock.withLock {
-            let handle = currentHandle
-            currentHandle += 1
-            map[handle] = obj
-            return handle
+            return doInsert(obj)
         }
+    }
+
+    // Low-level insert function, this assumes `lock` is held.
+    private func doInsert(_ obj: T) -> UInt64 {
+        let handle = currentHandle
+        currentHandle += UNIFFI_HANDLEMAP_DELTA
+        map[handle] = obj
+        return handle
     }
 
      func get(handle: UInt64) throws -> T {
@@ -372,6 +429,15 @@ fileprivate class UniffiHandleMap<T> {
                 throw UniffiInternalError.unexpectedStaleHandle
             }
             return obj
+        }
+    }
+
+     func clone(handle: UInt64) throws -> UInt64 {
+        try lock.withLock {
+            guard let obj = map[handle] else {
+                throw UniffiInternalError.unexpectedStaleHandle
+            }
+            return doInsert(obj)
         }
     }
 
@@ -467,7 +533,11 @@ fileprivate struct FfiConverterString: FfiConverter {
             return String()
         }
         let bytes = UnsafeBufferPointer<UInt8>(start: value.data!, count: Int(value.len))
-        return String(bytes: bytes, encoding: String.Encoding.utf8)!
+        // Use Swift's native UTF-8 decoder; `String(bytes:encoding:.utf8)` goes
+        // through Foundation's NSString and silently strips a leading U+FEFF BOM.
+        // Invalid UTF-8 substitutes U+FFFD instead of trapping (unreachable
+        // given Rust's `String` invariant).
+        return String(decoding: bytes, as: UTF8.self)
     }
 
     public static func lower(_ value: String) -> RustBuffer {
@@ -483,7 +553,8 @@ fileprivate struct FfiConverterString: FfiConverter {
 
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> String {
         let len: Int32 = try readInt(&buf)
-        return String(bytes: try readBytes(&buf, count: Int(len)), encoding: String.Encoding.utf8)!
+        // See `lift` above for why we avoid Foundation's NSString-backed decoder here.
+        return String(decoding: try readBytes(&buf, count: Int(len)), as: UTF8.self)
     }
 
     public static func write(_ value: String, into buf: inout [UInt8]) {
@@ -502,7 +573,7 @@ fileprivate struct FfiConverterString: FfiConverter {
  * in-memory bytes and driven entirely through method calls — there is no
  * filesystem behind it; the host reads the file and persists [`FlowerDoc::source`].
  */
-public protocol FlowerDocProtocol : AnyObject {
+public protocol FlowerDocProtocol: AnyObject, Sendable {
     
     /**
      * Append `text` to the **sequence** at `index`, typing the value by the
@@ -822,49 +893,50 @@ public protocol FlowerDocProtocol : AnyObject {
     func view()  -> DocView
     
 }
-
 /**
  * A live flower document bound for a native Apple frontend: a
  * `flower_core::Model` over a [`FigBackend`], behind a mutex. Constructed from
  * in-memory bytes and driven entirely through method calls — there is no
  * filesystem behind it; the host reads the file and persists [`FlowerDoc::source`].
  */
-open class FlowerDoc:
-    FlowerDocProtocol {
-    fileprivate let pointer: UnsafeMutableRawPointer!
+open class FlowerDoc: FlowerDocProtocol, @unchecked Sendable {
+    fileprivate let handle: UInt64
 
-    /// Used to instantiate a [FFIObject] without an actual pointer, for fakes in tests, mostly.
+    /// Used to instantiate a [FFIObject] without an actual handle, for fakes in tests, mostly.
 #if swift(>=5.8)
     @_documentation(visibility: private)
 #endif
-    public struct NoPointer {
+    public struct NoHandle {
         public init() {}
     }
 
     // TODO: We'd like this to be `private` but for Swifty reasons,
     // we can't implement `FfiConverter` without making this `required` and we can't
     // make it `required` without making it `public`.
-    required public init(unsafeFromRawPointer pointer: UnsafeMutableRawPointer) {
-        self.pointer = pointer
+#if swift(>=5.8)
+    @_documentation(visibility: private)
+#endif
+    required public init(unsafeFromHandle handle: UInt64) {
+        self.handle = handle
     }
 
     // This constructor can be used to instantiate a fake object.
-    // - Parameter noPointer: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
+    // - Parameter noHandle: Placeholder value so we can have a constructor separate from the default empty one that may be implemented for classes extending [FFIObject].
     //
     // - Warning:
-    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing [Pointer] the FFI lower functions will crash.
+    //     Any object instantiated with this constructor cannot be passed to an actual Rust-backed object. Since there isn't a backing handle the FFI lower functions will crash.
 #if swift(>=5.8)
     @_documentation(visibility: private)
 #endif
-    public init(noPointer: NoPointer) {
-        self.pointer = nil
+    public init(noHandle: NoHandle) {
+        self.handle = 0
     }
 
 #if swift(>=5.8)
     @_documentation(visibility: private)
 #endif
-    public func uniffiClonePointer() -> UnsafeMutableRawPointer {
-        return try! rustCall { uniffi_flower_ffi_fn_clone_flowerdoc(self.pointer, $0) }
+    public func uniffiCloneHandle() -> UInt64 {
+        return try! rustCall { uniffi_flower_ffi_fn_clone_flowerdoc(self.handle, $0) }
     }
     /**
      * Parse `source` as `format` (`"json"`/`"jsonc"`/`"json5"`, `"yaml"`/`"yml"`,
@@ -877,23 +949,25 @@ open class FlowerDoc:
      * supply — flower stays format-agnostic and never names those keys itself.
      */
 public convenience init(source: String, format: String, hiddenKeys: [String])throws  {
-    let pointer =
-        try rustCallWithError(FfiConverterTypeFlowerError.lift) {
+    let handle =
+        try rustCallWithError(FfiConverterTypeFlowerError_lift) {
+        uniffiCallStatus in
     uniffi_flower_ffi_fn_constructor_flowerdoc_new(
         FfiConverterString.lower(source),
         FfiConverterString.lower(format),
-        FfiConverterSequenceString.lower(hiddenKeys),$0
+        FfiConverterSequenceString.lower(hiddenKeys),uniffiCallStatus
     )
 }
-    self.init(unsafeFromRawPointer: pointer)
+    self.init(unsafeFromHandle: handle)
 }
 
     deinit {
-        guard let pointer = pointer else {
+        if handle == 0 {
+            // Mock objects have handle=0 don't try to free them
             return
         }
 
-        try! rustCall { uniffi_flower_ffi_fn_free_flowerdoc(pointer, $0) }
+        try! rustCall { uniffi_flower_ffi_fn_free_flowerdoc(handle, $0) }
     }
 
     
@@ -904,11 +978,13 @@ public convenience init(source: String, format: String, hiddenKeys: [String])thr
      * schema's rule for the sequence's *items* and otherwise by literal shape. A
      * no-op with a status hint when the row isn't a sequence.
      */
-open func appendItem(index: UInt32, text: String) -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_flower_ffi_fn_method_flowerdoc_append_item(self.uniffiClonePointer(),
+open func appendItem(index: UInt32, text: String) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_flower_ffi_fn_method_flowerdoc_append_item(
+            self.uniffiCloneHandle(),
         FfiConverterUInt32.lower(index),
-        FfiConverterString.lower(text),$0
+        FfiConverterString.lower(text),uniffiCallStatus
     )
 })
 }
@@ -918,10 +994,12 @@ open func appendItem(index: UInt32, text: String) -> DocView {
      * root-level counterpart to [`append_item`](Self::append_item). A no-op with
      * a status hint when the root isn't a sequence.
      */
-open func appendRootItem(text: String) -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_flower_ffi_fn_method_flowerdoc_append_root_item(self.uniffiClonePointer(),
-        FfiConverterString.lower(text),$0
+open func appendRootItem(text: String) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_flower_ffi_fn_method_flowerdoc_append_root_item(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(text),uniffiCallStatus
     )
 })
 }
@@ -929,9 +1007,11 @@ open func appendRootItem(text: String) -> DocView {
     /**
      * `←` semantics: collapse an expanded container, else step out to the parent.
      */
-open func collapseOrLeave() -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_flower_ffi_fn_method_flowerdoc_collapse_or_leave(self.uniffiClonePointer(),$0
+open func collapseOrLeave() -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_flower_ffi_fn_method_flowerdoc_collapse_or_leave(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
@@ -939,10 +1019,12 @@ open func collapseOrLeave() -> DocView {
     /**
      * Delete the mapping entry or sequence item at `index`, refreshing the view.
      */
-open func delete(index: UInt32) -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_flower_ffi_fn_method_flowerdoc_delete(self.uniffiClonePointer(),
-        FfiConverterUInt32.lower(index),$0
+open func delete(index: UInt32) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_flower_ffi_fn_method_flowerdoc_delete(
+            self.uniffiCloneHandle(),
+        FfiConverterUInt32.lower(index),uniffiCallStatus
     )
 })
 }
@@ -950,9 +1032,11 @@ open func delete(index: UInt32) -> DocView {
     /**
      * `→` semantics: expand a collapsed container, else step into its first child.
      */
-open func expandOrEnter() -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_flower_ffi_fn_method_flowerdoc_expand_or_enter(self.uniffiClonePointer(),$0
+open func expandOrEnter() -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_flower_ffi_fn_method_flowerdoc_expand_or_enter(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
@@ -963,12 +1047,14 @@ open func expandOrEnter() -> DocView {
      * a status hint when the row isn't a mapping; the backend rejects a duplicate
      * key.
      */
-open func insertKey(index: UInt32, key: String, text: String) -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_flower_ffi_fn_method_flowerdoc_insert_key(self.uniffiClonePointer(),
+open func insertKey(index: UInt32, key: String, text: String) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_flower_ffi_fn_method_flowerdoc_insert_key(
+            self.uniffiCloneHandle(),
         FfiConverterUInt32.lower(index),
         FfiConverterString.lower(key),
-        FfiConverterString.lower(text),$0
+        FfiConverterString.lower(text),uniffiCallStatus
     )
 })
 }
@@ -979,11 +1065,13 @@ open func insertKey(index: UInt32, key: String, text: String) -> DocView {
      * root-level counterpart — there is no root row to target by index. A no-op
      * with a status hint when the root isn't a mapping.
      */
-open func insertRootKey(key: String, text: String) -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_flower_ffi_fn_method_flowerdoc_insert_root_key(self.uniffiClonePointer(),
+open func insertRootKey(key: String, text: String) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_flower_ffi_fn_method_flowerdoc_insert_root_key(
+            self.uniffiCloneHandle(),
         FfiConverterString.lower(key),
-        FfiConverterString.lower(text),$0
+        FfiConverterString.lower(text),uniffiCallStatus
     )
 })
 }
@@ -992,16 +1080,20 @@ open func insertRootKey(key: String, text: String) -> DocView {
      * Mark the document saved after the host persisted [`FlowerDoc::source`] its
      * own way — clears the dirty flag without touching a filesystem.
      */
-open func markSaved() -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_flower_ffi_fn_method_flowerdoc_mark_saved(self.uniffiClonePointer(),$0
+open func markSaved() -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_flower_ffi_fn_method_flowerdoc_mark_saved(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
     
-open func moveDown() -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_flower_ffi_fn_method_flowerdoc_move_down(self.uniffiClonePointer(),$0
+open func moveDown() -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_flower_ffi_fn_method_flowerdoc_move_down(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
@@ -1009,10 +1101,12 @@ open func moveDown() -> DocView {
     /**
      * Move the row at `index` one place later among its siblings.
      */
-open func moveRowDown(index: UInt32) -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_flower_ffi_fn_method_flowerdoc_move_row_down(self.uniffiClonePointer(),
-        FfiConverterUInt32.lower(index),$0
+open func moveRowDown(index: UInt32) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_flower_ffi_fn_method_flowerdoc_move_row_down(
+            self.uniffiCloneHandle(),
+        FfiConverterUInt32.lower(index),uniffiCallStatus
     )
 })
 }
@@ -1020,17 +1114,21 @@ open func moveRowDown(index: UInt32) -> DocView {
     /**
      * Move the row at `index` one place earlier among its siblings.
      */
-open func moveRowUp(index: UInt32) -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_flower_ffi_fn_method_flowerdoc_move_row_up(self.uniffiClonePointer(),
-        FfiConverterUInt32.lower(index),$0
+open func moveRowUp(index: UInt32) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_flower_ffi_fn_method_flowerdoc_move_row_up(
+            self.uniffiCloneHandle(),
+        FfiConverterUInt32.lower(index),uniffiCallStatus
     )
 })
 }
     
-open func moveUp() -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_flower_ffi_fn_method_flowerdoc_move_up(self.uniffiClonePointer(),$0
+open func moveUp() -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_flower_ffi_fn_method_flowerdoc_move_up(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
@@ -1043,12 +1141,14 @@ open func moveUp() -> DocView {
      * "to this page" and adding "to that row" are the same call with a different
      * id, which is not true of the tree, where the root has no row.
      */
-open func pageAddChild(id: String, key: String, text: String) -> PagesView {
-    return try!  FfiConverterTypePagesView.lift(try! rustCall() {
-    uniffi_flower_ffi_fn_method_flowerdoc_page_add_child(self.uniffiClonePointer(),
+open func pageAddChild(id: String, key: String, text: String) -> PagesView  {
+    return try!  FfiConverterTypePagesView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_flower_ffi_fn_method_flowerdoc_page_add_child(
+            self.uniffiCloneHandle(),
         FfiConverterString.lower(id),
         FfiConverterString.lower(key),
-        FfiConverterString.lower(text),$0
+        FfiConverterString.lower(text),uniffiCallStatus
     )
 })
 }
@@ -1067,10 +1167,12 @@ open func pageAddChild(id: String, key: String, text: String) -> PagesView {
      * Total: an id that names nothing, or names a scalar, yields an empty page,
      * so a destination builder always has something to render.
      */
-open func pageAt(id: String) -> PageView {
-    return try!  FfiConverterTypePageView.lift(try! rustCall() {
-    uniffi_flower_ffi_fn_method_flowerdoc_page_at(self.uniffiClonePointer(),
-        FfiConverterString.lower(id),$0
+open func pageAt(id: String) -> PageView  {
+    return try!  FfiConverterTypePageView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_flower_ffi_fn_method_flowerdoc_page_at(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(id),uniffiCallStatus
     )
 })
 }
@@ -1079,9 +1181,11 @@ open func pageAt(id: String) -> PageView {
      * Pop back to the parent page, restoring the cursor to the container you came
      * out of.
      */
-open func pageBack() -> PagesView {
-    return try!  FfiConverterTypePagesView.lift(try! rustCall() {
-    uniffi_flower_ffi_fn_method_flowerdoc_page_back(self.uniffiClonePointer(),$0
+open func pageBack() -> PagesView  {
+    return try!  FfiConverterTypePagesView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_flower_ffi_fn_method_flowerdoc_page_back(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
@@ -1095,10 +1199,12 @@ open func pageBack() -> PagesView {
      * Asked of a *list* it answers with the vocabulary its items take, so the
      * same call serves "change this entry" and "what may I add here".
      */
-open func pageChoices(id: String) -> [ChoiceView] {
+open func pageChoices(id: String) -> [ChoiceView]  {
     return try!  FfiConverterSequenceTypeChoiceView.lift(try! rustCall() {
-    uniffi_flower_ffi_fn_method_flowerdoc_page_choices(self.uniffiClonePointer(),
-        FfiConverterString.lower(id),$0
+        uniffiCallStatus in
+    uniffi_flower_ffi_fn_method_flowerdoc_page_choices(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(id),uniffiCallStatus
     )
 })
 }
@@ -1114,11 +1220,13 @@ open func pageChoices(id: String) -> [ChoiceView] {
      * list of suggestions, and a closed one refuses at the funnel rather than
      * here.
      */
-open func pageChoose(id: String, valueText: String) -> PagesView {
-    return try!  FfiConverterTypePagesView.lift(try! rustCall() {
-    uniffi_flower_ffi_fn_method_flowerdoc_page_choose(self.uniffiClonePointer(),
+open func pageChoose(id: String, valueText: String) -> PagesView  {
+    return try!  FfiConverterTypePagesView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_flower_ffi_fn_method_flowerdoc_page_choose(
+            self.uniffiCloneHandle(),
         FfiConverterString.lower(id),
-        FfiConverterString.lower(valueText),$0
+        FfiConverterString.lower(valueText),uniffiCallStatus
     )
 })
 }
@@ -1134,11 +1242,13 @@ open func pageChoose(id: String, valueText: String) -> PagesView {
      * something is looking for it. A no-op with a status hint when `id` is not
      * a list.
      */
-open func pageChooseAppend(id: String, valueText: String) -> PagesView {
-    return try!  FfiConverterTypePagesView.lift(try! rustCall() {
-    uniffi_flower_ffi_fn_method_flowerdoc_page_choose_append(self.uniffiClonePointer(),
+open func pageChooseAppend(id: String, valueText: String) -> PagesView  {
+    return try!  FfiConverterTypePagesView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_flower_ffi_fn_method_flowerdoc_page_choose_append(
+            self.uniffiCloneHandle(),
         FfiConverterString.lower(id),
-        FfiConverterString.lower(valueText),$0
+        FfiConverterString.lower(valueText),uniffiCallStatus
     )
 })
 }
@@ -1146,10 +1256,12 @@ open func pageChooseAppend(id: String, valueText: String) -> PagesView {
     /**
      * Delete the mapping entry or sequence item `id` names.
      */
-open func pageDelete(id: String) -> PagesView {
-    return try!  FfiConverterTypePagesView.lift(try! rustCall() {
-    uniffi_flower_ffi_fn_method_flowerdoc_page_delete(self.uniffiClonePointer(),
-        FfiConverterString.lower(id),$0
+open func pageDelete(id: String) -> PagesView  {
+    return try!  FfiConverterTypePagesView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_flower_ffi_fn_method_flowerdoc_page_delete(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(id),uniffiCallStatus
     )
 })
 }
@@ -1157,9 +1269,11 @@ open func pageDelete(id: String) -> PagesView {
     /**
      * Move the cursor one item down the current page (`↓`).
      */
-open func pageMoveDown() -> PagesView {
-    return try!  FfiConverterTypePagesView.lift(try! rustCall() {
-    uniffi_flower_ffi_fn_method_flowerdoc_page_move_down(self.uniffiClonePointer(),$0
+open func pageMoveDown() -> PagesView  {
+    return try!  FfiConverterTypePagesView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_flower_ffi_fn_method_flowerdoc_page_move_down(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
@@ -1167,10 +1281,12 @@ open func pageMoveDown() -> PagesView {
     /**
      * Move the item `id` names one place later among its siblings.
      */
-open func pageMoveItemDown(id: String) -> PagesView {
-    return try!  FfiConverterTypePagesView.lift(try! rustCall() {
-    uniffi_flower_ffi_fn_method_flowerdoc_page_move_item_down(self.uniffiClonePointer(),
-        FfiConverterString.lower(id),$0
+open func pageMoveItemDown(id: String) -> PagesView  {
+    return try!  FfiConverterTypePagesView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_flower_ffi_fn_method_flowerdoc_page_move_item_down(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(id),uniffiCallStatus
     )
 })
 }
@@ -1178,10 +1294,12 @@ open func pageMoveItemDown(id: String) -> PagesView {
     /**
      * Move the item `id` names one place earlier among its siblings.
      */
-open func pageMoveItemUp(id: String) -> PagesView {
-    return try!  FfiConverterTypePagesView.lift(try! rustCall() {
-    uniffi_flower_ffi_fn_method_flowerdoc_page_move_item_up(self.uniffiClonePointer(),
-        FfiConverterString.lower(id),$0
+open func pageMoveItemUp(id: String) -> PagesView  {
+    return try!  FfiConverterTypePagesView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_flower_ffi_fn_method_flowerdoc_page_move_item_up(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(id),uniffiCallStatus
     )
 })
 }
@@ -1189,9 +1307,11 @@ open func pageMoveItemUp(id: String) -> PagesView {
     /**
      * Move the cursor one item up the current page (`↑`).
      */
-open func pageMoveUp() -> PagesView {
-    return try!  FfiConverterTypePagesView.lift(try! rustCall() {
-    uniffi_flower_ffi_fn_method_flowerdoc_page_move_up(self.uniffiClonePointer(),$0
+open func pageMoveUp() -> PagesView  {
+    return try!  FfiConverterTypePagesView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_flower_ffi_fn_method_flowerdoc_page_move_up(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
@@ -1204,10 +1324,12 @@ open func pageMoveUp() -> PagesView {
      * (a group's members are already listed under it; a scalar is edited in
      * place through [`page_set_value`](Self::page_set_value)).
      */
-open func pageOpen(id: String) -> PagesView {
-    return try!  FfiConverterTypePagesView.lift(try! rustCall() {
-    uniffi_flower_ffi_fn_method_flowerdoc_page_open(self.uniffiClonePointer(),
-        FfiConverterString.lower(id),$0
+open func pageOpen(id: String) -> PagesView  {
+    return try!  FfiConverterTypePagesView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_flower_ffi_fn_method_flowerdoc_page_open(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(id),uniffiCallStatus
     )
 })
 }
@@ -1216,11 +1338,13 @@ open func pageOpen(id: String) -> PagesView {
      * Rename the mapping entry `id` names, keeping its value. A no-op with a
      * status hint on a sequence item, which has an index, not a key.
      */
-open func pageRename(id: String, newKey: String) -> PagesView {
-    return try!  FfiConverterTypePagesView.lift(try! rustCall() {
-    uniffi_flower_ffi_fn_method_flowerdoc_page_rename(self.uniffiClonePointer(),
+open func pageRename(id: String, newKey: String) -> PagesView  {
+    return try!  FfiConverterTypePagesView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_flower_ffi_fn_method_flowerdoc_page_rename(
+            self.uniffiCloneHandle(),
         FfiConverterString.lower(id),
-        FfiConverterString.lower(newKey),$0
+        FfiConverterString.lower(newKey),uniffiCallStatus
     )
 })
 }
@@ -1231,10 +1355,12 @@ open func pageRename(id: String, newKey: String) -> PagesView {
      *
      * `""` is the document root, which selects nothing and lists the root page.
      */
-open func pageSelect(id: String) -> PagesView {
-    return try!  FfiConverterTypePagesView.lift(try! rustCall() {
-    uniffi_flower_ffi_fn_method_flowerdoc_page_select(self.uniffiClonePointer(),
-        FfiConverterString.lower(id),$0
+open func pageSelect(id: String) -> PagesView  {
+    return try!  FfiConverterTypePagesView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_flower_ffi_fn_method_flowerdoc_page_select(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(id),uniffiCallStatus
     )
 })
 }
@@ -1247,11 +1373,13 @@ open func pageSelect(id: String) -> PagesView {
      * Any node, container or scalar. Refused, with a status, on a format
      * without comment syntax (strict JSON).
      */
-open func pageSetLeadingComment(id: String, text: String) -> PagesView {
-    return try!  FfiConverterTypePagesView.lift(try! rustCall() {
-    uniffi_flower_ffi_fn_method_flowerdoc_page_set_leading_comment(self.uniffiClonePointer(),
+open func pageSetLeadingComment(id: String, text: String) -> PagesView  {
+    return try!  FfiConverterTypePagesView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_flower_ffi_fn_method_flowerdoc_page_set_leading_comment(
+            self.uniffiCloneHandle(),
         FfiConverterString.lower(id),
-        FfiConverterString.lower(text),$0
+        FfiConverterString.lower(text),uniffiCallStatus
     )
 })
 }
@@ -1262,11 +1390,13 @@ open func pageSetLeadingComment(id: String, text: String) -> PagesView {
      * a newline is refused with a status. See
      * [`page_set_leading_comment`](Self::page_set_leading_comment).
      */
-open func pageSetTrailingComment(id: String, text: String) -> PagesView {
-    return try!  FfiConverterTypePagesView.lift(try! rustCall() {
-    uniffi_flower_ffi_fn_method_flowerdoc_page_set_trailing_comment(self.uniffiClonePointer(),
+open func pageSetTrailingComment(id: String, text: String) -> PagesView  {
+    return try!  FfiConverterTypePagesView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_flower_ffi_fn_method_flowerdoc_page_set_trailing_comment(
+            self.uniffiCloneHandle(),
         FfiConverterString.lower(id),
-        FfiConverterString.lower(text),$0
+        FfiConverterString.lower(text),uniffiCallStatus
     )
 })
 }
@@ -1275,11 +1405,13 @@ open func pageSetTrailingComment(id: String, text: String) -> PagesView {
      * Commit `text` as the new value of the scalar `id` names, spliced losslessly
      * through fig — the page-view peer of [`set_value`](Self::set_value).
      */
-open func pageSetValue(id: String, text: String) -> PagesView {
-    return try!  FfiConverterTypePagesView.lift(try! rustCall() {
-    uniffi_flower_ffi_fn_method_flowerdoc_page_set_value(self.uniffiClonePointer(),
+open func pageSetValue(id: String, text: String) -> PagesView  {
+    return try!  FfiConverterTypePagesView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_flower_ffi_fn_method_flowerdoc_page_set_value(
+            self.uniffiCloneHandle(),
         FfiConverterString.lower(id),
-        FfiConverterString.lower(text),$0
+        FfiConverterString.lower(text),uniffiCallStatus
     )
 })
 }
@@ -1289,9 +1421,11 @@ open func pageSetValue(id: String, text: String) -> PagesView {
      * keeps both surfaces rendered and needs to refresh the one an edit was not
      * made from.
      */
-open func pages() -> PagesView {
-    return try!  FfiConverterTypePagesView.lift(try! rustCall() {
-    uniffi_flower_ffi_fn_method_flowerdoc_pages(self.uniffiClonePointer(),$0
+open func pages() -> PagesView  {
+    return try!  FfiConverterTypePagesView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_flower_ffi_fn_method_flowerdoc_pages(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
@@ -1300,9 +1434,11 @@ open func pages() -> PagesView {
      * Redo the most recently undone edit. Cleared — and so a no-op — once a
      * fresh edit has been committed on top.
      */
-open func redo() -> PagesView {
-    return try!  FfiConverterTypePagesView.lift(try! rustCall() {
-    uniffi_flower_ffi_fn_method_flowerdoc_redo(self.uniffiClonePointer(),$0
+open func redo() -> PagesView  {
+    return try!  FfiConverterTypePagesView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_flower_ffi_fn_method_flowerdoc_redo(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
@@ -1312,11 +1448,13 @@ open func redo() -> PagesView {
      * no-op with a status hint when the row is a sequence item (no key); the
      * backend rejects a name that collides with a sibling.
      */
-open func renameKey(index: UInt32, newKey: String) -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_flower_ffi_fn_method_flowerdoc_rename_key(self.uniffiClonePointer(),
+open func renameKey(index: UInt32, newKey: String) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_flower_ffi_fn_method_flowerdoc_rename_key(
+            self.uniffiCloneHandle(),
         FfiConverterUInt32.lower(index),
-        FfiConverterString.lower(newKey),$0
+        FfiConverterString.lower(newKey),uniffiCallStatus
     )
 })
 }
@@ -1326,10 +1464,12 @@ open func renameKey(index: UInt32, newKey: String) -> DocView {
      * tap speaks; the other index-taking methods select first, so a caller can
      * drive purely by index.
      */
-open func select(index: UInt32) -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_flower_ffi_fn_method_flowerdoc_select(self.uniffiClonePointer(),
-        FfiConverterUInt32.lower(index),$0
+open func select(index: UInt32) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_flower_ffi_fn_method_flowerdoc_select(
+            self.uniffiCloneHandle(),
+        FfiConverterUInt32.lower(index),uniffiCallStatus
     )
 })
 }
@@ -1344,10 +1484,12 @@ open func select(index: UInt32) -> DocView {
      * re-checks anything. Call it again after a save, or whenever the host's
      * own check finishes.
      */
-open func setAnnotations(annotations: [AnnotationInput]) -> PagesView {
-    return try!  FfiConverterTypePagesView.lift(try! rustCall() {
-    uniffi_flower_ffi_fn_method_flowerdoc_set_annotations(self.uniffiClonePointer(),
-        FfiConverterSequenceTypeAnnotationInput.lower(annotations),$0
+open func setAnnotations(annotations: [AnnotationInput]) -> PagesView  {
+    return try!  FfiConverterTypePagesView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_flower_ffi_fn_method_flowerdoc_set_annotations(
+            self.uniffiCloneHandle(),
+        FfiConverterSequenceTypeAnnotationInput.lower(annotations),uniffiCallStatus
     )
 })
 }
@@ -1370,11 +1512,13 @@ open func setAnnotations(annotations: [AnnotationInput]) -> PagesView {
      * bury the page, and asking for more rows per subtree asks for a page that
      * can hold them.
      */
-open func setInlineBudget(rows: UInt32, depth: UInt32) -> PagesView {
-    return try!  FfiConverterTypePagesView.lift(try! rustCall() {
-    uniffi_flower_ffi_fn_method_flowerdoc_set_inline_budget(self.uniffiClonePointer(),
+open func setInlineBudget(rows: UInt32, depth: UInt32) -> PagesView  {
+    return try!  FfiConverterTypePagesView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_flower_ffi_fn_method_flowerdoc_set_inline_budget(
+            self.uniffiCloneHandle(),
         FfiConverterUInt32.lower(rows),
-        FfiConverterUInt32.lower(depth),$0
+        FfiConverterUInt32.lower(depth),uniffiCallStatus
     )
 })
 }
@@ -1386,11 +1530,13 @@ open func setInlineBudget(rows: UInt32, depth: UInt32) -> PagesView {
      * the literal's shape (`true`/`42`/`3.14`/`null`/text). A no-op on a container
      * row. The status reflects success or the backend's rejection.
      */
-open func setValue(index: UInt32, text: String) -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_flower_ffi_fn_method_flowerdoc_set_value(self.uniffiClonePointer(),
+open func setValue(index: UInt32, text: String) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_flower_ffi_fn_method_flowerdoc_set_value(
+            self.uniffiCloneHandle(),
         FfiConverterUInt32.lower(index),
-        FfiConverterString.lower(text),$0
+        FfiConverterString.lower(text),uniffiCallStatus
     )
 })
 }
@@ -1402,9 +1548,11 @@ open func setValue(index: UInt32, text: String) -> DocView {
      * node selected on the page you land on, so the two views are two ways of
      * looking at one position rather than two places.
      */
-open func showPages() -> PagesView {
-    return try!  FfiConverterTypePagesView.lift(try! rustCall() {
-    uniffi_flower_ffi_fn_method_flowerdoc_show_pages(self.uniffiClonePointer(),$0
+open func showPages() -> PagesView  {
+    return try!  FfiConverterTypePagesView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_flower_ffi_fn_method_flowerdoc_show_pages(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
@@ -1412,9 +1560,11 @@ open func showPages() -> PagesView {
     /**
      * Switch back to the tree view, carrying the cursor the same way.
      */
-open func showTree() -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_flower_ffi_fn_method_flowerdoc_show_tree(self.uniffiClonePointer(),$0
+open func showTree() -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_flower_ffi_fn_method_flowerdoc_show_tree(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
@@ -1422,9 +1572,11 @@ open func showTree() -> DocView {
     /**
      * The canonical serialized document — what the host writes on save.
      */
-open func source() -> String {
+open func source() -> String  {
     return try!  FfiConverterString.lift(try! rustCall() {
-    uniffi_flower_ffi_fn_method_flowerdoc_source(self.uniffiClonePointer(),$0
+        uniffiCallStatus in
+    uniffi_flower_ffi_fn_method_flowerdoc_source(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
@@ -1434,10 +1586,12 @@ open func source() -> String {
      * disclosure-triangle tap). Selects the row; a no-op on a scalar row (the
      * frontend edits those in place instead).
      */
-open func toggle(index: UInt32) -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_flower_ffi_fn_method_flowerdoc_toggle(self.uniffiClonePointer(),
-        FfiConverterUInt32.lower(index),$0
+open func toggle(index: UInt32) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_flower_ffi_fn_method_flowerdoc_toggle(
+            self.uniffiCloneHandle(),
+        FfiConverterUInt32.lower(index),uniffiCallStatus
     )
 })
 }
@@ -1451,9 +1605,11 @@ open func toggle(index: UInt32) -> DocView {
      * `dirty` is recomputed from the bytes, so undoing to the saved text
      * reports clean again. A no-op with a status when the journal is empty.
      */
-open func undo() -> PagesView {
-    return try!  FfiConverterTypePagesView.lift(try! rustCall() {
-    uniffi_flower_ffi_fn_method_flowerdoc_undo(self.uniffiClonePointer(),$0
+open func undo() -> PagesView  {
+    return try!  FfiConverterTypePagesView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_flower_ffi_fn_method_flowerdoc_undo(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
@@ -1461,66 +1617,61 @@ open func undo() -> PagesView {
     /**
      * Resolve the current document to a renderable frame — the first paint.
      */
-open func view() -> DocView {
-    return try!  FfiConverterTypeDocView.lift(try! rustCall() {
-    uniffi_flower_ffi_fn_method_flowerdoc_view(self.uniffiClonePointer(),$0
+open func view() -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_flower_ffi_fn_method_flowerdoc_view(
+            self.uniffiCloneHandle(),uniffiCallStatus
     )
 })
 }
     
 
+    
 }
+
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
 public struct FfiConverterTypeFlowerDoc: FfiConverter {
-
-    typealias FfiType = UnsafeMutableRawPointer
+    typealias FfiType = UInt64
     typealias SwiftType = FlowerDoc
 
-    public static func lift(_ pointer: UnsafeMutableRawPointer) throws -> FlowerDoc {
-        return FlowerDoc(unsafeFromRawPointer: pointer)
+    public static func lift(_ handle: UInt64) throws -> FlowerDoc {
+        return FlowerDoc(unsafeFromHandle: handle)
     }
 
-    public static func lower(_ value: FlowerDoc) -> UnsafeMutableRawPointer {
-        return value.uniffiClonePointer()
+    public static func lower(_ value: FlowerDoc) -> UInt64 {
+        return value.uniffiCloneHandle()
     }
 
     public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> FlowerDoc {
-        let v: UInt64 = try readInt(&buf)
-        // The Rust code won't compile if a pointer won't fit in a UInt64.
-        // We have to go via `UInt` because that's the thing that's the size of a pointer.
-        let ptr = UnsafeMutableRawPointer(bitPattern: UInt(truncatingIfNeeded: v))
-        if (ptr == nil) {
-            throw UniffiInternalError.unexpectedNullPointer
-        }
-        return try lift(ptr!)
+        let handle: UInt64 = try readInt(&buf)
+        return try lift(handle)
     }
 
     public static func write(_ value: FlowerDoc, into buf: inout [UInt8]) {
-        // This fiddling is because `Int` is the thing that's the same size as a pointer.
-        // The Rust code won't compile if a pointer won't fit in a `UInt64`.
-        writeInt(&buf, UInt64(bitPattern: Int64(Int(bitPattern: lower(value)))))
+        writeInt(&buf, lower(value))
     }
 }
 
 
-
-
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public func FfiConverterTypeFlowerDoc_lift(_ pointer: UnsafeMutableRawPointer) throws -> FlowerDoc {
-    return try FfiConverterTypeFlowerDoc.lift(pointer)
+public func FfiConverterTypeFlowerDoc_lift(_ handle: UInt64) throws -> FlowerDoc {
+    return try FfiConverterTypeFlowerDoc.lift(handle)
 }
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
 #endif
-public func FfiConverterTypeFlowerDoc_lower(_ value: FlowerDoc) -> UnsafeMutableRawPointer {
+public func FfiConverterTypeFlowerDoc_lower(_ value: FlowerDoc) -> UInt64 {
     return FfiConverterTypeFlowerDoc.lower(value)
 }
+
+
 
 
 /**
@@ -1533,7 +1684,7 @@ public func FfiConverterTypeFlowerDoc_lower(_ value: FlowerDoc) -> UnsafeMutable
  * An id that names nothing is dropped — a host need not prune its findings
  * against a tree it does not own.
  */
-public struct AnnotationInput {
+public struct AnnotationInput: Equatable, Hashable {
     public var id: String
     /**
      * `"error"`, `"warning"`, or `"info"`, case-insensitively. Anything else
@@ -1555,31 +1706,15 @@ public struct AnnotationInput {
         self.severity = severity
         self.message = message
     }
+
+    
+
+    
 }
 
-
-
-extension AnnotationInput: Equatable, Hashable {
-    public static func ==(lhs: AnnotationInput, rhs: AnnotationInput) -> Bool {
-        if lhs.id != rhs.id {
-            return false
-        }
-        if lhs.severity != rhs.severity {
-            return false
-        }
-        if lhs.message != rhs.message {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(id)
-        hasher.combine(severity)
-        hasher.combine(message)
-    }
-}
-
+#if compiler(>=6)
+extension AnnotationInput: Sendable {}
+#endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -1620,7 +1755,7 @@ public func FfiConverterTypeAnnotationInput_lower(_ value: AnnotationInput) -> R
 /**
  * One row of a picker: what it writes, what it reads as, and the second line.
  */
-public struct ChoiceView {
+public struct ChoiceView: Equatable, Hashable {
     /**
      * The text to hand [`FlowerDoc::page_choose`] — and what the value will
      * read as once chosen.
@@ -1654,31 +1789,15 @@ public struct ChoiceView {
         self.label = label
         self.detail = detail
     }
+
+    
+
+    
 }
 
-
-
-extension ChoiceView: Equatable, Hashable {
-    public static func ==(lhs: ChoiceView, rhs: ChoiceView) -> Bool {
-        if lhs.value != rhs.value {
-            return false
-        }
-        if lhs.label != rhs.label {
-            return false
-        }
-        if lhs.detail != rhs.detail {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(value)
-        hasher.combine(label)
-        hasher.combine(detail)
-    }
-}
-
+#if compiler(>=6)
+extension ChoiceView: Sendable {}
+#endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -1719,7 +1838,7 @@ public func FfiConverterTypeChoiceView_lower(_ value: ChoiceView) -> RustBuffer 
 /**
  * A step of a page's breadcrumb: the container it names, and the id to open it.
  */
-public struct CrumbView {
+public struct CrumbView: Equatable, Hashable {
     public var id: String
     public var label: String
 
@@ -1729,27 +1848,15 @@ public struct CrumbView {
         self.id = id
         self.label = label
     }
+
+    
+
+    
 }
 
-
-
-extension CrumbView: Equatable, Hashable {
-    public static func ==(lhs: CrumbView, rhs: CrumbView) -> Bool {
-        if lhs.id != rhs.id {
-            return false
-        }
-        if lhs.label != rhs.label {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(id)
-        hasher.combine(label)
-    }
-}
-
+#if compiler(>=6)
+extension CrumbView: Sendable {}
+#endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -1790,7 +1897,7 @@ public func FfiConverterTypeCrumbView_lower(_ value: CrumbView) -> RustBuffer {
  * document-level chrome state — everything the SwiftUI side needs for one
  * repaint, in one value. Returned by every method.
  */
-public struct DocView {
+public struct DocView: Equatable, Hashable {
     public var rows: [RowView]
     /**
      * The selected row: an index into [`Self::rows`], clamped to the list.
@@ -1844,43 +1951,15 @@ public struct DocView {
         self.rootKind = rootKind
         self.hiddenCount = hiddenCount
     }
+
+    
+
+    
 }
 
-
-
-extension DocView: Equatable, Hashable {
-    public static func ==(lhs: DocView, rhs: DocView) -> Bool {
-        if lhs.rows != rhs.rows {
-            return false
-        }
-        if lhs.selected != rhs.selected {
-            return false
-        }
-        if lhs.dirty != rhs.dirty {
-            return false
-        }
-        if lhs.status != rhs.status {
-            return false
-        }
-        if lhs.rootKind != rhs.rootKind {
-            return false
-        }
-        if lhs.hiddenCount != rhs.hiddenCount {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(rows)
-        hasher.combine(selected)
-        hasher.combine(dirty)
-        hasher.combine(status)
-        hasher.combine(rootKind)
-        hasher.combine(hiddenCount)
-    }
-}
-
+#if compiler(>=6)
+extension DocView: Sendable {}
+#endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -1932,7 +2011,7 @@ public func FfiConverterTypeDocView_lower(_ value: DocView) -> RustBuffer {
  * is one level of the same thing, and an [`inset`](Self::inset) of 1 only for the
  * members of a group inlined into it.
  */
-public struct PageItemView {
+public struct PageItemView: Equatable, Hashable {
     /**
      * The item's dotted fig path — the same identity a [`RowView`] carries, so
      * the two projections name a node the same way and every page method takes
@@ -2180,91 +2259,15 @@ public struct PageItemView {
         self.enumOptions = enumOptions
         self.isClosedEnum = isClosedEnum
     }
+
+    
+
+    
 }
 
-
-
-extension PageItemView: Equatable, Hashable {
-    public static func ==(lhs: PageItemView, rhs: PageItemView) -> Bool {
-        if lhs.id != rhs.id {
-            return false
-        }
-        if lhs.label != rhs.label {
-            return false
-        }
-        if lhs.title != rhs.title {
-            return false
-        }
-        if lhs.kind != rhs.kind {
-            return false
-        }
-        if lhs.role != rhs.role {
-            return false
-        }
-        if lhs.preview != rhs.preview {
-            return false
-        }
-        if lhs.summary != rhs.summary {
-            return false
-        }
-        if lhs.count != rhs.count {
-            return false
-        }
-        if lhs.inset != rhs.inset {
-            return false
-        }
-        if lhs.canRename != rhs.canRename {
-            return false
-        }
-        if lhs.chain != rhs.chain {
-            return false
-        }
-        if lhs.demoted != rhs.demoted {
-            return false
-        }
-        if lhs.leadingComment != rhs.leadingComment {
-            return false
-        }
-        if lhs.trailingComment != rhs.trailingComment {
-            return false
-        }
-        if lhs.annotationSeverity != rhs.annotationSeverity {
-            return false
-        }
-        if lhs.annotationMessage != rhs.annotationMessage {
-            return false
-        }
-        if lhs.enumOptions != rhs.enumOptions {
-            return false
-        }
-        if lhs.isClosedEnum != rhs.isClosedEnum {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(id)
-        hasher.combine(label)
-        hasher.combine(title)
-        hasher.combine(kind)
-        hasher.combine(role)
-        hasher.combine(preview)
-        hasher.combine(summary)
-        hasher.combine(count)
-        hasher.combine(inset)
-        hasher.combine(canRename)
-        hasher.combine(chain)
-        hasher.combine(demoted)
-        hasher.combine(leadingComment)
-        hasher.combine(trailingComment)
-        hasher.combine(annotationSeverity)
-        hasher.combine(annotationMessage)
-        hasher.combine(enumOptions)
-        hasher.combine(isClosedEnum)
-    }
-}
-
+#if compiler(>=6)
+extension PageItemView: Sendable {}
+#endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -2335,7 +2338,7 @@ public func FfiConverterTypePageItemView_lower(_ value: PageItemView) -> RustBuf
 /**
  * One page, ready to render as a pane.
  */
-public struct PageView {
+public struct PageView: Equatable, Hashable {
     /**
      * The dotted path of the container being listed; `""` is the document root.
      */
@@ -2385,39 +2388,15 @@ public struct PageView {
         self.selected = selected
         self.demoted = demoted
     }
+
+    
+
+    
 }
 
-
-
-extension PageView: Equatable, Hashable {
-    public static func ==(lhs: PageView, rhs: PageView) -> Bool {
-        if lhs.focus != rhs.focus {
-            return false
-        }
-        if lhs.crumbs != rhs.crumbs {
-            return false
-        }
-        if lhs.items != rhs.items {
-            return false
-        }
-        if lhs.selected != rhs.selected {
-            return false
-        }
-        if lhs.demoted != rhs.demoted {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(focus)
-        hasher.combine(crumbs)
-        hasher.combine(items)
-        hasher.combine(selected)
-        hasher.combine(demoted)
-    }
-}
-
+#if compiler(>=6)
+extension PageView: Sendable {}
+#endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -2464,7 +2443,7 @@ public func FfiConverterTypePageView_lower(_ value: PageView) -> RustBuffer {
  * out of, and the one it would open — plus the same document chrome a
  * [`DocView`] carries, so a page-view host needs nothing else.
  */
-public struct PagesView {
+public struct PagesView: Equatable, Hashable {
     /**
      * The page currently being listed, with the cursor on it.
      */
@@ -2544,63 +2523,15 @@ public struct PagesView {
         self.redoDepth = redoDepth
         self.editSeq = editSeq
     }
+
+    
+
+    
 }
 
-
-
-extension PagesView: Equatable, Hashable {
-    public static func ==(lhs: PagesView, rhs: PagesView) -> Bool {
-        if lhs.page != rhs.page {
-            return false
-        }
-        if lhs.parent != rhs.parent {
-            return false
-        }
-        if lhs.peek != rhs.peek {
-            return false
-        }
-        if lhs.twoPane != rhs.twoPane {
-            return false
-        }
-        if lhs.dirty != rhs.dirty {
-            return false
-        }
-        if lhs.status != rhs.status {
-            return false
-        }
-        if lhs.rootKind != rhs.rootKind {
-            return false
-        }
-        if lhs.hiddenCount != rhs.hiddenCount {
-            return false
-        }
-        if lhs.undoDepth != rhs.undoDepth {
-            return false
-        }
-        if lhs.redoDepth != rhs.redoDepth {
-            return false
-        }
-        if lhs.editSeq != rhs.editSeq {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(page)
-        hasher.combine(parent)
-        hasher.combine(peek)
-        hasher.combine(twoPane)
-        hasher.combine(dirty)
-        hasher.combine(status)
-        hasher.combine(rootKind)
-        hasher.combine(hiddenCount)
-        hasher.combine(undoDepth)
-        hasher.combine(redoDepth)
-        hasher.combine(editSeq)
-    }
-}
-
+#if compiler(>=6)
+extension PagesView: Sendable {}
+#endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -2659,7 +2590,7 @@ public func FfiConverterTypePagesView_lower(_ value: PagesView) -> RustBuffer {
  * the renderer. The SwiftUI side indents by `depth`, draws a disclosure twisty
  * when `is_container`, and shows `preview` as the value (or child count).
  */
-public struct RowView {
+public struct RowView: Equatable, Hashable {
     /**
      * A stable identity for this row — its dotted fig path (`server.limits.port`,
      * `tags.0`), or `""` for a scalar document. Unique among visible rows, so a
@@ -2745,51 +2676,15 @@ public struct RowView {
         self.expanded = expanded
         self.canRename = canRename
     }
+
+    
+
+    
 }
 
-
-
-extension RowView: Equatable, Hashable {
-    public static func ==(lhs: RowView, rhs: RowView) -> Bool {
-        if lhs.id != rhs.id {
-            return false
-        }
-        if lhs.depth != rhs.depth {
-            return false
-        }
-        if lhs.label != rhs.label {
-            return false
-        }
-        if lhs.kind != rhs.kind {
-            return false
-        }
-        if lhs.preview != rhs.preview {
-            return false
-        }
-        if lhs.isContainer != rhs.isContainer {
-            return false
-        }
-        if lhs.expanded != rhs.expanded {
-            return false
-        }
-        if lhs.canRename != rhs.canRename {
-            return false
-        }
-        return true
-    }
-
-    public func hash(into hasher: inout Hasher) {
-        hasher.combine(id)
-        hasher.combine(depth)
-        hasher.combine(label)
-        hasher.combine(kind)
-        hasher.combine(preview)
-        hasher.combine(isContainer)
-        hasher.combine(expanded)
-        hasher.combine(canRename)
-    }
-}
-
+#if compiler(>=6)
+extension RowView: Sendable {}
+#endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -2841,7 +2736,8 @@ public func FfiConverterTypeRowView_lower(_ value: RowView) -> RustBuffer {
  * A failure constructing a document — the only fallible entry point. Every other
  * method operates on an already-parsed model and returns a [`DocView`] directly.
  */
-public enum FlowerError {
+public 
+enum FlowerError: Swift.Error, Equatable, Hashable, Foundation.LocalizedError {
 
     
     
@@ -2855,8 +2751,21 @@ public enum FlowerError {
      */
     case Open(message: String
     )
+
+    
+
+    
+
+    
+    public var errorDescription: String? {
+        String(reflecting: self)
+    }
+    
 }
 
+#if compiler(>=6)
+extension FlowerError: Sendable {}
+#endif
 
 #if swift(>=5.8)
 @_documentation(visibility: private)
@@ -2903,12 +2812,18 @@ public struct FfiConverterTypeFlowerError: FfiConverterRustBuffer {
 }
 
 
-extension FlowerError: Equatable, Hashable {}
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFlowerError_lift(_ buf: RustBuffer) throws -> FlowerError {
+    return try FfiConverterTypeFlowerError.lift(buf)
+}
 
-extension FlowerError: Foundation.LocalizedError {
-    public var errorDescription: String? {
-        String(reflecting: self)
-    }
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeFlowerError_lower(_ value: FlowerError) -> RustBuffer {
+    return FfiConverterTypeFlowerError.lower(value)
 }
 
 #if swift(>=5.8)
@@ -3140,148 +3055,150 @@ private enum InitializationResult {
 }
 // Use a global variable to perform the versioning checks. Swift ensures that
 // the code inside is only computed once.
-private var initializationResult: InitializationResult = {
+private let initializationResult: InitializationResult = {
     // Get the bindings contract version from our ComponentInterface
-    let bindings_contract_version = 26
+    let bindings_contract_version = 30
     // Get the scaffolding contract version by calling the into the dylib
     let scaffolding_contract_version = ffi_flower_ffi_uniffi_contract_version()
     if bindings_contract_version != scaffolding_contract_version {
         return InitializationResult.contractVersionMismatch
     }
-    if (uniffi_flower_ffi_checksum_method_flowerdoc_append_item() != 14468) {
+    if (uniffi_flower_ffi_checksum_method_flowerdoc_append_item() != 62252) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_flower_ffi_checksum_method_flowerdoc_append_root_item() != 52962) {
+    if (uniffi_flower_ffi_checksum_method_flowerdoc_append_root_item() != 63834) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_flower_ffi_checksum_method_flowerdoc_collapse_or_leave() != 2973) {
+    if (uniffi_flower_ffi_checksum_method_flowerdoc_collapse_or_leave() != 37057) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_flower_ffi_checksum_method_flowerdoc_delete() != 14167) {
+    if (uniffi_flower_ffi_checksum_method_flowerdoc_delete() != 8721) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_flower_ffi_checksum_method_flowerdoc_expand_or_enter() != 33225) {
+    if (uniffi_flower_ffi_checksum_method_flowerdoc_expand_or_enter() != 34367) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_flower_ffi_checksum_method_flowerdoc_insert_key() != 12563) {
+    if (uniffi_flower_ffi_checksum_method_flowerdoc_insert_key() != 31910) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_flower_ffi_checksum_method_flowerdoc_insert_root_key() != 22259) {
+    if (uniffi_flower_ffi_checksum_method_flowerdoc_insert_root_key() != 16052) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_flower_ffi_checksum_method_flowerdoc_mark_saved() != 4396) {
+    if (uniffi_flower_ffi_checksum_method_flowerdoc_mark_saved() != 24377) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_flower_ffi_checksum_method_flowerdoc_move_down() != 34324) {
+    if (uniffi_flower_ffi_checksum_method_flowerdoc_move_down() != 15504) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_flower_ffi_checksum_method_flowerdoc_move_row_down() != 49490) {
+    if (uniffi_flower_ffi_checksum_method_flowerdoc_move_row_down() != 64832) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_flower_ffi_checksum_method_flowerdoc_move_row_up() != 53382) {
+    if (uniffi_flower_ffi_checksum_method_flowerdoc_move_row_up() != 33758) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_flower_ffi_checksum_method_flowerdoc_move_up() != 26568) {
+    if (uniffi_flower_ffi_checksum_method_flowerdoc_move_up() != 54651) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_flower_ffi_checksum_method_flowerdoc_page_add_child() != 63713) {
+    if (uniffi_flower_ffi_checksum_method_flowerdoc_page_add_child() != 25952) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_flower_ffi_checksum_method_flowerdoc_page_at() != 26168) {
+    if (uniffi_flower_ffi_checksum_method_flowerdoc_page_at() != 28956) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_flower_ffi_checksum_method_flowerdoc_page_back() != 62597) {
+    if (uniffi_flower_ffi_checksum_method_flowerdoc_page_back() != 3630) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_flower_ffi_checksum_method_flowerdoc_page_choices() != 5935) {
+    if (uniffi_flower_ffi_checksum_method_flowerdoc_page_choices() != 22561) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_flower_ffi_checksum_method_flowerdoc_page_choose() != 42486) {
+    if (uniffi_flower_ffi_checksum_method_flowerdoc_page_choose() != 17526) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_flower_ffi_checksum_method_flowerdoc_page_choose_append() != 17598) {
+    if (uniffi_flower_ffi_checksum_method_flowerdoc_page_choose_append() != 47794) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_flower_ffi_checksum_method_flowerdoc_page_delete() != 53944) {
+    if (uniffi_flower_ffi_checksum_method_flowerdoc_page_delete() != 47286) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_flower_ffi_checksum_method_flowerdoc_page_move_down() != 45594) {
+    if (uniffi_flower_ffi_checksum_method_flowerdoc_page_move_down() != 7502) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_flower_ffi_checksum_method_flowerdoc_page_move_item_down() != 33295) {
+    if (uniffi_flower_ffi_checksum_method_flowerdoc_page_move_item_down() != 7015) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_flower_ffi_checksum_method_flowerdoc_page_move_item_up() != 29315) {
+    if (uniffi_flower_ffi_checksum_method_flowerdoc_page_move_item_up() != 3897) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_flower_ffi_checksum_method_flowerdoc_page_move_up() != 905) {
+    if (uniffi_flower_ffi_checksum_method_flowerdoc_page_move_up() != 49271) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_flower_ffi_checksum_method_flowerdoc_page_open() != 55615) {
+    if (uniffi_flower_ffi_checksum_method_flowerdoc_page_open() != 24009) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_flower_ffi_checksum_method_flowerdoc_page_rename() != 26084) {
+    if (uniffi_flower_ffi_checksum_method_flowerdoc_page_rename() != 47078) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_flower_ffi_checksum_method_flowerdoc_page_select() != 61872) {
+    if (uniffi_flower_ffi_checksum_method_flowerdoc_page_select() != 34534) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_flower_ffi_checksum_method_flowerdoc_page_set_leading_comment() != 23755) {
+    if (uniffi_flower_ffi_checksum_method_flowerdoc_page_set_leading_comment() != 47770) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_flower_ffi_checksum_method_flowerdoc_page_set_trailing_comment() != 16358) {
+    if (uniffi_flower_ffi_checksum_method_flowerdoc_page_set_trailing_comment() != 49529) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_flower_ffi_checksum_method_flowerdoc_page_set_value() != 1068) {
+    if (uniffi_flower_ffi_checksum_method_flowerdoc_page_set_value() != 46170) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_flower_ffi_checksum_method_flowerdoc_pages() != 41318) {
+    if (uniffi_flower_ffi_checksum_method_flowerdoc_pages() != 118) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_flower_ffi_checksum_method_flowerdoc_redo() != 22312) {
+    if (uniffi_flower_ffi_checksum_method_flowerdoc_redo() != 45614) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_flower_ffi_checksum_method_flowerdoc_rename_key() != 26782) {
+    if (uniffi_flower_ffi_checksum_method_flowerdoc_rename_key() != 27486) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_flower_ffi_checksum_method_flowerdoc_select() != 42705) {
+    if (uniffi_flower_ffi_checksum_method_flowerdoc_select() != 23742) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_flower_ffi_checksum_method_flowerdoc_set_annotations() != 49099) {
+    if (uniffi_flower_ffi_checksum_method_flowerdoc_set_annotations() != 35901) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_flower_ffi_checksum_method_flowerdoc_set_inline_budget() != 12151) {
+    if (uniffi_flower_ffi_checksum_method_flowerdoc_set_inline_budget() != 1648) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_flower_ffi_checksum_method_flowerdoc_set_value() != 43208) {
+    if (uniffi_flower_ffi_checksum_method_flowerdoc_set_value() != 34284) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_flower_ffi_checksum_method_flowerdoc_show_pages() != 54499) {
+    if (uniffi_flower_ffi_checksum_method_flowerdoc_show_pages() != 5330) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_flower_ffi_checksum_method_flowerdoc_show_tree() != 7204) {
+    if (uniffi_flower_ffi_checksum_method_flowerdoc_show_tree() != 14898) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_flower_ffi_checksum_method_flowerdoc_source() != 21638) {
+    if (uniffi_flower_ffi_checksum_method_flowerdoc_source() != 62384) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_flower_ffi_checksum_method_flowerdoc_toggle() != 62183) {
+    if (uniffi_flower_ffi_checksum_method_flowerdoc_toggle() != 51806) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_flower_ffi_checksum_method_flowerdoc_undo() != 9770) {
+    if (uniffi_flower_ffi_checksum_method_flowerdoc_undo() != 56597) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_flower_ffi_checksum_method_flowerdoc_view() != 25871) {
+    if (uniffi_flower_ffi_checksum_method_flowerdoc_view() != 23042) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_flower_ffi_checksum_constructor_flowerdoc_new() != 32982) {
+    if (uniffi_flower_ffi_checksum_constructor_flowerdoc_new() != 15159) {
         return InitializationResult.apiChecksumMismatch
     }
 
     return InitializationResult.ok
 }()
 
-private func uniffiEnsureInitialized() {
+// Make the ensure init function public so that other modules which have external type references to
+// our types can call it.
+public func uniffiEnsureFlowerFfiInitialized() {
     switch initializationResult {
     case .ok:
         break

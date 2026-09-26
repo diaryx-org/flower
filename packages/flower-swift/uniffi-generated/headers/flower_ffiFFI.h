@@ -50,9 +50,9 @@ typedef void (*UniffiRustFutureContinuationCallback)(uint64_t, int8_t
     );
 
 #endif
-#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_FREE
-#define UNIFFI_FFIDEF_FOREIGN_FUTURE_FREE
-typedef void (*UniffiForeignFutureFree)(uint64_t
+#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_DROPPED_CALLBACK
+#define UNIFFI_FFIDEF_FOREIGN_FUTURE_DROPPED_CALLBACK
+typedef void (*UniffiForeignFutureDroppedCallback)(uint64_t
     );
 
 #endif
@@ -62,418 +62,410 @@ typedef void (*UniffiCallbackInterfaceFree)(uint64_t
     );
 
 #endif
-#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE
-#define UNIFFI_FFIDEF_FOREIGN_FUTURE
-typedef struct UniffiForeignFuture {
-    uint64_t handle;
-    UniffiForeignFutureFree _Nonnull free;
-} UniffiForeignFuture;
+#ifndef UNIFFI_FFIDEF_CALLBACK_INTERFACE_CLONE
+#define UNIFFI_FFIDEF_CALLBACK_INTERFACE_CLONE
+typedef uint64_t (*UniffiCallbackInterfaceClone)(uint64_t
+    );
 
 #endif
-#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_U8
-#define UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_U8
-typedef struct UniffiForeignFutureStructU8 {
+#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_DROPPED_CALLBACK_STRUCT
+#define UNIFFI_FFIDEF_FOREIGN_FUTURE_DROPPED_CALLBACK_STRUCT
+typedef struct UniffiForeignFutureDroppedCallbackStruct {
+    uint64_t handle;
+    UniffiForeignFutureDroppedCallback _Nonnull free;
+} UniffiForeignFutureDroppedCallbackStruct;
+
+#endif
+#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_U8
+#define UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_U8
+typedef struct UniffiForeignFutureResultU8 {
     uint8_t returnValue;
     RustCallStatus callStatus;
-} UniffiForeignFutureStructU8;
+} UniffiForeignFutureResultU8;
 
 #endif
 #ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_U8
 #define UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_U8
-typedef void (*UniffiForeignFutureCompleteU8)(uint64_t, UniffiForeignFutureStructU8
+typedef void (*UniffiForeignFutureCompleteU8)(uint64_t, UniffiForeignFutureResultU8
     );
 
 #endif
-#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_I8
-#define UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_I8
-typedef struct UniffiForeignFutureStructI8 {
+#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_I8
+#define UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_I8
+typedef struct UniffiForeignFutureResultI8 {
     int8_t returnValue;
     RustCallStatus callStatus;
-} UniffiForeignFutureStructI8;
+} UniffiForeignFutureResultI8;
 
 #endif
 #ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_I8
 #define UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_I8
-typedef void (*UniffiForeignFutureCompleteI8)(uint64_t, UniffiForeignFutureStructI8
+typedef void (*UniffiForeignFutureCompleteI8)(uint64_t, UniffiForeignFutureResultI8
     );
 
 #endif
-#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_U16
-#define UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_U16
-typedef struct UniffiForeignFutureStructU16 {
+#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_U16
+#define UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_U16
+typedef struct UniffiForeignFutureResultU16 {
     uint16_t returnValue;
     RustCallStatus callStatus;
-} UniffiForeignFutureStructU16;
+} UniffiForeignFutureResultU16;
 
 #endif
 #ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_U16
 #define UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_U16
-typedef void (*UniffiForeignFutureCompleteU16)(uint64_t, UniffiForeignFutureStructU16
+typedef void (*UniffiForeignFutureCompleteU16)(uint64_t, UniffiForeignFutureResultU16
     );
 
 #endif
-#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_I16
-#define UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_I16
-typedef struct UniffiForeignFutureStructI16 {
+#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_I16
+#define UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_I16
+typedef struct UniffiForeignFutureResultI16 {
     int16_t returnValue;
     RustCallStatus callStatus;
-} UniffiForeignFutureStructI16;
+} UniffiForeignFutureResultI16;
 
 #endif
 #ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_I16
 #define UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_I16
-typedef void (*UniffiForeignFutureCompleteI16)(uint64_t, UniffiForeignFutureStructI16
+typedef void (*UniffiForeignFutureCompleteI16)(uint64_t, UniffiForeignFutureResultI16
     );
 
 #endif
-#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_U32
-#define UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_U32
-typedef struct UniffiForeignFutureStructU32 {
+#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_U32
+#define UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_U32
+typedef struct UniffiForeignFutureResultU32 {
     uint32_t returnValue;
     RustCallStatus callStatus;
-} UniffiForeignFutureStructU32;
+} UniffiForeignFutureResultU32;
 
 #endif
 #ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_U32
 #define UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_U32
-typedef void (*UniffiForeignFutureCompleteU32)(uint64_t, UniffiForeignFutureStructU32
+typedef void (*UniffiForeignFutureCompleteU32)(uint64_t, UniffiForeignFutureResultU32
     );
 
 #endif
-#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_I32
-#define UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_I32
-typedef struct UniffiForeignFutureStructI32 {
+#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_I32
+#define UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_I32
+typedef struct UniffiForeignFutureResultI32 {
     int32_t returnValue;
     RustCallStatus callStatus;
-} UniffiForeignFutureStructI32;
+} UniffiForeignFutureResultI32;
 
 #endif
 #ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_I32
 #define UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_I32
-typedef void (*UniffiForeignFutureCompleteI32)(uint64_t, UniffiForeignFutureStructI32
+typedef void (*UniffiForeignFutureCompleteI32)(uint64_t, UniffiForeignFutureResultI32
     );
 
 #endif
-#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_U64
-#define UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_U64
-typedef struct UniffiForeignFutureStructU64 {
+#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_U64
+#define UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_U64
+typedef struct UniffiForeignFutureResultU64 {
     uint64_t returnValue;
     RustCallStatus callStatus;
-} UniffiForeignFutureStructU64;
+} UniffiForeignFutureResultU64;
 
 #endif
 #ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_U64
 #define UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_U64
-typedef void (*UniffiForeignFutureCompleteU64)(uint64_t, UniffiForeignFutureStructU64
+typedef void (*UniffiForeignFutureCompleteU64)(uint64_t, UniffiForeignFutureResultU64
     );
 
 #endif
-#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_I64
-#define UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_I64
-typedef struct UniffiForeignFutureStructI64 {
+#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_I64
+#define UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_I64
+typedef struct UniffiForeignFutureResultI64 {
     int64_t returnValue;
     RustCallStatus callStatus;
-} UniffiForeignFutureStructI64;
+} UniffiForeignFutureResultI64;
 
 #endif
 #ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_I64
 #define UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_I64
-typedef void (*UniffiForeignFutureCompleteI64)(uint64_t, UniffiForeignFutureStructI64
+typedef void (*UniffiForeignFutureCompleteI64)(uint64_t, UniffiForeignFutureResultI64
     );
 
 #endif
-#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_F32
-#define UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_F32
-typedef struct UniffiForeignFutureStructF32 {
+#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_F32
+#define UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_F32
+typedef struct UniffiForeignFutureResultF32 {
     float returnValue;
     RustCallStatus callStatus;
-} UniffiForeignFutureStructF32;
+} UniffiForeignFutureResultF32;
 
 #endif
 #ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_F32
 #define UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_F32
-typedef void (*UniffiForeignFutureCompleteF32)(uint64_t, UniffiForeignFutureStructF32
+typedef void (*UniffiForeignFutureCompleteF32)(uint64_t, UniffiForeignFutureResultF32
     );
 
 #endif
-#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_F64
-#define UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_F64
-typedef struct UniffiForeignFutureStructF64 {
+#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_F64
+#define UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_F64
+typedef struct UniffiForeignFutureResultF64 {
     double returnValue;
     RustCallStatus callStatus;
-} UniffiForeignFutureStructF64;
+} UniffiForeignFutureResultF64;
 
 #endif
 #ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_F64
 #define UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_F64
-typedef void (*UniffiForeignFutureCompleteF64)(uint64_t, UniffiForeignFutureStructF64
+typedef void (*UniffiForeignFutureCompleteF64)(uint64_t, UniffiForeignFutureResultF64
     );
 
 #endif
-#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_POINTER
-#define UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_POINTER
-typedef struct UniffiForeignFutureStructPointer {
-    void*_Nonnull returnValue;
-    RustCallStatus callStatus;
-} UniffiForeignFutureStructPointer;
-
-#endif
-#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_POINTER
-#define UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_POINTER
-typedef void (*UniffiForeignFutureCompletePointer)(uint64_t, UniffiForeignFutureStructPointer
-    );
-
-#endif
-#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_RUST_BUFFER
-#define UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_RUST_BUFFER
-typedef struct UniffiForeignFutureStructRustBuffer {
+#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_RUST_BUFFER
+#define UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_RUST_BUFFER
+typedef struct UniffiForeignFutureResultRustBuffer {
     RustBuffer returnValue;
     RustCallStatus callStatus;
-} UniffiForeignFutureStructRustBuffer;
+} UniffiForeignFutureResultRustBuffer;
 
 #endif
 #ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_RUST_BUFFER
 #define UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_RUST_BUFFER
-typedef void (*UniffiForeignFutureCompleteRustBuffer)(uint64_t, UniffiForeignFutureStructRustBuffer
+typedef void (*UniffiForeignFutureCompleteRustBuffer)(uint64_t, UniffiForeignFutureResultRustBuffer
     );
 
 #endif
-#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_VOID
-#define UNIFFI_FFIDEF_FOREIGN_FUTURE_STRUCT_VOID
-typedef struct UniffiForeignFutureStructVoid {
+#ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_VOID
+#define UNIFFI_FFIDEF_FOREIGN_FUTURE_RESULT_VOID
+typedef struct UniffiForeignFutureResultVoid {
     RustCallStatus callStatus;
-} UniffiForeignFutureStructVoid;
+} UniffiForeignFutureResultVoid;
 
 #endif
 #ifndef UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_VOID
 #define UNIFFI_FFIDEF_FOREIGN_FUTURE_COMPLETE_VOID
-typedef void (*UniffiForeignFutureCompleteVoid)(uint64_t, UniffiForeignFutureStructVoid
+typedef void (*UniffiForeignFutureCompleteVoid)(uint64_t, UniffiForeignFutureResultVoid
     );
 
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_CLONE_FLOWERDOC
 #define UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_CLONE_FLOWERDOC
-void*_Nonnull uniffi_flower_ffi_fn_clone_flowerdoc(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+uint64_t uniffi_flower_ffi_fn_clone_flowerdoc(uint64_t handle, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_FREE_FLOWERDOC
 #define UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_FREE_FLOWERDOC
-void uniffi_flower_ffi_fn_free_flowerdoc(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+void uniffi_flower_ffi_fn_free_flowerdoc(uint64_t handle, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_CONSTRUCTOR_FLOWERDOC_NEW
 #define UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_CONSTRUCTOR_FLOWERDOC_NEW
-void*_Nonnull uniffi_flower_ffi_fn_constructor_flowerdoc_new(RustBuffer source, RustBuffer format, RustBuffer hidden_keys, RustCallStatus *_Nonnull out_status
+uint64_t uniffi_flower_ffi_fn_constructor_flowerdoc_new(RustBuffer source, RustBuffer format, RustBuffer hidden_keys, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_APPEND_ITEM
 #define UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_APPEND_ITEM
-RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_append_item(void*_Nonnull ptr, uint32_t index, RustBuffer text, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_append_item(uint64_t ptr, uint32_t index, RustBuffer text, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_APPEND_ROOT_ITEM
 #define UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_APPEND_ROOT_ITEM
-RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_append_root_item(void*_Nonnull ptr, RustBuffer text, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_append_root_item(uint64_t ptr, RustBuffer text, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_COLLAPSE_OR_LEAVE
 #define UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_COLLAPSE_OR_LEAVE
-RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_collapse_or_leave(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_collapse_or_leave(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_DELETE
 #define UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_DELETE
-RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_delete(void*_Nonnull ptr, uint32_t index, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_delete(uint64_t ptr, uint32_t index, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_EXPAND_OR_ENTER
 #define UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_EXPAND_OR_ENTER
-RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_expand_or_enter(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_expand_or_enter(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_INSERT_KEY
 #define UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_INSERT_KEY
-RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_insert_key(void*_Nonnull ptr, uint32_t index, RustBuffer key, RustBuffer text, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_insert_key(uint64_t ptr, uint32_t index, RustBuffer key, RustBuffer text, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_INSERT_ROOT_KEY
 #define UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_INSERT_ROOT_KEY
-RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_insert_root_key(void*_Nonnull ptr, RustBuffer key, RustBuffer text, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_insert_root_key(uint64_t ptr, RustBuffer key, RustBuffer text, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_MARK_SAVED
 #define UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_MARK_SAVED
-RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_mark_saved(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_mark_saved(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_MOVE_DOWN
 #define UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_MOVE_DOWN
-RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_move_down(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_move_down(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_MOVE_ROW_DOWN
 #define UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_MOVE_ROW_DOWN
-RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_move_row_down(void*_Nonnull ptr, uint32_t index, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_move_row_down(uint64_t ptr, uint32_t index, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_MOVE_ROW_UP
 #define UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_MOVE_ROW_UP
-RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_move_row_up(void*_Nonnull ptr, uint32_t index, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_move_row_up(uint64_t ptr, uint32_t index, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_MOVE_UP
 #define UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_MOVE_UP
-RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_move_up(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_move_up(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_PAGE_ADD_CHILD
 #define UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_PAGE_ADD_CHILD
-RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_page_add_child(void*_Nonnull ptr, RustBuffer id, RustBuffer key, RustBuffer text, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_page_add_child(uint64_t ptr, RustBuffer id, RustBuffer key, RustBuffer text, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_PAGE_AT
 #define UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_PAGE_AT
-RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_page_at(void*_Nonnull ptr, RustBuffer id, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_page_at(uint64_t ptr, RustBuffer id, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_PAGE_BACK
 #define UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_PAGE_BACK
-RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_page_back(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_page_back(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_PAGE_CHOICES
 #define UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_PAGE_CHOICES
-RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_page_choices(void*_Nonnull ptr, RustBuffer id, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_page_choices(uint64_t ptr, RustBuffer id, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_PAGE_CHOOSE
 #define UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_PAGE_CHOOSE
-RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_page_choose(void*_Nonnull ptr, RustBuffer id, RustBuffer value_text, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_page_choose(uint64_t ptr, RustBuffer id, RustBuffer value_text, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_PAGE_CHOOSE_APPEND
 #define UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_PAGE_CHOOSE_APPEND
-RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_page_choose_append(void*_Nonnull ptr, RustBuffer id, RustBuffer value_text, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_page_choose_append(uint64_t ptr, RustBuffer id, RustBuffer value_text, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_PAGE_DELETE
 #define UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_PAGE_DELETE
-RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_page_delete(void*_Nonnull ptr, RustBuffer id, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_page_delete(uint64_t ptr, RustBuffer id, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_PAGE_MOVE_DOWN
 #define UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_PAGE_MOVE_DOWN
-RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_page_move_down(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_page_move_down(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_PAGE_MOVE_ITEM_DOWN
 #define UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_PAGE_MOVE_ITEM_DOWN
-RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_page_move_item_down(void*_Nonnull ptr, RustBuffer id, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_page_move_item_down(uint64_t ptr, RustBuffer id, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_PAGE_MOVE_ITEM_UP
 #define UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_PAGE_MOVE_ITEM_UP
-RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_page_move_item_up(void*_Nonnull ptr, RustBuffer id, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_page_move_item_up(uint64_t ptr, RustBuffer id, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_PAGE_MOVE_UP
 #define UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_PAGE_MOVE_UP
-RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_page_move_up(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_page_move_up(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_PAGE_OPEN
 #define UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_PAGE_OPEN
-RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_page_open(void*_Nonnull ptr, RustBuffer id, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_page_open(uint64_t ptr, RustBuffer id, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_PAGE_RENAME
 #define UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_PAGE_RENAME
-RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_page_rename(void*_Nonnull ptr, RustBuffer id, RustBuffer new_key, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_page_rename(uint64_t ptr, RustBuffer id, RustBuffer new_key, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_PAGE_SELECT
 #define UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_PAGE_SELECT
-RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_page_select(void*_Nonnull ptr, RustBuffer id, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_page_select(uint64_t ptr, RustBuffer id, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_PAGE_SET_LEADING_COMMENT
 #define UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_PAGE_SET_LEADING_COMMENT
-RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_page_set_leading_comment(void*_Nonnull ptr, RustBuffer id, RustBuffer text, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_page_set_leading_comment(uint64_t ptr, RustBuffer id, RustBuffer text, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_PAGE_SET_TRAILING_COMMENT
 #define UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_PAGE_SET_TRAILING_COMMENT
-RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_page_set_trailing_comment(void*_Nonnull ptr, RustBuffer id, RustBuffer text, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_page_set_trailing_comment(uint64_t ptr, RustBuffer id, RustBuffer text, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_PAGE_SET_VALUE
 #define UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_PAGE_SET_VALUE
-RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_page_set_value(void*_Nonnull ptr, RustBuffer id, RustBuffer text, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_page_set_value(uint64_t ptr, RustBuffer id, RustBuffer text, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_PAGES
 #define UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_PAGES
-RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_pages(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_pages(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_REDO
 #define UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_REDO
-RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_redo(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_redo(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_RENAME_KEY
 #define UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_RENAME_KEY
-RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_rename_key(void*_Nonnull ptr, uint32_t index, RustBuffer new_key, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_rename_key(uint64_t ptr, uint32_t index, RustBuffer new_key, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_SELECT
 #define UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_SELECT
-RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_select(void*_Nonnull ptr, uint32_t index, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_select(uint64_t ptr, uint32_t index, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_SET_ANNOTATIONS
 #define UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_SET_ANNOTATIONS
-RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_set_annotations(void*_Nonnull ptr, RustBuffer annotations, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_set_annotations(uint64_t ptr, RustBuffer annotations, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_SET_INLINE_BUDGET
 #define UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_SET_INLINE_BUDGET
-RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_set_inline_budget(void*_Nonnull ptr, uint32_t rows, uint32_t depth, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_set_inline_budget(uint64_t ptr, uint32_t rows, uint32_t depth, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_SET_VALUE
 #define UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_SET_VALUE
-RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_set_value(void*_Nonnull ptr, uint32_t index, RustBuffer text, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_set_value(uint64_t ptr, uint32_t index, RustBuffer text, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_SHOW_PAGES
 #define UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_SHOW_PAGES
-RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_show_pages(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_show_pages(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_SHOW_TREE
 #define UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_SHOW_TREE
-RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_show_tree(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_show_tree(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_SOURCE
 #define UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_SOURCE
-RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_source(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_source(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_TOGGLE
 #define UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_TOGGLE
-RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_toggle(void*_Nonnull ptr, uint32_t index, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_toggle(uint64_t ptr, uint32_t index, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_UNDO
 #define UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_UNDO
-RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_undo(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_undo(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_VIEW
 #define UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_VIEW
-RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_view(void*_Nonnull ptr, RustCallStatus *_Nonnull out_status
+RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_view(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_FFI_FLOWER_FFI_RUSTBUFFER_ALLOC
@@ -694,26 +686,6 @@ void ffi_flower_ffi_rust_future_free_f64(uint64_t handle
 #ifndef UNIFFI_FFIDEF_FFI_FLOWER_FFI_RUST_FUTURE_COMPLETE_F64
 #define UNIFFI_FFIDEF_FFI_FLOWER_FFI_RUST_FUTURE_COMPLETE_F64
 double ffi_flower_ffi_rust_future_complete_f64(uint64_t handle, RustCallStatus *_Nonnull out_status
-);
-#endif
-#ifndef UNIFFI_FFIDEF_FFI_FLOWER_FFI_RUST_FUTURE_POLL_POINTER
-#define UNIFFI_FFIDEF_FFI_FLOWER_FFI_RUST_FUTURE_POLL_POINTER
-void ffi_flower_ffi_rust_future_poll_pointer(uint64_t handle, UniffiRustFutureContinuationCallback _Nonnull callback, uint64_t callback_data
-);
-#endif
-#ifndef UNIFFI_FFIDEF_FFI_FLOWER_FFI_RUST_FUTURE_CANCEL_POINTER
-#define UNIFFI_FFIDEF_FFI_FLOWER_FFI_RUST_FUTURE_CANCEL_POINTER
-void ffi_flower_ffi_rust_future_cancel_pointer(uint64_t handle
-);
-#endif
-#ifndef UNIFFI_FFIDEF_FFI_FLOWER_FFI_RUST_FUTURE_FREE_POINTER
-#define UNIFFI_FFIDEF_FFI_FLOWER_FFI_RUST_FUTURE_FREE_POINTER
-void ffi_flower_ffi_rust_future_free_pointer(uint64_t handle
-);
-#endif
-#ifndef UNIFFI_FFIDEF_FFI_FLOWER_FFI_RUST_FUTURE_COMPLETE_POINTER
-#define UNIFFI_FFIDEF_FFI_FLOWER_FFI_RUST_FUTURE_COMPLETE_POINTER
-void*_Nonnull ffi_flower_ffi_rust_future_complete_pointer(uint64_t handle, RustCallStatus *_Nonnull out_status
 );
 #endif
 #ifndef UNIFFI_FFIDEF_FFI_FLOWER_FFI_RUST_FUTURE_POLL_RUST_BUFFER

@@ -264,10 +264,10 @@ impl Backend for FigBackend {
                 .editor
                 .replace_value(&tree::to_fig(&path), value)
                 .map_err(err),
-            EditOp::DeleteKey { path } => self.editor.delete(&tree::to_fig(&path)).map_err(err),
+            EditOp::DeleteKey { path } => self.editor.delete_key(&tree::to_fig(&path)).map_err(err),
             EditOp::RemoveItem { seq_path, index } => self
                 .editor
-                .remove_item(&tree::to_fig(&seq_path), index)
+                .delete_item(&tree::to_fig(&seq_path), index)
                 .map_err(err),
             EditOp::InsertKey {
                 map_path,
@@ -291,7 +291,7 @@ impl Backend for FigBackend {
                 .map_err(err),
             EditOp::RenameKey { path, new_key } => self
                 .editor
-                .replace_key(&tree::to_fig(&path), &new_key)
+                .rename_key(&tree::to_fig(&path), &new_key)
                 .map_err(err),
             // Two fig calls, so the atomicity the trait promises is checked up
             // front: the one way the second can fail after the first has spliced
@@ -300,7 +300,7 @@ impl Backend for FigBackend {
             // touches the source.
             EditOp::SetLeadingComment { path, text } => {
                 let path = tree::to_fig(&path);
-                self.editor.delete_leading_comments(&path).map_err(err)?;
+                self.editor.delete_leading_comment(&path).map_err(err)?;
                 match text {
                     Some(text) => self.editor.add_leading_comment(&path, &text).map_err(err),
                     None => Ok(()),

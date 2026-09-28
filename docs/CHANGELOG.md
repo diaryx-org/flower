@@ -43,6 +43,20 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## v0.6.3 — 2026-09-28
+
+### Breaking
+
+- **deps** — move to fig 5 ([`c75c3f6`](https://github.com/diaryx-org/flower/commit/c75c3f64ff5d313242823f22cbd2c091c773ad71))
+
+### Behavioural changes
+
+- flower now requires `fig = "5"` and a fig-schema built
+on it. A consumer still pinned to fig 4.x resolves two copies of fig —
+refused outright, since fig-sys links the one native library; move the
+consumer's own pin to 5 alongside.
+
+
 ## v0.6.2 — 2026-09-26
 
 ### Breaking

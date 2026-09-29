@@ -298,6 +298,11 @@ RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_insert_root_key(uint64_t ptr, R
 RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_mark_saved(uint64_t ptr, RustCallStatus *_Nonnull out_status
 );
 #endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_MARK_SAVED_AS
+#define UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_MARK_SAVED_AS
+RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_mark_saved_as(uint64_t ptr, RustBuffer saved, RustCallStatus *_Nonnull out_status
+);
+#endif
 #ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_MOVE_DOWN
 #define UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_FN_METHOD_FLOWERDOC_MOVE_DOWN
 RustBuffer uniffi_flower_ffi_fn_method_flowerdoc_move_down(uint64_t ptr, RustCallStatus *_Nonnull out_status
@@ -773,6 +778,12 @@ uint16_t uniffi_flower_ffi_checksum_method_flowerdoc_insert_root_key(void
 #ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_CHECKSUM_METHOD_FLOWERDOC_MARK_SAVED
 #define UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_CHECKSUM_METHOD_FLOWERDOC_MARK_SAVED
 uint16_t uniffi_flower_ffi_checksum_method_flowerdoc_mark_saved(void
+    
+);
+#endif
+#ifndef UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_CHECKSUM_METHOD_FLOWERDOC_MARK_SAVED_AS
+#define UNIFFI_FFIDEF_UNIFFI_FLOWER_FFI_CHECKSUM_METHOD_FLOWERDOC_MARK_SAVED_AS
+uint16_t uniffi_flower_ffi_checksum_method_flowerdoc_mark_saved_as(void
     
 );
 #endif

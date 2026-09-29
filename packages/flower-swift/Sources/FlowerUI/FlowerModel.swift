@@ -79,6 +79,12 @@ public final class FlowerModel: ObservableObject {
         _ = doc.markSaved()
         apply(doc.pages())
     }
+    /// `markSaved` for a write that took a while: `saved` is the `source()`
+    /// read before writing, and an edit made since stays unsaved.
+    public func markSaved(as saved: String) {
+        _ = doc.markSavedAs(saved: saved)
+        apply(doc.pages())
+    }
     public var isDirty: Bool { pages.dirty }
     public var status: String { pages.status }
 

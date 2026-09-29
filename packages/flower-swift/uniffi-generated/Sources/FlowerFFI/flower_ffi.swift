@@ -626,6 +626,13 @@ public protocol FlowerDocProtocol: AnyObject, Sendable {
      */
     func markSaved()  -> DocView
     
+    /**
+     * [`FlowerDoc::mark_saved`] for a write that took a while: `saved` is the
+     * [`FlowerDoc::source`] the host read before writing, and an edit made
+     * since stays dirty.
+     */
+    func markSavedAs(saved: String)  -> DocView
+    
     func moveDown()  -> DocView
     
     /**
@@ -1085,6 +1092,21 @@ open func markSaved() -> DocView  {
         uniffiCallStatus in
     uniffi_flower_ffi_fn_method_flowerdoc_mark_saved(
             self.uniffiCloneHandle(),uniffiCallStatus
+    )
+})
+}
+    
+    /**
+     * [`FlowerDoc::mark_saved`] for a write that took a while: `saved` is the
+     * [`FlowerDoc::source`] the host read before writing, and an edit made
+     * since stays dirty.
+     */
+open func markSavedAs(saved: String) -> DocView  {
+    return try!  FfiConverterTypeDocView_lift(try! rustCall() {
+        uniffiCallStatus in
+    uniffi_flower_ffi_fn_method_flowerdoc_mark_saved_as(
+            self.uniffiCloneHandle(),
+        FfiConverterString.lower(saved),uniffiCallStatus
     )
 })
 }
@@ -3085,6 +3107,9 @@ private let initializationResult: InitializationResult = {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_flower_ffi_checksum_method_flowerdoc_mark_saved() != 24377) {
+        return InitializationResult.apiChecksumMismatch
+    }
+    if (uniffi_flower_ffi_checksum_method_flowerdoc_mark_saved_as() != 48023) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_flower_ffi_checksum_method_flowerdoc_move_down() != 15504) {

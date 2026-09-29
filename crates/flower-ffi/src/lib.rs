@@ -420,6 +420,18 @@ impl FlowerDoc {
         view_of(&m)
     }
 
+    /// [`FlowerDoc::mark_saved`] for a write that took a while: `saved` is the
+    /// [`FlowerDoc::source`] the host read before writing, and an edit made
+    /// since stays dirty.
+    pub fn mark_saved_as(&self, saved: String) -> DocView {
+        let mut m = self.lock();
+        m.mark_saved_as(&saved);
+        if !m.dirty {
+            m.set_status("saved");
+        }
+        view_of(&m)
+    }
+
     // ── selection & navigation ────────────────────────────────────────────────
 
     /// Select the row at `index` (clamped). The coordinate a `List` selection or a

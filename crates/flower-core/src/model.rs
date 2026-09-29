@@ -597,6 +597,16 @@ impl<B: Backend> Model<B> {
         self.dirty = false;
     }
 
+    /// [`mark_saved`](Self::mark_saved) for a write that took a while: `saved`
+    /// is the [`source_snapshot`](Self::source_snapshot) the embedder read
+    /// before writing, and an edit made since is still unsaved. Marking the
+    /// document as it stands when the write returns would clear the flag over
+    /// an edit that never reached the disk.
+    pub fn mark_saved_as(&mut self, saved: &str) {
+        self.saved_source = saved.to_string();
+        self.dirty = self.source_snapshot() != self.saved_source;
+    }
+
     // ── stable identity for a sequence item ───────────────────────────────
 
     /// A stable identity for item `index` of the sequence at `seq_path`, or
@@ -4526,6 +4536,20 @@ b = 2
         model.undo();
         assert!(model.dirty, "and before them, which is a change again");
         assert_eq!(model.source_snapshot(), SAMPLE);
+    }
+
+    #[test]
+    fn marking_saved_as_what_was_written_keeps_a_later_edit_dirty() {
+        let mut model = sample_model();
+        model.set_value_at(&[Seg::Key("version".into())], Value::Int(2));
+        // The embedder reads the source, and its write takes a while…
+        let written = model.source_snapshot();
+        // …during which another field is edited.
+        model.set_value_at(&[Seg::Key("version".into())], Value::Int(3));
+        model.mark_saved_as(&written);
+        assert!(model.dirty, "the edit made during the write is not saved");
+        model.undo();
+        assert!(!model.dirty, "back at what was written");
     }
 
     #[test]

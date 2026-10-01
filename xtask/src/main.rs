@@ -25,7 +25,8 @@
 //! metadata, so a Linux runner can regenerate and diff it without compiling any
 //! Swift. The other is `app-version`, which only reads the app's
 //! `project.yml`; `cargo xtask swift` builds and launches the app, and lives
-//! in [`app`] beside it.
+//! in [`app`] beside it, as `cargo xtask package` — the signed, notarised
+//! `.dmg` that `mac-app.yml` attaches to a release — lives in [`package`].
 //!
 //! Cutting a release does not live here. It is `release <command>`, from
 //! diaryx-org/devtools, configured by `.config/release.toml` — the same tool
@@ -33,6 +34,7 @@
 //! because five copies of one program is five places for it to drift.
 
 mod app;
+mod package;
 
 use std::env;
 use std::path::{Path, PathBuf};
@@ -233,6 +235,7 @@ fn main() -> ExitCode {
             Ok(())
         }
         ["swift", ref rest @ ..] => app::swift(&sh, rest),
+        ["package", ref rest @ ..] => package::package(&sh, rest),
         ["sync-versions"] => app::sync_versions(&sh),
         // These moved to the shared tool rather than being retired, and a
         // muscle-memory `cargo xtask release` should say where they went.
@@ -311,6 +314,10 @@ fn usage() -> String {
     out.push_str(&format!(
         "  {:<18}{}\n",
         "swift [FILE]", "build and launch Flower, the Mac app in apps/flower-editor (--help)"
+    ));
+    out.push_str(&format!(
+        "  {:<18}{}\n",
+        "package", "a signed, notarised Flower.app in a .dmg, in target/package/ (--help)"
     ));
     out.push_str(&format!(
         "  {:<18}{}\n",

@@ -17,10 +17,10 @@ use crate::{Result, Sh};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const APP_DIR: &str = "apps/flower-editor";
+pub(crate) const APP_DIR: &str = "apps/flower-editor";
 /// The scheme, the product and the process are all named this, by
 /// `apps/flower-editor/project.yml`.
-const SCHEME: &str = "Flower";
+pub(crate) const SCHEME: &str = "Flower";
 const PROJECT_YML: &str = "apps/flower-editor/project.yml";
 /// How the version line in [`PROJECT_YML`] begins.
 const VERSION_PREFIX: &str = "        MARKETING_VERSION: \"";
@@ -127,7 +127,7 @@ fn sample_copy(sh: &Sh) -> Result<PathBuf> {
     Ok(copy)
 }
 
-fn path_str(path: &Path) -> Result<&str> {
+pub(crate) fn path_str(path: &Path) -> Result<&str> {
     path.to_str()
         .ok_or_else(|| format!("{} is not UTF-8", path.display()))
 }

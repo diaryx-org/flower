@@ -167,6 +167,7 @@ the arrangement the sliding window replaced.
 ```sh
 cargo run -- path/to/config.toml          # the TUI
 cargo xtask swift [path/to/config.toml]   # build and launch Flower, the Mac app
+cargo xtask package                       # a signed, notarised Flower.app in a .dmg, in target/package/
 ```
 
 ### The Mac app
@@ -193,6 +194,15 @@ sandboxed, with access to the files the user opens. The app's
 `MARKETING_VERSION` follows the workspace version: `cargo xtask
 sync-versions` writes it, the release bump runs that, and the
 `app-version` job checks it.
+
+`cargo xtask package` needs a Developer ID identity in the keychain and
+notary credentials in the environment; the head of
+[`xtask/src/package.rs`](xtask/src/package.rs) names them, and
+`--no-notarize` does without the second. On a pushed `v*.*.*` tag,
+[`mac-app.yml`](.github/workflows/mac-app.yml) attaches a signed, notarised
+`Flower-<version>-aarch64.dmg` to the release and points the tap's
+`flower-editor` cask at it (`brew install --cask diaryx-org/tap/flower-editor`),
+beside the `flower` formula for the TUI.
 
 The editor runs today on macOS and on the iOS simulator: Xcode's build phase
 compiles the `flower-ffi` staticlib for whichever slice it is building, so the

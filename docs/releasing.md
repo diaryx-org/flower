@@ -66,6 +66,15 @@ Pushing `vX.Y.Z` starts **`publish.yml`**, which runs `cargo publish
 --workspace` and uploads every publishable crate, in dependency order. A
 crates.io version number can be yanked but never reused.
 
+The same tag starts **`homebrew.yml`**, which builds the TUI and points the
+tap's `flower` formula at it, and **`mac-app.yml`**, which runs `cargo xtask
+package` on a macOS runner — Flower.app signed for Developer ID, notarised and
+stapled, in a `.dmg` — attaches the image to the release, and points the tap's
+`flower-editor` cask at it. Dispatched by hand, `mac-app.yml` builds whatever
+ref it is run on and keeps the image as a workflow artifact, touching no
+release: the rehearsal. Dispatched with `cask-tag`, it only rewrites the cask
+for a release that already has its image.
+
 That is why `release` stops at the local tag unless it is given `--push`: every
 step before the push is a commit you can amend or throw away, and the push is the
 step that spends a version number. Without `--push` the command prints the two

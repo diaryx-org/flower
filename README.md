@@ -120,7 +120,7 @@ fig (Zig) → fig-sys (FFI, libfig.a) → fig crate (Editor/Document/Value)
                      (FlowerFFI + FlowerUI + FlowerPagesUI)
                                           │
                                apps/flower-editor
-                             (macOS/iOS example app)
+                          (Flower, the macOS/iOS app)
 ```
 
 ### The tiers
@@ -132,7 +132,7 @@ fig (Zig) → fig-sys (FFI, libfig.a) → fig crate (Editor/Document/Value)
 | binding | [`crates/flower-ffi`](crates/flower-ffi) | the **UniFFI C-ABI binding** — wraps the filesystem-free `Model` so a native Apple app can drive it. The native-Apple peer of the ratatui widget. |
 | app | [`crates/flower-tui`](crates/flower-tui) | the terminal app (binary `flower`) — file I/O + event loop. |
 | Swift SDK | [`packages/flower-swift`](packages/flower-swift) | the Swift Package (manifest at the repo root, so SwiftPM can resolve it by version). `FlowerPagesUI` is the page view (`FlowerPages`) written against protocols, with **no binding behind it**; `FlowerUI` is `FlowerModel` over the UniFFI `flower-ffi` binding, and the conformances that let the page view render its records. `import FlowerUI` re-exports both. |
-| Swift app | [`apps/flower-editor`](apps/flower-editor) | the cross-platform (macOS + iOS) SwiftUI example, consuming `packages/flower-swift`. |
+| Swift app | [`apps/flower-editor`](apps/flower-editor) | **Flower**, the document app (macOS + iOS) over `packages/flower-swift`: a window per file, opened from the Finder or File ▸ Open, saved, autosaved and undone through the system's document machinery. |
 
 The Swift frontend keeps the same contract as the TUI: **core owns the model**
 (the projection, selection, and every lossless edit), the frontend only renders
@@ -166,8 +166,33 @@ the arrangement the sliding window replaced.
 
 ```sh
 cargo run -- path/to/config.toml          # the TUI
-apps/flower-editor/bootstrap.sh           # generate the Swift binding + Xcode project
+cargo xtask swift [path/to/config.toml]   # build and launch Flower, the Mac app
 ```
+
+### The Mac app
+
+Flower is a document app, like leaf and thorn: a window per file, one
+`FlowerDocument` behind each, with `DocumentGroup` doing the rest — the Open
+panel, Save and Save As, autosave and Versions, Open Recent, the title bar's
+proxy icon. It declares JSON, YAML, TOML and fig as types it can edit, as an
+alternate handler, so each appears in Finder's Open With without taking over
+the default. File ▸ New makes a TOML file, and its submenu offers the other
+formats. A document keeps its format for life, because flower writes back the
+format it read.
+
+Its history is the model's own journal. Each edit registers an action on the
+window's undo manager that replays `undo()` / `redo()`, so Edit ▸ Undo, ⌘Z
+and the close button's dot all follow the history flower keeps, and undoing
+back to the saved text reads as clean.
+
+`cargo xtask swift` runs `apps/flower-editor/bootstrap.sh` when the Xcode
+project is missing (or with `--regen`), builds, and opens the file you name
+(or a copy of `sample.toml`) through the document system. Debug builds are
+unsigned and unsandboxed. Release builds are signed for team V4322HH5HU and
+sandboxed, with access to the files the user opens. The app's
+`MARKETING_VERSION` follows the workspace version: `cargo xtask
+sync-versions` writes it, the release bump runs that, and the
+`app-version` job checks it.
 
 The editor runs today on macOS and on the iOS simulator: Xcode's build phase
 compiles the `flower-ffi` staticlib for whichever slice it is building, so the

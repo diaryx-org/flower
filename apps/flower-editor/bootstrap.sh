@@ -5,11 +5,11 @@
 #      packages/flower-swift/uniffi-generated/ (scripts/gen-bindings.sh — after an
 #      API change, `git diff` shows the binding move and the change is committed
 #      with it; CI's `bindings` job diffs the two, so a stale binding cannot merge)
-#   2. run `xcodegen generate` to (re)create FlowerEditorApp.xcodeproj
+#   2. run `xcodegen generate` to (re)create Flower.xcodeproj
 #
 # The Rust *staticlib* for mac/simulator/device is NOT built here — the Xcode
 # project's pre-build script (see project.yml) does that on every build, so
-# ordinary Rust edits need only ⌘R in Xcode. Re-run this script only after
+# ordinary Rust edits need only ⌘R in Xcode (or `cargo xtask swift`). Re-run this script only after
 # changing the Rust API surface (new/renamed FFI methods).
 set -euo pipefail
 
@@ -23,5 +23,4 @@ cd "$HERE" && xcodegen generate
 
 echo "✓ Ready."
 echo "  Run on macOS:"
-echo "    xcodebuild -project $HERE/FlowerEditorApp.xcodeproj -scheme FlowerEditorApp \\"
-echo "      -destination 'platform=macOS' -derivedDataPath build/DD build"
+echo "    cargo xtask swift [config.toml]"

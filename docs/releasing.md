@@ -184,6 +184,7 @@ locally, in the workflow's order; `cargo xtask <id>` runs one.
 | `clippy` | `cargo clippy --workspace --all-targets -- -D warnings` |
 | `test` | `cargo test --workspace` |
 | `package-isolation` | `cargo check -p <crate>` for each member, so workspace feature unification cannot hide a crate that fails to build alone |
+| `app-version` | reads `apps/flower-editor/project.yml` and checks its `MARKETING_VERSION` is the workspace version (`cargo xtask sync-versions` writes it, as the bump's `post_bump`) |
 | `msrv` | a `--workspace` build on `workspace.package.rust-version` |
 
 Adding or renaming a job is an edit to `xtask/src/main.rs` and nothing else — the

@@ -11,7 +11,7 @@ The Swift side built on top of it lives elsewhere:
 | Piece | Location | What it is |
 |-------|----------|------------|
 | Swift SDK | [`packages/flower-swift`](../../packages/flower-swift) | `Sources/FlowerUI` (the SwiftUI tree editor) + the committed `uniffi-generated/` Swift, exposed by the `Package.swift` at the repo root. The importable Swift package. |
-| Demo app | [`apps/flower-editor`](../../apps/flower-editor) | The runnable example (`bootstrap.sh`, xcodegen `project.yml`). |
+| App | [`apps/flower-editor`](../../apps/flower-editor) | Flower, the document app over this binding (`cargo xtask swift`, xcodegen `project.yml`). |
 
 ## The contract (same as every flower/leaf frontend)
 

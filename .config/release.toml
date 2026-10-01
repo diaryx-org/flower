@@ -8,6 +8,13 @@ release_branch = "main"
 # What to run before cutting. Each repo owns its own CI; this names it.
 verify = "cargo xtask ci"
 
+# The app's marketing version follows the workspace version, and no manifest
+# parser in the tooling reaches an Xcode setting — so the bump runs the task
+# that writes it, and the file is staged with the release commit. The
+# `app-version` CI job checks they agree.
+post_bump = "cargo xtask sync-versions"
+extra_version_files = ["apps/flower-editor/project.yml"]
+
 # What pushing the tag sets off, most consequential first. The warning printed
 # before the push is handed back to you is composed from these.
 [[tag_starts]]

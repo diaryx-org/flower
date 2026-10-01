@@ -16,19 +16,23 @@
 //! There are no dependencies on purpose. Every CI job builds this crate before
 //! it can start, so its build time is paid several times over per push.
 //!
-//! The Swift half of flower — `packages/flower-swift`, and the AppKit app in
+//! The Swift half of flower — `packages/flower-swift`, and the Mac app in
 //! `apps/flower-editor` — is mostly not in this table. Compiling and testing it
 //! needs macOS and an Xcode toolchain; `scripts/check-swift.sh` and
 //! `scripts/test-swift.sh` are run by hand on a Mac until CI grows a macOS
 //! runner, at which point they become two more rows below. The one exception is
 //! `bindings`: the committed UniFFI Swift binding is generated *from Rust*
 //! metadata, so a Linux runner can regenerate and diff it without compiling any
-//! Swift.
+//! Swift. The other is `app-version`, which only reads the app's
+//! `project.yml`; `cargo xtask swift` builds and launches the app, and lives
+//! in [`app`] beside it.
 //!
 //! Cutting a release does not live here. It is `release <command>`, from
 //! diaryx-org/devtools, configured by `.config/release.toml` — the same tool
 //! flower, prov, twig, leaf, and the historica repos all cut releases with,
 //! because five copies of one program is five places for it to drift.
+
+mod app;
 
 use std::env;
 use std::path::{Path, PathBuf};
@@ -101,6 +105,14 @@ const JOBS: &[Job] = &[
         builds: true,
         about: "the committed UniFFI Swift binding matches crates/flower-ffi",
         run: bindings,
+    },
+    Job {
+        id: "app-version",
+        name: "App version",
+        components: "",
+        builds: false,
+        about: "apps/flower-editor/project.yml states the workspace version",
+        run: app::check_version,
     },
     Job {
         id: "msrv",
@@ -220,6 +232,8 @@ fn main() -> ExitCode {
             println!("{}", ci_matrix());
             Ok(())
         }
+        ["swift", ref rest @ ..] => app::swift(&sh, rest),
+        ["sync-versions"] => app::sync_versions(&sh),
         // These moved to the shared tool rather than being retired, and a
         // muscle-memory `cargo xtask release` should say where they went.
         [
@@ -292,6 +306,15 @@ fn usage() -> String {
     out.push_str(&format!(
         "  {:<18}{}\n",
         "ci-matrix", "the job table as JSON, for the workflow matrix"
+    ));
+    out.push_str("\nthe app:\n\n");
+    out.push_str(&format!(
+        "  {:<18}{}\n",
+        "swift [FILE]", "build and launch Flower, the Mac app in apps/flower-editor (--help)"
+    ));
+    out.push_str(&format!(
+        "  {:<18}{}\n",
+        "sync-versions", "write the workspace version into the app's project.yml"
     ));
     // Releasing is not CI and is not here: it is one shared tool across the
     // org, so that the changelog contract has one implementation rather than
@@ -421,14 +444,29 @@ impl Sh {
         }
     }
 
-    /// Read a workspace file, by its path from the root. Test-only since
-    /// releasing moved out: the isolation test reads the manifests, and no job
-    /// touches a file directly.
-    #[cfg(test)]
+    /// Read a workspace file, by its path from the root.
     fn read(&self, path: &str) -> Result<String> {
         let path = self.root.join(path);
         std::fs::read_to_string(&path)
             .map_err(|e| format!("could not read {}: {e}", path.display()))
+    }
+
+    /// `workspace.package.version`, the version every crate and the app take.
+    fn workspace_version(&self) -> Result<String> {
+        let manifest = self.read("Cargo.toml")?;
+        let mut in_package = false;
+        for line in manifest.lines() {
+            let line = line.trim();
+            if line.starts_with('[') {
+                in_package = line == "[workspace.package]";
+            } else if in_package
+                && let Some(rest) = line.strip_prefix("version")
+                && let Some(value) = rest.split('"').nth(1)
+            {
+                return Ok(value.to_owned());
+            }
+        }
+        Err("no `version` under [workspace.package] in Cargo.toml".into())
     }
 
     /// `workspace.package.rust-version`, the single source of truth for the MSRV.

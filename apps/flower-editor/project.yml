@@ -1,14 +1,15 @@
-name: FlowerEditorApp
+name: Flower
 options:
-  bundleIdPrefix: dev.flower
+  bundleIdPrefix: org.diaryx
   deploymentTarget:
     iOS: "16.0"
     macOS: "13.0"
   createIntermediateGroups: true
 
-# One cross-platform host for the `FlowerUI` structural editor — the same SwiftUI
-# sources build for macOS and iOS; `FlowerUI` is toolkit-neutral, so `App/` is
-# chrome only.
+# Flower, the config editor: one cross-platform document app over the
+# `FlowerUI` page editor. The same SwiftUI sources build for macOS and iOS;
+# `FlowerUI` is toolkit-neutral, so `App/` is chrome only: the document
+# classes, the toolbar, the menus.
 #
 # The editor is consumed as a local Swift package: `FlowerUI` (the renderer) →
 # `FlowerFFI` (the generated binding, built from source) → the C module in
@@ -23,32 +24,106 @@ packages:
     path: ../..
 
 targets:
-  FlowerEditorApp:
+  Flower:
     type: application
+    # A single multiplatform target: Xcode builds it for whichever destination
+    # is selected (My Mac / an iOS simulator / a device).
     supportedDestinations: [macOS, iOS]
     sources:
       - path: App
+        excludes: [Info.plist]
     dependencies:
       - package: FlowerFFI
         product: FlowerUI
+    # The document types, which are what put Flower in Finder's Open With for
+    # a config file and the Files app's share sheet, and let the Open panel
+    # enable one. Flower is an alternate handler for every one of them: a
+    # `.json` is anybody's, and a text editor is the right default for a file
+    # flower may meet half-written. xcodegen writes these into App/Info.plist
+    # (git-ignored, regenerated with the project); the INFOPLIST_KEY_* settings
+    # below merge into it at build time.
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleDocumentTypes:
+          - CFBundleTypeName: JSON Document
+            CFBundleTypeRole: Editor
+            LSHandlerRank: Alternate
+            LSItemContentTypes: [public.json]
+          - CFBundleTypeName: YAML Document
+            CFBundleTypeRole: Editor
+            LSHandlerRank: Alternate
+            LSItemContentTypes: [public.yaml]
+          - CFBundleTypeName: TOML Document
+            CFBundleTypeRole: Editor
+            LSHandlerRank: Alternate
+            LSItemContentTypes: [public.toml]
+          - CFBundleTypeName: fig Document
+            CFBundleTypeRole: Editor
+            LSHandlerRank: Alternate
+            LSItemContentTypes: [org.diaryx.fig]
+        # fig has no system type. Imported rather than exported: Flower is one
+        # reader of the format, not the app that defines it — the same call
+        # leaf makes for Djot.
+        UTImportedTypeDeclarations:
+          - UTTypeIdentifier: org.diaryx.fig
+            UTTypeDescription: fig Document
+            UTTypeConformsTo: [public.plain-text]
+            UTTypeTagSpecification:
+              public.filename-extension: [fig, figl]
+        # A document app on iOS opens to the browser; without this key it opens
+        # to a blank scene.
+        UISupportsDocumentBrowser: true
+        LSSupportsOpeningDocumentsInPlace: true
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: dev.flower.editor
-        PRODUCT_NAME: FlowerEditorApp
+        PRODUCT_BUNDLE_IDENTIFIER: org.diaryx.flower
+        PRODUCT_NAME: Flower
+        # The workspace version, written here by `cargo xtask sync-versions`
+        # as part of a release bump.
+        MARKETING_VERSION: "0.6.3"
+        CURRENT_PROJECT_VERSION: "1"
+        # Per-key values (incl. iOS-only ones) come from INFOPLIST_KEY_* below,
+        # SDK-conditional where they differ, and merge into App/Info.plist.
         GENERATE_INFOPLIST_FILE: YES
         INFOPLIST_KEY_CFBundleDisplayName: Flower
+        INFOPLIST_KEY_NSHumanReadableCopyright: "MIT or Apache-2.0"
         "INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphoneos*]": YES
         "INFOPLIST_KEY_UILaunchScreen_Generation[sdk=iphonesimulator*]": YES
         "INFOPLIST_KEY_UISupportedInterfaceOrientations[sdk=iphoneos*]": "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
         "INFOPLIST_KEY_UISupportedInterfaceOrientations[sdk=iphonesimulator*]": "UIInterfaceOrientationPortrait UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+        # An iPad takes every orientation: App Store validation refuses an
+        # iPad build that multitasks with any missing.
+        "INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad[sdk=iphoneos*]": "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
+        "INFOPLIST_KEY_UISupportedInterfaceOrientations_iPad[sdk=iphonesimulator*]": "UIInterfaceOrientationPortrait UIInterfaceOrientationPortraitUpsideDown UIInterfaceOrientationLandscapeLeft UIInterfaceOrientationLandscapeRight"
         "INFOPLIST_KEY_LSApplicationCategoryType[sdk=macosx*]": public.app-category.developer-tools
+        # Language mode 5 — the Swift-6 strict-concurrency checker would reject
+        # the FFI handle crossing the main-actor boundary; the model serialises
+        # access.
         SWIFT_VERSION: "5.0"
         ENABLE_BITCODE: NO
         ONLY_ACTIVE_ARCH: YES
-        CODE_SIGNING_ALLOWED: NO
-        CODE_SIGNING_REQUIRED: NO
-        CODE_SIGN_IDENTITY: ""
-        "ENABLE_APP_SANDBOX[sdk=macosx*]": NO
+        # Apple Silicon only on the Mac: the pre-build phase builds the
+        # staticlib for aarch64-apple-darwin alone, so an archive's default
+        # `arm64 x86_64` would fail the x86_64 link on every `_uniffi_*`
+        # symbol. Thorn's project.yml has the long version of this.
+        "ARCHS[sdk=macosx*]": arm64
+        # The simulator needs no signing. The Mac needs none in Debug (below);
+        # its Release build is the shipped shape, and is signed.
+        "CODE_SIGNING_ALLOWED[sdk=iphonesimulator*]": NO
+        "CODE_SIGNING_REQUIRED[sdk=iphonesimulator*]": NO
+        "CODE_SIGN_IDENTITY[sdk=iphonesimulator*]": ""
+        # A device build, or the Mac's Release build, needs a provisioning
+        # profile, which needs a team; automatic signing then mints and renews
+        # the profile itself. Set here rather than in Xcode's Signing &
+        # Capabilities pane: the .xcodeproj is gitignored and regenerated, so a
+        # change made in the UI is lost at the next `xcodegen generate`. Same
+        # team as leaf's and thorn's.
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: V4322HH5HU
+        # No encryption beyond the system's, so App Store Connect asks no
+        # export-compliance question of each upload.
+        INFOPLIST_KEY_ITSAppUsesNonExemptEncryption: NO
         # Force-load the Rust staticlib the pre-build script produces. The path is
         # SDK-conditional (mac vs sim vs device); $(FLOWER_STATIC_LIB) picks the
         # match. PROJECT_DIR is apps/flower-editor → ../.. is the repo root whose
@@ -60,13 +135,32 @@ targets:
         "FLOWER_STATIC_LIB[sdk=iphonesimulator*]": "$(PROJECT_DIR)/../../target/aarch64-apple-ios-sim/debug/libflower_ffi.a"
         "FLOWER_STATIC_LIB[sdk=iphoneos*]": "$(PROJECT_DIR)/../../target/aarch64-apple-ios/debug/libflower_ffi.a"
       configs:
+        # Debug is the local harness: unsigned and unsandboxed on the Mac, so
+        # `cargo xtask swift` builds on a machine with no certificate at all.
+        Debug:
+          "CODE_SIGNING_ALLOWED[sdk=macosx*]": NO
+          "CODE_SIGNING_REQUIRED[sdk=macosx*]": NO
+          "CODE_SIGN_IDENTITY[sdk=macosx*]": ""
+          "ENABLE_APP_SANDBOX[sdk=macosx*]": NO
+        # Release is the App Store's shape: signed through the automatic
+        # signing above, and sandboxed. A config file is one file and flower
+        # reads nothing beside it, so the sandbox's grant of the file the user
+        # opened is the whole of what it needs. Both are Xcode's entitlement
+        # build settings, which write the entitlements at signing time; there
+        # is no .entitlements file to keep in step.
         Release:
+          "ENABLE_APP_SANDBOX[sdk=macosx*]": YES
+          "ENABLE_USER_SELECTED_FILES[sdk=macosx*]": readwrite
           "FLOWER_STATIC_LIB[sdk=macosx*]": "$(PROJECT_DIR)/../../target/aarch64-apple-darwin/release/libflower_ffi.a"
           "FLOWER_STATIC_LIB[sdk=iphonesimulator*]": "$(PROJECT_DIR)/../../target/aarch64-apple-ios-sim/release/libflower_ffi.a"
           "FLOWER_STATIC_LIB[sdk=iphoneos*]": "$(PROJECT_DIR)/../../target/aarch64-apple-ios/release/libflower_ffi.a"
     preBuildScripts:
       - name: "Build flower-ffi staticlib"
         basedOnDependencyAnalysis: false
+        # Declaring the staticlib as an output tells the build system this
+        # phase produces it, so it schedules before the link step and doesn't
+        # fail the planning-stage "input file not found" check when the .a
+        # doesn't exist yet.
         outputFiles:
           - "$(FLOWER_STATIC_LIB)"
         shell: /bin/bash
@@ -86,3 +180,11 @@ targets:
           echo "flower-ffi: cargo build -p flower-ffi --target ${RUST_TARGET} ${CARGO_FLAGS}"
           rustup target add "${RUST_TARGET}" 2>/dev/null || true
           cargo build -p flower-ffi --target "${RUST_TARGET}" ${CARGO_FLAGS}
+
+schemes:
+  Flower:
+    build:
+      targets:
+        Flower: all
+    run:
+      config: Debug

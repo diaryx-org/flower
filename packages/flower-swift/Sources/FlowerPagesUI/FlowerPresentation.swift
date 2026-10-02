@@ -16,11 +16,49 @@
 import SwiftUI
 
 /// Turn a raw config key into a settings-style display name: `max_connections`
-/// → "Max Connections". Presentation only — renames still target the raw key.
+/// → "Max Connections", `devDependencies` → "Dev Dependencies". Presentation
+/// only — renames still target the raw key.
+///
+/// A key that is not identifier-shaped — `@types/bun`, `src/**`, a key with
+/// spaces in it — comes back exactly as written: it is a name somebody chose,
+/// not a field name, and title-casing it would show a key the document does
+/// not contain.
 public func prettify(_ key: String) -> String {
-    key.split(whereSeparator: { $0 == "_" || $0 == "-" || $0 == "." })
+    guard isIdentifierShaped(key) else { return key }
+    return keyWords(key)
         .map { $0.prefix(1).uppercased() + String($0.dropFirst()) }
         .joined(separator: " ")
+}
+
+/// Whether a key reads as a field name: letters, digits, and the `_` `-` `.`
+/// that separate the words of one.
+func isIdentifierShaped(_ key: String) -> Bool {
+    !key.isEmpty && key.allSatisfy { $0.isLetter || $0.isNumber || $0 == "_" || $0 == "-" || $0 == "." }
+}
+
+/// The words of a key: split at `_`, `-` and `.`, and at every camelCase hump —
+/// `noEmit` → `no`, `Emit`; `HTTPServer` → `HTTP`, `Server`. Case is kept.
+func keyWords(_ key: String) -> [String] {
+    var words: [String] = []
+    for part in key.split(whereSeparator: { $0 == "_" || $0 == "-" || $0 == "." }) {
+        let chars = Array(part)
+        var word = ""
+        for (i, c) in chars.enumerated() {
+            if i > 0, c.isUppercase {
+                let prev = chars[i - 1]
+                let nextIsLower = i + 1 < chars.count && chars[i + 1].isLowercase
+                // `devD…` starts a word; so does the `S` of `HTTPServer`, the
+                // last capital of a run that a lowercase letter follows.
+                if prev.isLowercase || prev.isNumber || (prev.isUppercase && nextIsLower) {
+                    words.append(word)
+                    word = ""
+                }
+            }
+            word.append(c)
+        }
+        if !word.isEmpty { words.append(word) }
+    }
+    return words
 }
 
 /// The colored rounded-square glyph at the head of a row — the device that makes
@@ -120,14 +158,36 @@ public enum FlowerPalette {
     /// The floor: what a key's name and a value's kind suggest, for a document
     /// no schema describes.
     public static func inferredIcon(label: String, kind: String) -> IconSpec {
-        let l = label.lowercased()
-        func has(_ needles: [String]) -> Bool { needles.contains { l.contains($0) } }
+        nameIcon(label: label) ?? kindIcon(kind)
+    }
+
+    /// Whether a row's tile says something its neighbours' do not: the schema
+    /// named its icon or tint, or its key matched a name. A tile that only
+    /// restates the value's kind is the same "Aa" on every row of a card of
+    /// strings, which is decoration rather than information.
+    public static func isDistinctive(label: String, icon: String? = nil, tint: String? = nil) -> Bool {
+        icon.flatMap(symbol(forSemanticIcon:)) != nil
+            || tint.flatMap(color(forTint:)) != nil
+            || nameIcon(label: label) != nil
+    }
+
+    /// What a key's name suggests, or `nil` when it suggests nothing.
+    ///
+    /// Matched on the key's words, not its letters: a needle is the whole word,
+    /// or — three letters or longer — the start of one, so `user` finds
+    /// `username` and `categor` finds `category`, but `port` no longer finds
+    /// `import` and `by` no longer finds `hobby`.
+    static func nameIcon(label: String) -> IconSpec? {
+        let words = keyWords(label).map { $0.lowercased() }
+        func has(_ needles: [String]) -> Bool {
+            needles.contains { n in words.contains { $0 == n || (n.count >= 3 && $0.hasPrefix(n)) } }
+        }
 
         // Name-based (most specific first).
         if has(["author", "owner", "user", "creator", "by"]) { return .init(symbol: "person.crop.circle.fill", color: .indigo) }
         if has(["tag", "keyword", "label", "categor"]) { return .init(symbol: "tag.fill", color: .teal) }
         if has(["visib", "privacy", "access", "share", "audience"]) { return .init(symbol: "eye.fill", color: .orange) }
-        if has(["pin"]) { return .init(symbol: "pin.fill", color: .pink) }
+        if has(["pin", "pinned"]) { return .init(symbol: "pin.fill", color: .pink) }
         if has(["priorit", "rank", "order", "weight", "importan"]) { return .init(symbol: "chart.bar.fill", color: .purple) }
         if has(["tls", "ssl", "secure", "encrypt", "cert", "https", "auth", "token", "secret", "password"]) { return .init(symbol: "lock.shield.fill", color: .green) }
         if has(["host", "url", "domain", "address", "endpoint"]) { return .init(symbol: "globe", color: .blue) }
@@ -140,13 +200,17 @@ public enum FlowerPalette {
         if has(["path", "dir", "folder", "file"]) { return .init(symbol: "folder.fill", color: .gray) }
         if has(["color", "theme", "appearance", "style"]) { return .init(symbol: "paintpalette.fill", color: .pink) }
         if has(["version"]) { return .init(symbol: "number.circle.fill", color: .gray) }
-        if has(["title", "heading", "label"]) { return .init(symbol: "textformat", color: .indigo) }
+        if has(["title", "heading"]) { return .init(symbol: "textformat", color: .indigo) }
         if has(["descript", "summary", "note", "comment", "body"]) { return .init(symbol: "text.alignleft", color: .gray) }
         if has(["lang", "locale"]) { return .init(symbol: "character.bubble", color: .teal) }
         if has(["enable", "active", "status", "state"]) { return .init(symbol: "power", color: .green) }
         if has(["count", "size", "length", "amount", "num"]) { return .init(symbol: "number", color: .gray) }
 
-        // Kind-based fallback.
+        return nil
+    }
+
+    /// The floor under the floor: what the value's kind suggests.
+    static func kindIcon(_ kind: String) -> IconSpec {
         switch kind {
         case "map": return .init(symbol: "folder.fill", color: .gray)
         case "seq": return .init(symbol: "list.bullet", color: .teal)
@@ -158,11 +222,16 @@ public enum FlowerPalette {
         }
     }
 
+    /// A value's colour, by kind. Text is secondary, the way a settings row
+    /// draws its value: a card of strings in an accent colour shouts over the
+    /// names it is meant to sit beside, and says only "this is text" — which
+    /// the text already says. The accents are kept for the kinds that are
+    /// rarer and worth telling apart at a glance.
     public static func value(forKind kind: String) -> Color {
         switch kind {
         case "bool": return .purple
         case "int", "float": return .blue
-        case "str": return .green
+        case "str": return .secondary
         case "ext": return .orange
         default: return .gray
         }

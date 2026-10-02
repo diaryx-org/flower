@@ -508,12 +508,77 @@ func drillSummary<Item: PageItemDisplaying>(_ item: Item) -> String {
     return n == 1 ? "1 field" : "\(n) fields"
 }
 
+/// The rows of a page whose keys are data rather than field names, by id.
+///
+/// No schema says which maps are records and which are dictionaries, so this
+/// reads it off the document: a nested map holding nothing but plain strings
+/// under keys no schema named — `scripts`, `dependencies`, `env`, an alias
+/// table — is keyed by names somebody chose. You type `bun run dev`, not
+/// `bun run Dev`, so title-casing `dev` would show a key the document does not
+/// contain. The document root is never one; it is the record everything else
+/// hangs off.
+///
+/// When it guesses wrong it fails toward the truth: a small record of strings
+/// shows its keys as written, which is less polished but never wrong.
+func verbatimKeyIds<Item: PageItemDisplaying>(focus: String, items: [Item]) -> Set<String> {
+    // Siblings by parent: the nearest earlier item one inset shallower, or the
+    // page's own container for its top-level rows.
+    var children: [String: [Item]] = [:]
+    var lastAt: [Int: String] = [:]
+    for item in items {
+        let depth = Int(item.inset)
+        let parent = depth == 0 ? focus : (lastAt[depth - 1] ?? focus)
+        children[parent, default: []].append(item)
+        lastAt[depth] = item.id
+    }
+    var out: Set<String> = []
+    for (parent, members) in children where !parent.isEmpty {
+        let dictionary = members.allSatisfy {
+            $0.role == "scalar" && $0.kind == "str" && $0.canRename
+                && $0.displayTitle == nil && $0.enumOptions.isEmpty
+        }
+        if dictionary { out.formUnion(members.map(\.id)) }
+    }
+    return out
+}
+
+/// What a row is called: the schema's title, then the key title-cased, then
+/// the key as it is. The last step is not a fallback so much as a rule: a key
+/// that cannot be renamed is a sequence index or a value the document spells
+/// exactly one way, and a `verbatim` key is a name somebody chose — either way,
+/// prettifying it would name the row something the document does not contain.
+func rowName<Item: PageItemDisplaying>(_ item: Item, verbatim: Bool = false) -> String {
+    item.displayTitle ?? (item.canRename && !verbatim ? prettify(item.label) : item.label)
+}
+
+/// Whether a card's rows wear icon tiles at all: only when one of them says
+/// something by it. A card where every tile would be its value kind's fallback
+/// — the "Aa" of a card of strings — draws none, and gives the names the room.
+/// When any row's tile is distinctive, every row keeps one so the names stay
+/// in a column.
+func cardShowsTiles<Item: PageItemDisplaying>(
+    _ entries: [PageEntry<Item>], verbatim: Set<String> = []
+) -> Bool {
+    func distinctive(_ item: Item) -> Bool {
+        // A chosen name is not a field name, and reading an icon off it would
+        // give a dependency called `url-parse` a globe.
+        !verbatim.contains(item.id)
+            && FlowerPalette.isDistinctive(label: item.label, icon: item.icon, tint: item.tint)
+    }
+    return entries.contains { entry in
+        switch entry {
+        case let .row(_, item, _): return item.role != "group" && distinctive(item)
+        case let .chips(_, header, _, _): return distinctive(header)
+        }
+    }
+}
+
 /// What a row announces as its name — the same resolution the drawn name line
-/// makes (schema title, then the prettified key, then the key as the document
-/// spells it), so VoiceOver and the screen agree about what a row is called.
-/// A titled sequence item announces both, index first, like the row shows both.
-func rowAccessibilityLabel<Item: PageItemDisplaying>(_ item: Item) -> String {
-    let own = item.displayTitle ?? (item.canRename ? prettify(item.label) : item.label)
+/// makes (``rowName(_:verbatim:)``), so VoiceOver and the screen agree about
+/// what a row is called. A titled sequence item announces both, index first,
+/// like the row shows both.
+func rowAccessibilityLabel<Item: PageItemDisplaying>(_ item: Item, verbatim: Bool = false) -> String {
+    let own = rowName(item, verbatim: verbatim)
     guard let title = item.title else { return own }
     return "\(own), \(title)"
 }
@@ -678,7 +743,10 @@ private struct PagePane<Model: PageDriving>: View {
     }
 
     private func card(_ entries: [PageEntry<Page.Item>]) -> some View {
-        VStack(spacing: 0) {
+        let verbatim = verbatimKeyIds(focus: page.focus, items: page.items)
+        let tiles = cardShowsTiles(entries, verbatim: verbatim)
+        let dividerLead: CGFloat = tiles ? 57 : 14
+        return VStack(spacing: 0) {
             ForEach(Array(entries.enumerated()), id: \.element.id) { pos, entry in
                 switch entry {
                 case let .row(index, item, inset):
@@ -686,19 +754,20 @@ private struct PagePane<Model: PageDriving>: View {
                         GroupHeaderRow(item: item, model: model, inset: inset, first: pos == 0)
                     } else {
                         if pos > 0, !entries[pos - 1].isGroupCaption {
-                            Divider().padding(.leading, 57 + CGFloat(inset) * 16)
+                            Divider().padding(.leading, dividerLead + CGFloat(inset) * 16)
                         }
                         PageRow(item: item, model: model, theme: theme,
-                                selected: selected(index), inset: inset, role: role)
+                                selected: selected(index), inset: inset, role: role,
+                                verbatimKey: verbatim.contains(item.id), showsTile: tiles)
                     }
                 case let .chips(index, header, members, inset):
                     if pos > 0, !entries[pos - 1].isGroupCaption {
-                        Divider().padding(.leading, 57 + CGFloat(inset) * 16)
+                        Divider().padding(.leading, dividerLead + CGFloat(inset) * 16)
                     }
                     PageChipsRow(header: header, members: members, model: model,
                                  selected: selected(index)
                                      || members.contains { selected($0.index) },
-                                 inset: inset, role: role)
+                                 inset: inset, role: role, showsTile: tiles)
                 }
             }
         }
@@ -877,6 +946,10 @@ private struct PageRow<Model: PageDriving>: View {
     /// The drawn indentation — the layout's rebased rank, not `item.inset`.
     let inset: Int
     let role: PaneRole
+    /// The key is a name somebody chose, shown as written (``verbatimKeyIds``).
+    let verbatimKey: Bool
+    /// Whether this row's card draws icon tiles (``cardShowsTiles``).
+    let showsTile: Bool
     @FocusState private var focused: Bool
     @FocusState private var keyFocused: Bool
 
@@ -908,7 +981,7 @@ private struct PageRow<Model: PageDriving>: View {
             // VoiceOver at all.
             core
                 .accessibilityElement(children: .ignore)
-                .accessibilityLabel(rowAccessibilityLabel(item))
+                .accessibilityLabel(rowAccessibilityLabel(item, verbatim: verbatimKey))
                 .accessibilityValue(rowAccessibilityValue(item))
                 .accessibilityAddTraits(selected ? [.isButton, .isSelected] : .isButton)
                 .accessibilityHint(axHint)
@@ -929,7 +1002,9 @@ private struct PageRow<Model: PageDriving>: View {
 
     private var core: some View {
         HStack(spacing: 12) {
-            IconTile(label: item.label, kind: item.kind, icon: item.icon, tint: item.tint)
+            if showsTile {
+                IconTile(label: item.label, kind: item.kind, icon: item.icon, tint: item.tint)
+            }
             name
             Spacer(minLength: 8)
             trailing
@@ -1007,12 +1082,7 @@ private struct PageRow<Model: PageDriving>: View {
                     .lineLimit(1)
             }
         } else {
-            // The schema's name, then the key title-cased, then the key as it is.
-            // The last step is not a fallback so much as a rule: a key that
-            // cannot be renamed is a sequence index or a value the document
-            // spells exactly one way, and prettifying it would name the row
-            // something the document does not contain.
-            Text(item.displayTitle ?? (item.canRename ? prettify(item.label) : item.label))
+            Text(rowName(item, verbatim: verbatimKey))
                 .font(.system(size: 15))
                 .lineLimit(1)
         }
@@ -1090,14 +1160,14 @@ private struct PageRow<Model: PageDriving>: View {
                                      set: { model.setBool(item, $0) }))
                 .labelsHidden()
                 .toggleStyle(.switch)
-                .accessibilityLabel(rowAccessibilityLabel(item))
+                .accessibilityLabel(rowAccessibilityLabel(item, verbatim: verbatimKey))
         } else if isEditing {
             HStack(spacing: 6) {
                 TextField("value", text: $model.editBuffer)
                     .textFieldStyle(.roundedBorder)
                     .font(.system(size: 14, design: numeric ? .monospaced : .default))
                     .frame(maxWidth: 150)
-                    .accessibilityLabel(rowAccessibilityLabel(item))
+                    .accessibilityLabel(rowAccessibilityLabel(item, verbatim: verbatimKey))
                     .focused($focused)
                     .onSubmit { model.commitEdit() }
                     #if os(macOS)
@@ -1107,7 +1177,7 @@ private struct PageRow<Model: PageDriving>: View {
                 if numeric {
                     Stepper("", onIncrement: { step(+1) }, onDecrement: { step(-1) })
                         .labelsHidden()
-                        .accessibilityLabel("Adjust \(rowAccessibilityLabel(item))")
+                        .accessibilityLabel("Adjust \(rowAccessibilityLabel(item, verbatim: verbatimKey))")
                 }
             }
         } else {
@@ -1332,13 +1402,16 @@ private struct PageChipsRow<Model: PageDriving>: View {
     let selected: Bool
     let inset: Int
     let role: PaneRole
+    let showsTile: Bool
     @FocusState private var chipFocused: Bool
 
     var body: some View {
         HStack(alignment: .top, spacing: 12) {
-            IconTile(label: header.label, kind: header.kind,
-                     icon: header.icon, tint: header.tint)
-            Text(header.displayTitle ?? (header.canRename ? prettify(header.label) : header.label))
+            if showsTile {
+                IconTile(label: header.label, kind: header.kind,
+                         icon: header.icon, tint: header.tint)
+            }
+            Text(rowName(header))
                 .font(.system(size: 15))
                 .lineLimit(1)
                 .padding(.top, 5)

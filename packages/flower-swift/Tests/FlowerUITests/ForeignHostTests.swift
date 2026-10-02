@@ -355,6 +355,85 @@ final class ForeignHostTests: XCTestCase {
         XCTAssertEqual(unknown.color, inferred.color)
     }
 
+    /// The inference reads a key's words, not its letters: `import` is not a
+    /// port and `hobby` is not an author, while `username` is still a user.
+    func testTheInferenceMatchesWordsNotSubstrings() {
+        let fallback = FlowerPalette.inferredIcon(label: "", kind: "str").symbol
+        for key in ["import", "export", "support", "hobby", "spinner", "generate", "stage"] {
+            XCTAssertEqual(FlowerPalette.inferredIcon(label: key, kind: "str").symbol, fallback, key)
+            XCTAssertFalse(FlowerPalette.isDistinctive(label: key), key)
+        }
+        XCTAssertEqual(FlowerPalette.inferredIcon(label: "username", kind: "str").symbol,
+                       FlowerPalette.inferredIcon(label: "user", kind: "str").symbol)
+        XCTAssertEqual(FlowerPalette.inferredIcon(label: "listenPort", kind: "int").symbol,
+                       FlowerPalette.inferredIcon(label: "port", kind: "int").symbol)
+        XCTAssertTrue(FlowerPalette.isDistinctive(label: "spec", icon: "lock"))
+        XCTAssertFalse(FlowerPalette.isDistinctive(label: "spec"))
+    }
+
+    // ── what a key reads as ───────────────────────────────────────────────────
+
+    /// camelCase splits the way snake_case always did, an acronym stays one
+    /// word, and a key that is not a field name comes back as written.
+    func testPrettifySplitsCamelCaseAndLeavesChosenNamesAlone() {
+        XCTAssertEqual(prettify("max_connections"), "Max Connections")
+        XCTAssertEqual(prettify("devDependencies"), "Dev Dependencies")
+        XCTAssertEqual(prettify("noEmit"), "No Emit")
+        XCTAssertEqual(prettify("HTTPServer"), "HTTP Server")
+        XCTAssertEqual(prettify("utf8Mode"), "Utf8 Mode")
+        XCTAssertEqual(prettify("@types/node-fetch"), "@types/node-fetch")
+        XCTAssertEqual(prettify("src/**"), "src/**")
+    }
+
+    /// A nested map of plain strings is a dictionary — `scripts`,
+    /// `dependencies` — and its keys are shown as written. The root, a map
+    /// with anything else in it, and a schema-named field are records.
+    func testADictionaryOfStringsKeepsItsKeysAsWritten() {
+        let root = [
+            MetaItem(id: "name", label: "name"),
+            MetaItem(id: "type", label: "type"),
+            MetaItem(id: "scripts", label: "scripts", kind: "map", role: "group"),
+            MetaItem(id: "scripts.dev", label: "dev", depth: 1),
+            MetaItem(id: "scripts.build", label: "build", depth: 1),
+            MetaItem(id: "compilerOptions", label: "compilerOptions", kind: "map", role: "group"),
+            MetaItem(id: "compilerOptions.target", label: "target", depth: 1),
+            MetaItem(id: "compilerOptions.strict", label: "strict", kind: "bool", depth: 1),
+        ]
+        XCTAssertEqual(verbatimKeyIds(focus: "", items: root), ["scripts.dev", "scripts.build"])
+
+        // The same map opened as its own page.
+        let page = [MetaItem(id: "scripts.dev", label: "dev"),
+                    MetaItem(id: "scripts.typecheck", label: "typecheck")]
+        let verbatim = verbatimKeyIds(focus: "scripts", items: page)
+        XCTAssertEqual(verbatim, ["scripts.dev", "scripts.typecheck"])
+        XCTAssertEqual(rowName(page[1], verbatim: verbatim.contains(page[1].id)), "typecheck")
+        XCTAssertEqual(rowAccessibilityLabel(page[1], verbatim: true), "typecheck")
+        XCTAssertEqual(rowName(page[1]), "Typecheck")
+
+        let named = [SchemaItem(id: "env.home", label: "home", displayTitle: "Home")]
+        XCTAssertEqual(verbatimKeyIds(focus: "env", items: named), [])
+    }
+
+    /// A card draws tiles only when one of its rows says something by its
+    /// tile — and then all of them do, so the names stay in a column.
+    func testACardOfKindFallbacksDrawsNoTiles() {
+        func card(_ items: [MetaItem]) -> [PageEntry<MetaItem>] {
+            items.enumerated().map { .row(index: $0.offset, item: $0.element, inset: 0) }
+        }
+        let plain = card([MetaItem(id: "name", label: "name"),
+                          MetaItem(id: "private", label: "private", kind: "bool")])
+        XCTAssertFalse(cardShowsTiles(plain))
+
+        let mixed = card([MetaItem(id: "name", label: "name"),
+                          MetaItem(id: "author", label: "author")])
+        XCTAssertTrue(cardShowsTiles(mixed))
+
+        // A chosen name never earns a tile: `url-parse` is a package, not a URL.
+        let deps = card([MetaItem(id: "d.url-parse", label: "url-parse")])
+        XCTAssertTrue(cardShowsTiles(deps))
+        XCTAssertFalse(cardShowsTiles(deps, verbatim: ["d.url-parse"]))
+    }
+
     // ── what the value points at ──────────────────────────────────────────────
 
     /// The bargain every defaulted member strikes: a host that resolves nothing

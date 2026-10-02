@@ -2,9 +2,9 @@
 //
 //  One document's window: the package's `FlowerPages` over the model its
 //  `FlowerDocument` owns, with the structural controls in the toolbar and the
-//  model's status line under it. Everything — the projection, navigation, and
-//  the lossless path-addressed edits — comes from flower-core over the FFI;
-//  this file is only chrome.
+//  model's status line under it while it has something to say. Everything —
+//  the projection, navigation, and the lossless path-addressed edits — comes
+//  from flower-core over the FFI; this file is only chrome.
 
 import FlowerUI
 import SwiftUI
@@ -35,8 +35,10 @@ struct ContentView<Format: FlowerFormat>: View {
         VStack(spacing: 0) {
             FlowerPages(model: model, rootLabel: fileURL?.lastPathComponent ?? "Untitled")
                 .background(editorBackground)
-            Divider()
-            footer
+            if !model.status.isEmpty {
+                Divider()
+                statusBar
+            }
         }
         .ignoresSafeArea(.keyboard, edges: .bottom)
         .toolbar { toolbar }
@@ -89,18 +91,17 @@ struct ContentView<Format: FlowerFormat>: View {
             .help("Delete the selected field")
     }
 
-    private var footer: some View {
-        HStack(spacing: 10) {
+    /// What the last action had to say — chiefly why it was refused. Only
+    /// drawn when there is something to say: the window explains nothing about
+    /// how to use it, so a bar with nothing in it would be chrome for its own
+    /// sake.
+    private var statusBar: some View {
+        HStack {
             Text(model.status)
                 .font(.footnote)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
             Spacer()
-            Text("click a section to open it · right-click a row to rename · add · reorder · delete")
-                .font(.footnote)
-                .foregroundStyle(.tertiary)
-                .lineLimit(1)
-                .truncationMode(.head)
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 6)

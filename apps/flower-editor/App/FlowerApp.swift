@@ -71,12 +71,12 @@ struct FlowerAppCommands: Commands {
         // iPad with a keyboard reorders, and the way to do it without a drag.
         CommandGroup(after: .pasteboard) {
             Divider()
-            Button("Move Up") { if canMove, let model, let item = model.selectedItem { model.moveItemUp(item) } }
+            Button("Move Up") { if movable(by: -1), let model, let item = model.selectedItem { model.moveItemUp(item) } }
                 .keyboardShortcut(.upArrow, modifiers: [.option, .command])
-                .disabled(!canMove)
-            Button("Move Down") { if canMove, let model, let item = model.selectedItem { model.moveItemDown(item) } }
+                .disabled(!movable(by: -1))
+            Button("Move Down") { if movable(by: 1), let model, let item = model.selectedItem { model.moveItemDown(item) } }
                 .keyboardShortcut(.downArrow, modifiers: [.option, .command])
-                .disabled(!canMove)
+                .disabled(!movable(by: 1))
         }
         #if os(macOS)
         CommandGroup(after: .help) {
@@ -87,12 +87,12 @@ struct FlowerAppCommands: Commands {
         #endif
     }
 
-    /// Whether the selected row can be moved now: not while a value or key is
-    /// being typed — the arrows belong to the text field then — and not a
-    /// row something else maintains.
-    private var canMove: Bool {
+    /// Whether the selected row can move that way now: not while a value or
+    /// key is being typed — the arrows belong to the text field then — not a
+    /// row something else maintains, and not past either end of its siblings.
+    private func movable(by offset: Int) -> Bool {
         guard let model, model.editingId == nil, model.renamingId == nil,
-              let item = model.selectedItem else { return false }
-        return !item.isReadonly
+              let item = model.selectedItem, !item.isReadonly else { return false }
+        return canMove(item.id, by: offset, in: model.pages.page)
     }
 }

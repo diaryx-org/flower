@@ -1,8 +1,8 @@
 //  ContentView.swift
 //
 //  One document's window: the package's `FlowerPages` over the model its
-//  `FlowerDocument` owns, with the structural controls in the toolbar and the
-//  model's status line under it while it has something to say. Everything —
+//  `FlowerDocument` owns, with the structural controls in the toolbar. There
+//  is no status bar: a refusal is drawn under the row it refused. Everything —
 //  the projection, navigation, and the lossless path-addressed edits — comes
 //  from flower-core over the FFI; this file is only chrome.
 
@@ -32,15 +32,9 @@ struct ContentView<Format: FlowerFormat>: View {
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            FlowerPages(model: model, rootLabel: fileURL?.lastPathComponent ?? "Untitled")
-                .background(editorBackground)
-            if !model.status.isEmpty {
-                Divider()
-                statusBar
-            }
-        }
-        .ignoresSafeArea(.keyboard, edges: .bottom)
+        FlowerPages(model: model, rootLabel: fileURL?.lastPathComponent ?? "Untitled")
+            .background(editorBackground)
+            .ignoresSafeArea(.keyboard, edges: .bottom)
         .toolbar { toolbar }
         // The menu bar's commands act on the document in the key window.
         .focusedSceneObject(model)
@@ -81,23 +75,6 @@ struct ContentView<Format: FlowerFormat>: View {
         } label: { Label("Delete", systemImage: "trash") }
             .disabled(item == nil)
             .help("Delete the selected field")
-    }
-
-    /// What the last action had to say — chiefly why it was refused. Only
-    /// drawn when there is something to say: the window explains nothing about
-    /// how to use it, so a bar with nothing in it would be chrome for its own
-    /// sake.
-    private var statusBar: some View {
-        HStack {
-            Text(model.status)
-                .font(.footnote)
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-            Spacer()
-        }
-        .padding(.horizontal, 14)
-        .padding(.vertical, 6)
-        .background(.bar)
     }
 }
 

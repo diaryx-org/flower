@@ -63,7 +63,21 @@ private extension View {
 
 /// The app's own menu items, beside what `DocumentGroup` provides.
 struct FlowerAppCommands: Commands {
+    /// The model of the document in the key window, if there is one.
+    @FocusedObject private var model: FlowerModel?
+
     var body: some Commands {
+        // In Edit, beside the other things done to a selection. Also how an
+        // iPad with a keyboard reorders, and the way to do it without a drag.
+        CommandGroup(after: .pasteboard) {
+            Divider()
+            Button("Move Up") { if canMove, let model, let item = model.selectedItem { model.moveItemUp(item) } }
+                .keyboardShortcut(.upArrow, modifiers: [.option, .command])
+                .disabled(!canMove)
+            Button("Move Down") { if canMove, let model, let item = model.selectedItem { model.moveItemDown(item) } }
+                .keyboardShortcut(.downArrow, modifiers: [.option, .command])
+                .disabled(!canMove)
+        }
         #if os(macOS)
         CommandGroup(after: .help) {
             Divider()
@@ -71,5 +85,14 @@ struct FlowerAppCommands: Commands {
                  destination: URL(string: "https://github.com/diaryx-org/flower")!)
         }
         #endif
+    }
+
+    /// Whether the selected row can be moved now: not while a value or key is
+    /// being typed — the arrows belong to the text field then — and not a
+    /// row something else maintains.
+    private var canMove: Bool {
+        guard let model, model.editingId == nil, model.renamingId == nil,
+              let item = model.selectedItem else { return false }
+        return !item.isReadonly
     }
 }

@@ -42,6 +42,8 @@ struct ContentView<Format: FlowerFormat>: View {
         }
         .ignoresSafeArea(.keyboard, edges: .bottom)
         .toolbar { toolbar }
+        // The menu bar's commands act on the document in the key window.
+        .focusedSceneObject(model)
         .onAppear { model.setInlineBudget(rows: budget.rows, depth: budget.depth) }
         .onChange(of: budget) { model.setInlineBudget(rows: $0.rows, depth: $0.depth) }
         .onChange(of: model.editSeq) { _ in document.noteEdits(undoManager: undoManager) }
@@ -60,6 +62,8 @@ struct ContentView<Format: FlowerFormat>: View {
     }
 
     /// Structural editing controls, acting on whatever the page has selected.
+    /// Reordering is not among them: a row is dragged to where it goes, and
+    /// Edit ▸ Move Up / Move Down (⌥⌘↑ / ⌥⌘↓) is the keyboard's way.
     @ViewBuilder private var structureControls: some View {
         let item = model.selectedItem
         Menu {
@@ -71,18 +75,6 @@ struct ContentView<Format: FlowerFormat>: View {
             Label("Add", systemImage: "plus")
         }
         .help("Add a field to this page or to the selected container")
-
-        Button {
-            if let item { model.moveItemUp(item) }
-        } label: { Label("Move Up", systemImage: "arrow.up") }
-            .disabled(item == nil)
-            .help("Move the selected field up")
-
-        Button {
-            if let item { model.moveItemDown(item) }
-        } label: { Label("Move Down", systemImage: "arrow.down") }
-            .disabled(item == nil)
-            .help("Move the selected field down")
 
         Button(role: .destructive) {
             if let item { model.delete(item) }

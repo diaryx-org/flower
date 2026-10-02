@@ -88,6 +88,16 @@ public protocol PageDriving: ObservableObject {
     func moveItemUp(_ item: Pages.Page.Item)
     func moveItemDown(_ item: Pages.Page.Item)
 
+    /// Move `item` `offset` places among its siblings — negative is earlier.
+    /// What a drag sends when it drops a row onto a sibling.
+    ///
+    /// Defaulted to that many single steps, because one step is all a host has
+    /// been asked for. Each step selects the item it moves, which is what lets
+    /// the next one find it again: a sequence item's id *is* its index, so the
+    /// record the drag started with names a different item after the first
+    /// step. A host that can move in one edit overrides this.
+    func moveItem(_ item: Pages.Page.Item, by offset: Int)
+
     // ── adding what a schema declares, for a host that has one ────────────────
     //
     // `pageAddChild(id:)` above is the schemaless half of adding: a placeholder
@@ -126,6 +136,17 @@ public extension PageDriving {
     func canAddChild(pageId: String) -> Bool { false }
     func addableChildren(of id: String) -> [AddableChild] { [] }
     func pageAddChild(id: String, key: String, value: String) { pageAddChild(id: id) }
+
+    func moveItem(_ item: Pages.Page.Item, by offset: Int) {
+        var current = item
+        for step in 0..<abs(offset) {
+            if offset < 0 { moveItemUp(current) } else { moveItemDown(current) }
+            guard step < abs(offset) - 1 else { break }
+            let page = pages.page
+            guard let i = page.selected.map(Int.init), page.items.indices.contains(i) else { return }
+            current = page.items[i]
+        }
+    }
 }
 
 /// One field a schema declares and the document does not yet carry — an entry in

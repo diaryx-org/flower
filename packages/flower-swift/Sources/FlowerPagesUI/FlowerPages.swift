@@ -61,6 +61,7 @@
 //  UniFFI handle is not.
 
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// Below this the two panes leave neither one usable, so the page view collapses
 /// to a single column — the same interaction with one pane instead of two.
@@ -521,15 +522,9 @@ func drillSummary<Item: PageItemDisplaying>(_ item: Item) -> String {
 /// When it guesses wrong it fails toward the truth: a small record of strings
 /// shows its keys as written, which is less polished but never wrong.
 func verbatimKeyIds<Item: PageItemDisplaying>(focus: String, items: [Item]) -> Set<String> {
-    // Siblings by parent: the nearest earlier item one inset shallower, or the
-    // page's own container for its top-level rows.
     var children: [String: [Item]] = [:]
-    var lastAt: [Int: String] = [:]
-    for item in items {
-        let depth = Int(item.inset)
-        let parent = depth == 0 ? focus : (lastAt[depth - 1] ?? focus)
+    for (item, parent) in zip(items, parentIds(focus: focus, items: items)) {
         children[parent, default: []].append(item)
-        lastAt[depth] = item.id
     }
     var out: Set<String> = []
     for (parent, members) in children where !parent.isEmpty {
@@ -540,6 +535,39 @@ func verbatimKeyIds<Item: PageItemDisplaying>(focus: String, items: [Item]) -> S
         if dictionary { out.formUnion(members.map(\.id)) }
     }
     return out
+}
+
+/// Each item's parent, by id, in item order: the nearest earlier item one inset
+/// shallower, or the page's own container (`focus`) for its top-level rows.
+/// The projection ships a flat list, and this is the containment it flattened.
+func parentIds<Item: PageItemDisplaying>(focus: String, items: [Item]) -> [String] {
+    var lastAt: [Int: String] = [:]
+    return items.map { item in
+        let depth = Int(item.inset)
+        let parent = depth == 0 ? focus : (lastAt[depth - 1] ?? focus)
+        lastAt[depth] = item.id
+        return parent
+    }
+}
+
+/// How many places dropping `dragged` onto `target` moves it among its
+/// siblings — negative is earlier — or `nil` when the drop is not a reorder.
+///
+/// A row can only take the place of a sibling, because a move is a reorder
+/// within one container: dropping a script into the dependencies would be
+/// moving a key to another map, which is a different edit with its own
+/// questions (what if the key is taken there?) and not one a drag should
+/// answer by accident.
+func reorderOffset<Item: PageItemDisplaying>(
+    moving dragged: String, onto target: String, focus: String, items: [Item]
+) -> Int? {
+    let parents = parentIds(focus: focus, items: items)
+    guard let from = items.firstIndex(where: { $0.id == dragged }),
+          let to = items.firstIndex(where: { $0.id == target }),
+          parents[from] == parents[to] else { return nil }
+    let siblings = items.indices.filter { parents[$0] == parents[from] }
+    guard let a = siblings.firstIndex(of: from), let b = siblings.firstIndex(of: to) else { return nil }
+    return b - a
 }
 
 /// What a row is called: the schema's title, then the key title-cased, then
@@ -606,6 +634,13 @@ private struct PagePane<Model: PageDriving>: View {
     /// (the pane is identity-keyed on its focus), which is the disclosure's
     /// ordinary lifetime: "advanced" is a default about arriving, not a mode.
     @State private var advancedOpened = false
+
+    /// The row being dragged, from this pane — the drag's own record of what it
+    /// carries, since the pasteboard only says so asynchronously.
+    @State private var dragging: String?
+    /// Where the dragged row would land: the edge of the row it would take the
+    /// place of.
+    @State private var dropIndicator: RowDropIndicator?
 
     var body: some View {
         let split = partitionDemoted(page.items)
@@ -756,18 +791,22 @@ private struct PagePane<Model: PageDriving>: View {
                         if pos > 0, !entries[pos - 1].isGroupCaption {
                             Divider().padding(.leading, dividerLead + CGFloat(inset) * 16)
                         }
-                        PageRow(item: item, model: model, theme: theme,
-                                selected: selected(index), inset: inset, role: role,
-                                verbatimKey: verbatim.contains(item.id), showsTile: tiles)
+                        reorderable(
+                            PageRow(item: item, model: model, theme: theme,
+                                    selected: selected(index), inset: inset, role: role,
+                                    verbatimKey: verbatim.contains(item.id), showsTile: tiles),
+                            item: item, lead: dividerLead + CGFloat(inset) * 16)
                     }
                 case let .chips(index, header, members, inset):
                     if pos > 0, !entries[pos - 1].isGroupCaption {
                         Divider().padding(.leading, dividerLead + CGFloat(inset) * 16)
                     }
-                    PageChipsRow(header: header, members: members, model: model,
-                                 selected: selected(index)
-                                     || members.contains { selected($0.index) },
-                                 inset: inset, role: role, showsTile: tiles)
+                    reorderable(
+                        PageChipsRow(header: header, members: members, model: model,
+                                     selected: selected(index)
+                                         || members.contains { selected($0.index) },
+                                     inset: inset, role: role, showsTile: tiles),
+                        item: header, lead: dividerLead + CGFloat(inset) * 16)
                 }
             }
         }
@@ -779,12 +818,126 @@ private struct PagePane<Model: PageDriving>: View {
         .clipShape(RoundedRectangle(cornerRadius: 14))
     }
 
+    /// A row that can be dragged onto a sibling to take its place.
+    ///
+    /// The row itself is the handle: a Mac list reorders by dragging the row,
+    /// and an iPhone by pressing and holding it, so neither needs a grip drawn
+    /// on every row of a page for something done now and then. The drag only
+    /// starts once the pointer moves, so a click still edits.
+    ///
+    /// Only on the pane being edited, and never on a row that is being typed
+    /// in — its text field owns the pointer — or on one something else
+    /// maintains, which decides where it sits.
+    @ViewBuilder private func reorderable<Row: View>(
+        _ row: Row, item: Page.Item, lead: CGFloat
+    ) -> some View {
+        if role == .cursor {
+            let delegate = RowDropDelegate(
+                offset: { [page] in
+                    dragging.flatMap { reorderOffset(moving: $0, onto: item.id,
+                                                     focus: page.focus, items: page.items) }
+                },
+                target: item.id,
+                indicator: $dropIndicator,
+                accept: { token in
+                    guard let id = dragging, token == RowDropDelegate.token(id) else { return }
+                    dragging = nil
+                    // Resolved against the frame at the drop, not the one the
+                    // drag began in: the model may have moved on since.
+                    let page = model.pages.page
+                    guard let moved = page.items.first(where: { $0.id == id }),
+                          let offset = reorderOffset(moving: id, onto: item.id,
+                                                     focus: page.focus, items: page.items),
+                          offset != 0 else { return }
+                    model.moveItem(moved, by: offset)
+                })
+            let busy = model.editingId == item.id || model.renamingId == item.id
+            Group {
+                if busy || item.isReadonly {
+                    row
+                } else {
+                    row.onDrag {
+                        dragging = item.id
+                        return NSItemProvider(object: RowDropDelegate.token(item.id) as NSString)
+                    }
+                }
+            }
+            .onDrop(of: [.plainText], delegate: delegate)
+            .overlay(alignment: dropIndicator?.edge == .top ? .top : .bottom) {
+                if dropIndicator?.id == item.id {
+                    Rectangle()
+                        .fill(Color.accentColor)
+                        .frame(height: 2)
+                        .padding(.leading, lead)
+                        .allowsHitTesting(false)
+                }
+            }
+        } else {
+            row
+        }
+    }
+
     private var cardBackground: some View {
         #if canImport(UIKit)
         Color(.secondarySystemGroupedBackground)
         #else
         Color(nsColor: .controlBackgroundColor)
         #endif
+    }
+}
+
+/// Where a dragged row would land: the row whose place it would take, and the
+/// edge it would arrive at — above a row it is moving up past, below one it is
+/// moving down past.
+struct RowDropIndicator: Equatable {
+    let id: String
+    let edge: VerticalEdge
+}
+
+/// One row's half of a reorder: whether the drag over it is a legal move, the
+/// line that says where it would land, and the move itself on drop.
+private struct RowDropDelegate: DropDelegate {
+    /// How far the drag in flight would move, or `nil` when it is not one of
+    /// this pane's rows or not a sibling of this one.
+    let offset: () -> Int?
+    let target: String
+    @Binding var indicator: RowDropIndicator?
+    /// Called with what the drop carried, to move the row if it is the one this
+    /// pane is dragging.
+    let accept: (String) -> Void
+
+    /// What a dragged row puts on the pasteboard. Checked on drop, so a drag of
+    /// ordinary text from elsewhere — or one this pane lost track of — moves
+    /// nothing.
+    static func token(_ id: String) -> String { "flower-row:\(id)" }
+
+    private var move: Int? { offset().flatMap { $0 == 0 ? nil : $0 } }
+
+    func validateDrop(info: DropInfo) -> Bool { move != nil }
+
+    func dropEntered(info: DropInfo) {
+        guard let move else { return }
+        indicator = RowDropIndicator(id: target, edge: move < 0 ? .top : .bottom)
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: move == nil ? .forbidden : .move)
+    }
+
+    func dropExited(info: DropInfo) {
+        if indicator?.id == target { indicator = nil }
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        indicator = nil
+        guard move != nil, let provider = info.itemProviders(for: [.plainText]).first else {
+            return false
+        }
+        _ = provider.loadObject(ofClass: NSString.self) { object, _ in
+            guard let token = object as? String else { return }
+            DispatchQueue.main.async { accept(token) }
+        }
+        return true
     }
 }
 

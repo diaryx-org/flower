@@ -181,6 +181,63 @@ private final class DeclaringModel: PageDriving {
 
 // ── the test ──────────────────────────────────────────────────────────────────
 
+/// A host whose sequence moves the way flower's does: an item's id is its
+/// index, so a moved item changes id, and the selection follows it there.
+private final class SequenceModel: PageDriving {
+    @Published var pages: MetaFrame
+    @Published var lastMove: PageMove = .jump
+    @Published var editingId: String?
+    @Published var renamingId: String?
+    @Published var editBuffer: String = ""
+    @Published var renameBuffer: String = ""
+    private(set) var sent: [String] = []
+
+    /// The values, in order; `steps.i` is `values[i]`.
+    private(set) var values: [String]
+
+    init(_ values: [String]) {
+        self.values = values
+        pages = MetaFrame(page: MetaPage())
+        publish(selected: 0)
+    }
+
+    private func publish(selected: Int) {
+        let items = values.enumerated().map {
+            MetaItem(id: "steps.\($0.offset)", label: "[\($0.offset)]", preview: $0.element,
+                     canRename: false)
+        }
+        pages = MetaFrame(page: MetaPage(items: items, selected: UInt32(selected)))
+    }
+
+    private func move(_ item: MetaItem, _ delta: Int) {
+        sent.append("\(delta < 0 ? "up" : "down"):\(item.id)")
+        guard let i = pages.page.items.firstIndex(where: { $0.id == item.id }),
+              values.indices.contains(i + delta) else { return }
+        values.swapAt(i, i + delta)
+        publish(selected: i + delta)
+    }
+
+    var canPageBack: Bool { false }
+    func showPages() {}
+    func pageOpen(id: String) {}
+    func pageAt(id: String) -> MetaPage { pages.page }
+    func pageBack() {}
+    func pageActivate(_ item: MetaItem) {}
+    func beginEdit(_ item: MetaItem) {}
+    func commitEdit() {}
+    func cancelEdit() {}
+    func beginRename(_ item: MetaItem) {}
+    func commitRename() {}
+    func cancelRename() {}
+    func setBool(_ item: MetaItem, _ value: Bool) {}
+    func setChoice(_ item: MetaItem, _ value: String) {}
+    func delete(_ item: MetaItem) {}
+    func canAddChild(_ item: MetaItem) -> Bool { false }
+    func pageAddChild(id: String) {}
+    func moveItemUp(_ item: MetaItem) { move(item, -1) }
+    func moveItemDown(_ item: MetaItem) { move(item, 1) }
+}
+
 final class ForeignHostTests: XCTestCase {
     private func sample() -> MetaModel {
         MetaModel([
@@ -432,6 +489,50 @@ final class ForeignHostTests: XCTestCase {
         let deps = card([MetaItem(id: "d.url-parse", label: "url-parse")])
         XCTAssertTrue(cardShowsTiles(deps))
         XCTAssertFalse(cardShowsTiles(deps, verbatim: ["d.url-parse"]))
+    }
+
+    // ── reordering by drag ────────────────────────────────────────────────────
+
+    /// A row takes a sibling's place, and only a sibling's: the drop says how
+    /// far it moves, and a drop into another container is no reorder at all.
+    func testADropMovesARowOnlyAmongItsSiblings() {
+        let items = [
+            MetaItem(id: "name", label: "name"),
+            MetaItem(id: "scripts", label: "scripts", kind: "map", role: "group"),
+            MetaItem(id: "scripts.dev", label: "dev", depth: 1),
+            MetaItem(id: "scripts.build", label: "build", depth: 1),
+            MetaItem(id: "scripts.test", label: "test", depth: 1),
+            MetaItem(id: "type", label: "type"),
+        ]
+        func offset(_ a: String, _ b: String) -> Int? {
+            reorderOffset(moving: a, onto: b, focus: "", items: items)
+        }
+        XCTAssertEqual(offset("scripts.dev", "scripts.test"), 2)
+        XCTAssertEqual(offset("scripts.test", "scripts.dev"), -2)
+        XCTAssertEqual(offset("scripts.build", "scripts.build"), 0)
+        // The section is a sibling of the rows around it.
+        XCTAssertEqual(offset("type", "name"), -2)
+        XCTAssertEqual(offset("name", "scripts"), 1)
+        // Out of its map, or into one: refused.
+        XCTAssertNil(offset("scripts.dev", "type"))
+        XCTAssertNil(offset("name", "scripts.dev"))
+        XCTAssertNil(offset("gone", "name"))
+    }
+
+    /// A drop several places away is that many single steps, each sent for
+    /// the item as it is *now* — a sequence item's id is its index, so the
+    /// record the drag began with names another item after the first step.
+    func testAMoveOfSeveralPlacesFollowsTheItemItMoves() {
+        let model = SequenceModel(["a", "b", "c", "d"])
+        model.moveItem(model.pages.page.items[0], by: 3)
+        XCTAssertEqual(model.values, ["b", "c", "d", "a"])
+        XCTAssertEqual(model.sent, ["down:steps.0", "down:steps.1", "down:steps.2"])
+
+        model.moveItem(model.pages.page.items[3], by: -2)
+        XCTAssertEqual(model.values, ["b", "a", "c", "d"])
+
+        model.moveItem(model.pages.page.items[1], by: 0)
+        XCTAssertEqual(model.sent.count, 5)
     }
 
     // ── what the value points at ──────────────────────────────────────────────

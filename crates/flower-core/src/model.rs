@@ -106,6 +106,42 @@ pub enum ChoiceTarget {
     Append(Vec<Seg>),
 }
 
+/// What kind of thing a [`Notice`] says — which decides whether a frontend
+/// says it at all.
+///
+/// A terminal has one status line and prints everything on it. A windowed
+/// frontend has better places for most of it, and no place for some: a row
+/// that moved says "moved" by moving, and a refusal belongs beside the row
+/// that was refused rather than in a bar at the bottom of the window.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NoticeKind {
+    /// It happened, or was called off, as asked: "moved", "value updated",
+    /// "edit cancelled", an embedder's "saved". The change on screen already
+    /// says so.
+    Done,
+    /// It happened, with a reservation worth reading: an open vocabulary's
+    /// near-miss, a view that could not be refreshed.
+    Warning,
+    /// It did not happen, and the document is untouched.
+    Rejected,
+}
+
+/// [`Model::status`] with what a frontend needs to put it somewhere better
+/// than a status line.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Notice {
+    pub kind: NoticeKind,
+    /// The node it is about: the entry an edit changed or was refused on, the
+    /// row that could not move. `None` for something about no node in
+    /// particular — "nothing to undo".
+    pub path: Option<Vec<Seg>>,
+    /// The words, without the `rejected: ` prefix a status line uses to tell a
+    /// refusal apart — [`kind`](Self::kind) says that here.
+    pub message: String,
+    /// Goes up with every notice, so the same refusal twice reads as twice.
+    pub seq: u64,
+}
+
 pub struct Model<B> {
     backend: B,
 
@@ -166,6 +202,17 @@ pub struct Model<B> {
     /// a bar that opens holding a word nobody asked for teaches the reader to
     /// stop reading it, which is the one thing a refusal channel cannot afford.
     pub status: String,
+    /// [`status`](Self::status), said so a frontend can act on it: whether it
+    /// is a refusal, which node it is about, and the words without the
+    /// `rejected: ` a status line needs to tell a refusal apart.
+    ///
+    /// `None` until something happens. Set every time `status` is, so the two
+    /// never disagree; a status line keeps reading `status`, and a host that
+    /// puts a refusal beside the row it refused, or beeps, reads this.
+    pub notice: Option<Notice>,
+    /// How many notices have been given — so a host can tell the same
+    /// refusal twice from one refusal still showing. Goes up with each one.
+    notice_seq: u64,
     pub dirty: bool,
 
     // ── page view ─────────────────────────────────────────────────────────
@@ -319,6 +366,8 @@ impl<B: Backend> Model<B> {
             // Nothing has happened yet, so there is nothing to report. See
             // `status`.
             status: String::new(),
+            notice: None,
+            notice_seq: 0,
             dirty: false,
             view: ViewMode::default(),
             inline_budget: InlineBudget::default(),
@@ -581,8 +630,35 @@ impl<B: Backend> Model<B> {
         &mut self.backend
     }
 
+    /// Say that something happened, for the status line — an embedder's own
+    /// news, like "saved". A [`NoticeKind::Done`] notice about no node in
+    /// particular; for a refusal, [`reject`](Self::reject).
     pub fn set_status(&mut self, s: impl Into<String>) {
-        self.status = s.into();
+        self.say(NoticeKind::Done, None, s.into());
+    }
+
+    /// Say that something was refused and the document is untouched — about
+    /// the node at `path`, when there is one to point at. `status` is the
+    /// status line's text, `rejected: ` prefix and all where it has one.
+    pub fn reject(&mut self, path: Option<&[Seg]>, status: impl Into<String>) {
+        self.say(NoticeKind::Rejected, path, status.into());
+    }
+
+    /// The one place a status is set: the line, and the notice that says the
+    /// same thing structurally.
+    fn say(&mut self, kind: NoticeKind, path: Option<&[Seg]>, status: String) {
+        let message = status
+            .strip_prefix("rejected: ")
+            .unwrap_or(&status)
+            .to_string();
+        self.notice_seq += 1;
+        self.notice = Some(Notice {
+            kind,
+            path: path.map(<[Seg]>::to_vec),
+            message,
+            seq: self.notice_seq,
+        });
+        self.status = status;
     }
 
     /// Clear the dirty flag after the embedder has persisted the source.
@@ -1232,7 +1308,7 @@ impl<B: Backend> Model<B> {
         // Page vocabulary: assert the projection this cursor belongs to.
         self.set_view(ViewMode::Pages);
         if self.focus.is_empty() {
-            self.status = "already at the top".to_string();
+            self.reject(None, "already at the top");
             return;
         }
         let child = std::mem::take(&mut self.focus);
@@ -1421,7 +1497,7 @@ impl<B: Backend> Model<B> {
     /// reason: one key, a list where there is one.
     pub fn begin_choose_append(&mut self, seq_path: &[Seg]) {
         if !matches!(self.value_at(seq_path), Some(Value::Seq(_))) {
-            self.status = "can only add an item to a list".to_string();
+            self.reject(Some(seq_path), "can only add an item to a list");
             return;
         }
         let Some(choices) = self.choices_at(seq_path) else {
@@ -1441,7 +1517,7 @@ impl<B: Backend> Model<B> {
     /// committed through [`append_item_text`](Self::append_item_text).
     pub fn begin_append(&mut self, seq_path: &[Seg]) {
         if !matches!(self.value_at(seq_path), Some(Value::Seq(_))) {
-            self.status = "can only add an item to a list".to_string();
+            self.reject(Some(seq_path), "can only add an item to a list");
             return;
         }
         self.mode = Mode::Editing {
@@ -1524,7 +1600,8 @@ impl<B: Backend> Model<B> {
             return;
         };
         let Some(value) = chosen else {
-            self.status = "nothing matches".to_string();
+            let (ChoiceTarget::Replace(path) | ChoiceTarget::Append(path)) = &target;
+            self.reject(Some(path), "nothing matches");
             return;
         };
         match target {
@@ -1569,7 +1646,7 @@ impl<B: Backend> Model<B> {
     /// Leave the picker, writing nothing.
     pub fn choose_cancel(&mut self) {
         self.mode = Mode::Normal;
-        self.status = "choice cancelled".to_string();
+        self.say(NoticeKind::Done, None, "choice cancelled".to_string());
     }
 
     // ── editing ───────────────────────────────────────────────────────────────
@@ -1582,7 +1659,7 @@ impl<B: Backend> Model<B> {
             return;
         };
         if page::is_container(value) {
-            self.status = "can only edit scalar values".to_string();
+            self.reject(Some(&path), "can only edit scalar values");
             return;
         }
         let seed = tree::edit_seed(value);
@@ -1620,7 +1697,7 @@ impl<B: Backend> Model<B> {
         let seed = match read {
             Ok(text) => text.unwrap_or_default(),
             Err(e) => {
-                self.status = format!("rejected: {e}");
+                self.reject(Some(&path), format!("rejected: {e}"));
                 return;
             }
         };
@@ -1645,7 +1722,7 @@ impl<B: Backend> Model<B> {
 
     pub fn edit_cancel(&mut self) {
         self.mode = Mode::Normal;
-        self.status = "edit cancelled".to_string();
+        self.say(NoticeKind::Done, None, "edit cancelled".to_string());
     }
 
     pub fn edit_commit(&mut self) {
@@ -1681,7 +1758,9 @@ impl<B: Backend> Model<B> {
             }
             // Unlike a comment, an empty item is a value — `""` — and not
             // what anyone pressing Enter on an empty line meant to add.
-            EditSlot::NewItem if buffer.is_empty() => self.status = "nothing added".to_string(),
+            EditSlot::NewItem if buffer.is_empty() => {
+                self.say(NoticeKind::Done, Some(&path), "nothing added".to_string())
+            }
             EditSlot::NewItem => self.add_item(&path, |m, at| m.append_item_text(at, &buffer)),
         }
     }
@@ -1794,7 +1873,7 @@ impl<B: Backend> Model<B> {
                     "renamed",
                 );
             }
-            _ => self.status = "only mapping keys can be renamed".to_string(),
+            _ => self.reject(Some(path), "only mapping keys can be renamed"),
         }
     }
 
@@ -1880,7 +1959,7 @@ impl<B: Backend> Model<B> {
             return;
         };
         let Some(last) = path.last().cloned() else {
-            self.status = "cannot move the document root".to_string();
+            self.reject(Some(&path), "cannot move the document root");
             return;
         };
         let parent = path[..path.len() - 1].to_vec();
@@ -1889,7 +1968,7 @@ impl<B: Backend> Model<B> {
                 let len = self.seq_len(&parent);
                 let to = i as isize + delta;
                 if to < 0 || to as usize >= len {
-                    self.status = "already at the edge".to_string();
+                    self.reject(Some(&path), "already at the edge");
                     return;
                 }
                 let to = to as usize;
@@ -1912,7 +1991,7 @@ impl<B: Backend> Model<B> {
                 };
                 let target = pos as isize + delta;
                 if target < 0 || target as usize >= keys.len() {
-                    self.status = "already at the edge".to_string();
+                    self.reject(Some(&path), "already at the edge");
                     return;
                 }
                 let mut order = keys;
@@ -1968,7 +2047,7 @@ impl<B: Backend> Model<B> {
                 path[..path.len() - 1].to_vec(),
             ),
             None => {
-                self.status = "cannot delete the document root".to_string();
+                self.reject(Some(&path), "cannot delete the document root");
                 return;
             }
         };
@@ -1984,10 +2063,12 @@ impl<B: Backend> Model<B> {
         // A workspace-maintained field declines every mutation, not just a value
         // edit: renaming or deleting one would be undone on the next write just
         // as surely as retyping it.
+        let subject = op_subject(&op, &anchor);
         if let Some(key) = op_root_key(&op)
             && self.derived.contains(key)
         {
-            self.status = format!("rejected: `{key}` is maintained by the workspace");
+            let status = format!("rejected: `{key}` is maintained by the workspace");
+            self.reject(Some(&subject), status);
             return;
         }
         let mut warn: Option<Issue> = None;
@@ -1996,7 +2077,7 @@ impl<B: Backend> Model<B> {
         {
             match rule.validate(value) {
                 Validation::Reject(why) => {
-                    self.status = format!("rejected: {why}");
+                    self.reject(Some(&subject), format!("rejected: {why}"));
                     return;
                 }
                 Validation::Warn(why) => warn = Some(why),
@@ -2033,11 +2114,11 @@ impl<B: Backend> Model<B> {
                 self.after_edit(&anchor, msg, ids);
                 // A soft-warn overrides the success status so the user sees it.
                 if let Some(why) = warn {
-                    self.status = why.to_string();
+                    self.say(NoticeKind::Warning, Some(&subject), why.to_string());
                 }
             }
             // The backend rolled back / declined; the document is untouched.
-            Err(e) => self.status = format!("rejected: {e}"),
+            Err(e) => self.reject(Some(&subject), format!("rejected: {e}")),
         }
     }
 
@@ -2088,11 +2169,12 @@ impl<B: Backend> Model<B> {
     /// [`edit_seq`](Self::edit_seq) around the call.
     pub fn undo(&mut self) -> bool {
         let Some(change) = self.undo_stack.pop() else {
-            self.status = "nothing to undo".to_string();
+            self.reject(None, "nothing to undo");
             return false;
         };
         if let Some(key) = self.managed_key_of(&change.inverse) {
-            self.status = format!("rejected: `{key}` is maintained by the workspace");
+            let status = format!("rejected: `{key}` is maintained by the workspace");
+            self.reject(Some(&change.anchor), status);
             self.undo_stack.push(change);
             return false;
         }
@@ -2107,7 +2189,7 @@ impl<B: Backend> Model<B> {
                 true
             }
             Err(e) => {
-                self.status = format!("rejected: {e}");
+                self.reject(Some(&change.anchor), format!("rejected: {e}"));
                 self.undo_stack.push(change);
                 false
             }
@@ -2119,11 +2201,12 @@ impl<B: Backend> Model<B> {
     /// moved, as [`undo`](Self::undo) does.
     pub fn redo(&mut self) -> bool {
         let Some(change) = self.redo_stack.pop() else {
-            self.status = "nothing to redo".to_string();
+            self.reject(None, "nothing to redo");
             return false;
         };
         if let Some(key) = self.managed_key_of(std::slice::from_ref(&change.forward)) {
-            self.status = format!("rejected: `{key}` is maintained by the workspace");
+            let status = format!("rejected: `{key}` is maintained by the workspace");
+            self.reject(Some(&change.anchor), status);
             self.redo_stack.push(change);
             return false;
         }
@@ -2138,7 +2221,7 @@ impl<B: Backend> Model<B> {
                 true
             }
             Err(e) => {
-                self.status = format!("rejected: {e}");
+                self.reject(Some(&change.anchor), format!("rejected: {e}"));
                 self.redo_stack.push(change);
                 false
             }
@@ -2332,14 +2415,20 @@ impl<B: Backend> Model<B> {
     /// selection, mark dirty, set the status line.
     fn after_edit(&mut self, anchor: &[Seg], msg: &str, ids: Identities) {
         if let Err(e) = self.reload_keeping(Some(ids)) {
-            self.status = format!("view refresh failed: {e}");
+            // The edit landed; it is the view of it that did not, so this is
+            // a warning about the document rather than a refusal of the edit.
+            self.say(
+                NoticeKind::Warning,
+                None,
+                format!("view refresh failed: {e}"),
+            );
             return;
         }
         self.select_path(anchor);
         // Derived from the bytes, not set: undoing back to what was saved is
         // a clean document, and no journal depth can say that for itself.
         self.dirty = self.source_snapshot() != self.saved_source;
-        self.status = msg.to_string();
+        self.say(NoticeKind::Done, Some(anchor), msg.to_string());
     }
 }
 
@@ -2376,6 +2465,32 @@ fn op_root_key(op: &EditOp) -> Option<&str> {
         },
         // Reordering the root's own keys moves no field's value.
         EditOp::ReorderKeys { map_path, .. } => first_key(map_path),
+    }
+}
+
+/// The node an edit is *about*, for a notice to point at: the entry it changes,
+/// removes, renames or moves — not the container it lands in. A key reorder
+/// names only the new order, so its subject is the anchor the caller kept on
+/// the key that moved.
+fn op_subject(op: &EditOp, anchor: &[Seg]) -> Vec<Seg> {
+    fn child(parent: &[Seg], seg: Seg) -> Vec<Seg> {
+        let mut p = parent.to_vec();
+        p.push(seg);
+        p
+    }
+    match op {
+        EditOp::ReplaceValue { path, .. }
+        | EditOp::DeleteKey { path }
+        | EditOp::RenameKey { path, .. }
+        | EditOp::SetLeadingComment { path, .. }
+        | EditOp::SetTrailingComment { path, .. } => path.clone(),
+        EditOp::RemoveItem { seq_path, index } => child(seq_path, Seg::Index(*index)),
+        EditOp::MoveItem { seq_path, from, .. } => child(seq_path, Seg::Index(*from)),
+        EditOp::InsertKey { map_path, key, .. } => child(map_path, Seg::Key(key.clone())),
+        // A new item has no index until it lands; the list it was for is
+        // what a refusal can point at.
+        EditOp::AppendItem { seq_path, .. } => seq_path.clone(),
+        EditOp::ReorderKeys { .. } => anchor.to_vec(),
     }
 }
 
@@ -4575,5 +4690,49 @@ b = 2
         model.focus_on(&[Seg::Key("title".into())]);
         model.undo();
         assert_eq!(model.selected_path().as_deref(), Some(&port[..]));
+    }
+
+    /// Every status comes with a notice that says it structurally: a refusal
+    /// names the node it refused and drops the `rejected: ` prefix, news names
+    /// where it happened, and each one counts up so the same refusal twice is
+    /// two notices.
+    #[test]
+    fn a_status_comes_with_a_notice_about_its_node() {
+        let backend = FigBackend::open(b"status = \"active\"\ntitle = \"a note\"\n", Format::Toml)
+            .expect("open");
+        let mut model = Model::new(backend).expect("model");
+        model.set_schema(status_schema());
+        assert!(model.notice.is_none());
+
+        let status = [Seg::Key("status".into())];
+        model.set_scalar_text(&status, "bogus");
+        let notice = model.notice.clone().expect("a notice");
+        assert!(model.status.starts_with("rejected: "), "{}", model.status);
+        assert_eq!(notice.kind, NoticeKind::Rejected);
+        assert_eq!(notice.path.as_deref(), Some(&status[..]));
+        assert_eq!(
+            Some(notice.message.as_str()),
+            model.status.strip_prefix("rejected: ")
+        );
+
+        model.set_scalar_text(&status, "bogus");
+        assert_eq!(model.notice.as_ref().map(|n| n.seq), Some(notice.seq + 1));
+
+        let title = [Seg::Key("title".into())];
+        model.set_scalar_text(&title, "another");
+        let notice = model.notice.clone().expect("a notice");
+        assert_eq!(notice.kind, NoticeKind::Done);
+        assert_eq!(notice.path.as_deref(), Some(&title[..]));
+
+        model.focus_on(&status);
+        model.move_selected_up();
+        let notice = model.notice.clone().expect("a notice");
+        assert_eq!(model.status, "already at the edge");
+        assert_eq!(notice.kind, NoticeKind::Rejected);
+        assert_eq!(notice.path.as_deref(), Some(&status[..]));
+
+        model.set_status("saved");
+        let notice = model.notice.clone().expect("a notice");
+        assert_eq!((notice.kind, notice.path), (NoticeKind::Done, None));
     }
 }

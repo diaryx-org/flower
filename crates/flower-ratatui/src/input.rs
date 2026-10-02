@@ -85,7 +85,7 @@ fn normal<B: Backend>(model: &mut Model<B>, code: KeyCode) -> Outcome {
         KeyCode::Char('a') | KeyCode::Char('A') => match model.append_target() {
             Some(seq) if code == KeyCode::Char('a') => model.begin_choose_append(&seq),
             Some(seq) => model.begin_append(&seq),
-            None => model.set_status("nothing here takes a new item — add to a list"),
+            None => model.reject(None, "nothing here takes a new item — add to a list"),
         },
         KeyCode::Char('c') => model.begin_edit_trailing_comment(),
         KeyCode::Char('C') => model.begin_edit_leading_comment(),

@@ -78,7 +78,8 @@ use flower_core::annotate::Severity;
 use flower_core::page::{self, InlineBudget, Page, PageItem};
 use flower_core::schema::FieldRuleExt;
 use flower_core::{
-    Annotation, Backend, Choice, FigBackend, ItemKind, Model, Seg, VKind, ViewMode, tree,
+    Annotation, Backend, Choice, FigBackend, ItemKind, Model, NoticeKind, Seg, VKind, ViewMode,
+    tree,
 };
 
 uniffi::setup_scaffolding!();
@@ -139,12 +140,45 @@ pub struct DocView {
     pub dirty: bool,
     /// The model's one-line status message (last action, or a rejected edit).
     pub status: String,
+    /// The same, said structurally — see [`NoticeView`].
+    pub notice: Option<NoticeView>,
     /// The document root's kind — `"map"`, `"seq"`, or `"scalar"` — so a frontend
     /// knows whether a top-level "add" inserts a key or appends an item.
     pub root_kind: String,
     /// How many top-level keys are hidden (managed by an embedder). Lets a
     /// frontend show a "N managed fields" affordance.
     pub hidden_count: u32,
+}
+
+/// The last status, with what a windowed host needs to place it: whether it
+/// was a refusal, and which row it is about.
+#[derive(uniffi::Record)]
+pub struct NoticeView {
+    /// `"done"`, `"warning"` or `"rejected"`. Done is news the screen already
+    /// shows ("moved"); rejected means the document is untouched.
+    pub kind: String,
+    /// The dotted id of the node it is about, the same id rows carry. `None`
+    /// for one about no node in particular.
+    pub id: Option<String>,
+    /// The words, without the `rejected: ` prefix `status` carries.
+    pub message: String,
+    /// Goes up with every notice, so the same refusal twice reads as twice.
+    pub seq: u64,
+}
+
+/// The model's notice as a record.
+pub fn notice_of<B: Backend>(model: &Model<B>) -> Option<NoticeView> {
+    model.notice.as_ref().map(|n| NoticeView {
+        kind: match n.kind {
+            NoticeKind::Done => "done",
+            NoticeKind::Warning => "warning",
+            NoticeKind::Rejected => "rejected",
+        }
+        .to_string(),
+        id: n.path.as_deref().map(path_id),
+        message: n.message.clone(),
+        seq: n.seq,
+    })
 }
 
 // ── the page projection ──────────────────────────────────────────────────────
@@ -321,6 +355,9 @@ pub struct PagesView {
     pub two_pane: bool,
     pub dirty: bool,
     pub status: String,
+    /// [`status`](Self::status), said so a host can put it somewhere better
+    /// than a status line — see [`NoticeView`].
+    pub notice: Option<NoticeView>,
     pub root_kind: String,
     pub hidden_count: u32,
     /// How many edits are on the undo journal, and how many undone edits can
@@ -496,7 +533,8 @@ impl FlowerDoc {
                 let path = row.path.clone();
                 m.set_scalar_text(&path, &text);
             } else {
-                m.set_status("can only edit scalar values");
+                let path = row.path.clone();
+                m.reject(Some(&path), "can only edit scalar values");
             }
         }
         view_of(&m)
@@ -521,7 +559,7 @@ impl FlowerDoc {
         select_index(&mut m, index);
         match m.rows.get(m.selected()).map(|r| (r.vkind, r.path.clone())) {
             Some((VKind::Map, path)) => m.insert_key_text(&path, &key, &text),
-            Some(_) => m.set_status("select a mapping to add a key"),
+            Some((_, path)) => m.reject(Some(&path), "select a mapping to add a key"),
             None => {}
         }
         view_of(&m)
@@ -535,7 +573,7 @@ impl FlowerDoc {
         select_index(&mut m, index);
         match m.rows.get(m.selected()).map(|r| (r.vkind, r.path.clone())) {
             Some((VKind::Seq, path)) => m.append_item_text(&path, &text),
-            Some(_) => m.set_status("select a sequence to add an item"),
+            Some((_, path)) => m.reject(Some(&path), "select a sequence to add an item"),
             None => {}
         }
         view_of(&m)
@@ -1061,6 +1099,7 @@ pub fn view_of<B: Backend>(model: &Model<B>) -> DocView {
         selected: model.selected() as u32,
         dirty: model.dirty,
         status: model.status.clone(),
+        notice: notice_of(model),
         root_kind: model.root_kind().to_string(),
         hidden_count: model.hidden_present() as u32,
     }
@@ -1119,6 +1158,7 @@ pub fn pages_of<B: Backend>(model: &Model<B>) -> PagesView {
         two_pane: !model.pages_would_degenerate(),
         dirty: model.dirty,
         status: model.status.clone(),
+        notice: notice_of(model),
         root_kind: model.root_kind().to_string(),
         hidden_count: model.hidden_present() as u32,
         undo_depth: model.history_len() as u32,

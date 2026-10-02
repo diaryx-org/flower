@@ -1935,6 +1935,10 @@ public struct DocView: Equatable, Hashable {
      */
     public var status: String
     /**
+     * The same, said structurally — see [`NoticeView`].
+     */
+    public var notice: NoticeView?
+    /**
      * The document root's kind — `"map"`, `"seq"`, or `"scalar"` — so a frontend
      * knows whether a top-level "add" inserts a key or appends an item.
      */
@@ -1959,6 +1963,9 @@ public struct DocView: Equatable, Hashable {
          * The model's one-line status message (last action, or a rejected edit).
          */status: String, 
         /**
+         * The same, said structurally — see [`NoticeView`].
+         */notice: NoticeView?, 
+        /**
          * The document root's kind — `"map"`, `"seq"`, or `"scalar"` — so a frontend
          * knows whether a top-level "add" inserts a key or appends an item.
          */rootKind: String, 
@@ -1970,6 +1977,7 @@ public struct DocView: Equatable, Hashable {
         self.selected = selected
         self.dirty = dirty
         self.status = status
+        self.notice = notice
         self.rootKind = rootKind
         self.hiddenCount = hiddenCount
     }
@@ -1994,6 +2002,7 @@ public struct FfiConverterTypeDocView: FfiConverterRustBuffer {
                 selected: FfiConverterUInt32.read(from: &buf), 
                 dirty: FfiConverterBool.read(from: &buf), 
                 status: FfiConverterString.read(from: &buf), 
+                notice: FfiConverterOptionTypeNoticeView.read(from: &buf), 
                 rootKind: FfiConverterString.read(from: &buf), 
                 hiddenCount: FfiConverterUInt32.read(from: &buf)
         )
@@ -2004,6 +2013,7 @@ public struct FfiConverterTypeDocView: FfiConverterRustBuffer {
         FfiConverterUInt32.write(value.selected, into: &buf)
         FfiConverterBool.write(value.dirty, into: &buf)
         FfiConverterString.write(value.status, into: &buf)
+        FfiConverterOptionTypeNoticeView.write(value.notice, into: &buf)
         FfiConverterString.write(value.rootKind, into: &buf)
         FfiConverterUInt32.write(value.hiddenCount, into: &buf)
     }
@@ -2022,6 +2032,100 @@ public func FfiConverterTypeDocView_lift(_ buf: RustBuffer) throws -> DocView {
 #endif
 public func FfiConverterTypeDocView_lower(_ value: DocView) -> RustBuffer {
     return FfiConverterTypeDocView.lower(value)
+}
+
+
+/**
+ * The last status, with what a windowed host needs to place it: whether it
+ * was a refusal, and which row it is about.
+ */
+public struct NoticeView: Equatable, Hashable {
+    /**
+     * `"done"`, `"warning"` or `"rejected"`. Done is news the screen already
+     * shows ("moved"); rejected means the document is untouched.
+     */
+    public var kind: String
+    /**
+     * The dotted id of the node it is about, the same id rows carry. `None`
+     * for one about no node in particular.
+     */
+    public var id: String?
+    /**
+     * The words, without the `rejected: ` prefix `status` carries.
+     */
+    public var message: String
+    /**
+     * Goes up with every notice, so the same refusal twice reads as twice.
+     */
+    public var seq: UInt64
+
+    // Default memberwise initializers are never public by default, so we
+    // declare one manually.
+    public init(
+        /**
+         * `"done"`, `"warning"` or `"rejected"`. Done is news the screen already
+         * shows ("moved"); rejected means the document is untouched.
+         */kind: String, 
+        /**
+         * The dotted id of the node it is about, the same id rows carry. `None`
+         * for one about no node in particular.
+         */id: String?, 
+        /**
+         * The words, without the `rejected: ` prefix `status` carries.
+         */message: String, 
+        /**
+         * Goes up with every notice, so the same refusal twice reads as twice.
+         */seq: UInt64) {
+        self.kind = kind
+        self.id = id
+        self.message = message
+        self.seq = seq
+    }
+
+    
+
+    
+}
+
+#if compiler(>=6)
+extension NoticeView: Sendable {}
+#endif
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public struct FfiConverterTypeNoticeView: FfiConverterRustBuffer {
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> NoticeView {
+        return
+            try NoticeView(
+                kind: FfiConverterString.read(from: &buf), 
+                id: FfiConverterOptionString.read(from: &buf), 
+                message: FfiConverterString.read(from: &buf), 
+                seq: FfiConverterUInt64.read(from: &buf)
+        )
+    }
+
+    public static func write(_ value: NoticeView, into buf: inout [UInt8]) {
+        FfiConverterString.write(value.kind, into: &buf)
+        FfiConverterOptionString.write(value.id, into: &buf)
+        FfiConverterString.write(value.message, into: &buf)
+        FfiConverterUInt64.write(value.seq, into: &buf)
+    }
+}
+
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNoticeView_lift(_ buf: RustBuffer) throws -> NoticeView {
+    return try FfiConverterTypeNoticeView.lift(buf)
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+public func FfiConverterTypeNoticeView_lower(_ value: NoticeView) -> RustBuffer {
+    return FfiConverterTypeNoticeView.lower(value)
 }
 
 
@@ -2489,6 +2593,11 @@ public struct PagesView: Equatable, Hashable {
     public var twoPane: Bool
     public var dirty: Bool
     public var status: String
+    /**
+     * [`status`](Self::status), said so a host can put it somewhere better
+     * than a status line — see [`NoticeView`].
+     */
+    public var notice: NoticeView?
     public var rootKind: String
     public var hiddenCount: UInt32
     /**
@@ -2523,7 +2632,11 @@ public struct PagesView: Equatable, Hashable {
          * Whether a two-pane layout is worth drawing at all: false for a document
          * whose root has nothing to drill into, where the second pane would cost half
          * the width and show nothing.
-         */twoPane: Bool, dirty: Bool, status: String, rootKind: String, hiddenCount: UInt32, 
+         */twoPane: Bool, dirty: Bool, status: String, 
+        /**
+         * [`status`](Self::status), said so a host can put it somewhere better
+         * than a status line — see [`NoticeView`].
+         */notice: NoticeView?, rootKind: String, hiddenCount: UInt32, 
         /**
          * How many edits are on the undo journal, and how many undone edits can
          * be replayed — what a host enables its Undo and Redo controls from.
@@ -2539,6 +2652,7 @@ public struct PagesView: Equatable, Hashable {
         self.twoPane = twoPane
         self.dirty = dirty
         self.status = status
+        self.notice = notice
         self.rootKind = rootKind
         self.hiddenCount = hiddenCount
         self.undoDepth = undoDepth
@@ -2568,6 +2682,7 @@ public struct FfiConverterTypePagesView: FfiConverterRustBuffer {
                 twoPane: FfiConverterBool.read(from: &buf), 
                 dirty: FfiConverterBool.read(from: &buf), 
                 status: FfiConverterString.read(from: &buf), 
+                notice: FfiConverterOptionTypeNoticeView.read(from: &buf), 
                 rootKind: FfiConverterString.read(from: &buf), 
                 hiddenCount: FfiConverterUInt32.read(from: &buf), 
                 undoDepth: FfiConverterUInt32.read(from: &buf), 
@@ -2583,6 +2698,7 @@ public struct FfiConverterTypePagesView: FfiConverterRustBuffer {
         FfiConverterBool.write(value.twoPane, into: &buf)
         FfiConverterBool.write(value.dirty, into: &buf)
         FfiConverterString.write(value.status, into: &buf)
+        FfiConverterOptionTypeNoticeView.write(value.notice, into: &buf)
         FfiConverterString.write(value.rootKind, into: &buf)
         FfiConverterUInt32.write(value.hiddenCount, into: &buf)
         FfiConverterUInt32.write(value.undoDepth, into: &buf)
@@ -2891,6 +3007,30 @@ fileprivate struct FfiConverterOptionString: FfiConverterRustBuffer {
         switch try readInt(&buf) as Int8 {
         case 0: return nil
         case 1: return try FfiConverterString.read(from: &buf)
+        default: throw UniffiInternalError.unexpectedOptionalTag
+        }
+    }
+}
+
+#if swift(>=5.8)
+@_documentation(visibility: private)
+#endif
+fileprivate struct FfiConverterOptionTypeNoticeView: FfiConverterRustBuffer {
+    typealias SwiftType = NoticeView?
+
+    public static func write(_ value: SwiftType, into buf: inout [UInt8]) {
+        guard let value = value else {
+            writeInt(&buf, Int8(0))
+            return
+        }
+        writeInt(&buf, Int8(1))
+        FfiConverterTypeNoticeView.write(value, into: &buf)
+    }
+
+    public static func read(from buf: inout (data: Data, offset: Data.Index)) throws -> SwiftType {
+        switch try readInt(&buf) as Int8 {
+        case 0: return nil
+        case 1: return try FfiConverterTypeNoticeView.read(from: &buf)
         default: throw UniffiInternalError.unexpectedOptionalTag
         }
     }

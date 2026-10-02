@@ -43,6 +43,55 @@ _No commits since the last tag._
 
 <!-- git-cliff:end -->
 
+## v0.6.4 — 2026-10-01
+
+### Added
+
+- **flower-core** — mark the source a slow write read as saved, not the model ([`b2424a4`](https://github.com/diaryx-org/flower/commit/b2424a43ee447d986572643c1bd148aa2a36f635))
+- **flower-editor** — Flower is a standalone document app, like leaf and thorn ([`7b0ea59`](https://github.com/diaryx-org/flower/commit/7b0ea59be810499e2cf244a0e2a2d14025fab49b))
+- **xtask** — package a signed, notarised Flower.app in a .dmg ([`e6b358c`](https://github.com/diaryx-org/flower/commit/e6b358c774c666ec8fe47bd5302c447f32116a0e))
+- **flower-swift** — show chosen keys as written and quiet the page rows ([`b318896`](https://github.com/diaryx-org/flower/commit/b318896c510f8ac5f952c0327f0d4193b1015cb6))
+- **flower-swift** — a text value shows its field on hover, and is edited where it sits ([`94177ea`](https://github.com/diaryx-org/flower/commit/94177eac8d9ed8bc1eecc50c2a177c07511749a3))
+- **flower-editor** — drop the usage hints, and show the status bar only when it has something to say ([`cc96479`](https://github.com/diaryx-org/flower/commit/cc9647933b6a6c1efc40b478bede95dde0541978))
+- **flower-swift** — drag a row onto a sibling to reorder it ([`aa436f9`](https://github.com/diaryx-org/flower/commit/aa436f9a64eed7c1afb1a23edf2fd23fe7583e9f))
+- **flower-editor** — reorder from the Edit menu, not toolbar arrows ([`7d21ff7`](https://github.com/diaryx-org/flower/commit/7d21ff7339828403836ac39a6c8f01045cffe863))
+- **flower-core** — say each status as a notice - its kind, its node, its words ([`de448ba`](https://github.com/diaryx-org/flower/commit/de448bab8fd8906604940182a8f1417147602a6d))
+- **flower-swift** — draw a refusal under the row it refused, and beep ([`7effc8d`](https://github.com/diaryx-org/flower/commit/7effc8d1e83162199c8da457004feb444776fa20))
+- **flower-editor** — no status bar; Move Up and Down stop at the ends ([`768780b`](https://github.com/diaryx-org/flower/commit/768780b9d7762e4d98d211916bcad2b2db486959))
+
+### Fixed
+
+- **flower-swift** — give a row's notice a line of its own, under the name and value ([`f809489`](https://github.com/diaryx-org/flower/commit/f8094896859bdc7816e38c8c5dd162b22797776b))
+
+### Behavioural changes
+
+- the app's bundle id is org.diaryx.flower and its product is Flower.app, not dev.flower.editor / FlowerEditorApp.app; it opens files rather than showing the note.yaml and ci.yaml samples.
+
+- CI has a new required check, "App version".
+
+- prettify("devDependencies") is "Dev Dependencies" rather than "Devdependencies", and a key with characters outside letters, digits, `_`, `-` and `.` is returned unchanged.
+
+- FlowerPages shows the keys of a nested map of plain strings verbatim, hides icon tiles in a card where none is distinctive, and draws string values in .secondary rather than .green.
+
+- FlowerPalette.inferredIcon matches key words instead of substrings, so keys such as `import`, `support` or `spinner` fall back to their kind's icon.
+
+- FlowerPages draws a text value inside a rounded field - on hover on macOS, always on iOS - and edits it in a plain trailing-aligned field that fills the row's free width instead of a 150pt rounded-border one.
+
+- the window no longer has a permanent footer; the status line appears under the pages only while flower-core's status is non-empty.
+
+- FlowerPages rows on the page being edited can be dragged, and dropping one on a sibling sends moveItem(_:by:) - by default a run of moveItemUp/moveItemDown calls.
+
+- the toolbar no longer has Move Up / Move Down buttons; the Edit menu has Move Up (⌥⌘↑) and Move Down (⌥⌘↓) instead.
+
+- PagesView and DocView gain a `notice` field, and Model gains a public `notice` field and a `reject` method; FFI refusals ("select a mapping to add a key", ...) now arrive as rejected notices naming their row.
+
+- a value edit that is refused now leaves FlowerModel.editingId set and editBuffer holding the typed text, instead of closing the field.
+
+- FlowerPages beeps (macOS) or plays the error haptic (iOS) on every rejected notice.
+
+- the window no longer shows a status line at all.
+
+
 ## v0.6.3 — 2026-09-28
 
 ### Breaking

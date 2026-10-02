@@ -81,7 +81,7 @@ targets:
         PRODUCT_NAME: Flower
         # The workspace version, written here by `cargo xtask sync-versions`
         # as part of a release bump.
-        MARKETING_VERSION: "0.6.3"
+        MARKETING_VERSION: "0.6.4"
         CURRENT_PROJECT_VERSION: "1"
         # Per-key values (incl. iOS-only ones) come from INFOPLIST_KEY_* below,
         # SDK-conditional where they differ, and merge into App/Info.plist.

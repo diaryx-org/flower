@@ -357,7 +357,7 @@ checksum = "a8fd353bad024b44f3171dd41226d9bd713b2d36a31346a8d75413354b354b08"
 
 [[package]]
 name = "flower-core"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "anyhow",
  "fig",
@@ -366,7 +366,7 @@ dependencies = [
 
 [[package]]
 name = "flower-ffi"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "fig",
  "flower-core",
@@ -376,7 +376,7 @@ dependencies = [
 
 [[package]]
 name = "flower-ratatui"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "fig",
  "flower-core",
@@ -385,7 +385,7 @@ dependencies = [
 
 [[package]]
 name = "flower-tui"
-version = "0.6.3"
+version = "0.6.4"
 dependencies = [
  "anyhow",
  "fig",

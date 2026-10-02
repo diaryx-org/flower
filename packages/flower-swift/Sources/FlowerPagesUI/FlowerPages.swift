@@ -952,6 +952,8 @@ private struct PageRow<Model: PageDriving>: View {
     let showsTile: Bool
     @FocusState private var focused: Bool
     @FocusState private var keyFocused: Bool
+    /// The pointer is over the row, which is where a click starts an edit.
+    @State private var hovering = false
 
     private var isEditing: Bool { model.editingId == item.id }
     private var isRenaming: Bool { model.renamingId == item.id }
@@ -1015,6 +1017,7 @@ private struct PageRow<Model: PageDriving>: View {
         .frame(minHeight: 44)
         .background(selected ? Color.accentColor.opacity(0.12) : Color.clear)
         .contentShape(Rectangle())
+        .onHover { hovering = $0 }
         .onTapGesture { model.pageActivate(item) }
         .contextMenu { PageRowMenu(item: item, model: model) }
     }
@@ -1164,9 +1167,10 @@ private struct PageRow<Model: PageDriving>: View {
         } else if isEditing {
             HStack(spacing: 6) {
                 TextField("value", text: $model.editBuffer)
-                    .textFieldStyle(.roundedBorder)
-                    .font(.system(size: 14, design: numeric ? .monospaced : .default))
-                    .frame(maxWidth: 150)
+                    .textFieldStyle(.plain)
+                    .multilineTextAlignment(.trailing)
+                    .font(.system(size: 15, design: valueDesign))
+                    .valueField(.editing)
                     .accessibilityLabel(rowAccessibilityLabel(item, verbatim: verbatimKey))
                     .focused($focused)
                     .onSubmit { model.commitEdit() }
@@ -1189,6 +1193,9 @@ private struct PageRow<Model: PageDriving>: View {
                                      ? Color.gray.opacity(0.8)
                                      : FlowerPalette.value(forKind: item.kind))
                     .lineLimit(1)
+                    .truncationMode(.middle)
+                    .valueField(hovering ? .hovered : .resting)
+                    .textCursorOnHover()
             }
         }
     }
@@ -1202,6 +1209,93 @@ private struct PageRow<Model: PageDriving>: View {
         let t = model.editBuffer.trimmingCharacters(in: .whitespaces)
         if let i = Int(t) { model.editBuffer = String(i + delta) }
         else if let d = Double(t) { model.editBuffer = String(d + Double(delta)) }
+    }
+}
+
+/// How a typed value's field shows itself.
+enum ValueFieldState {
+    /// Nothing is pointing at it.
+    case resting
+    /// A pointer is over its row, so a click would start typing.
+    case hovered
+    /// It is being typed in.
+    case editing
+}
+
+/// The one shape a text value has, at rest and while typed in, so that
+/// starting an edit lights the field up where the value already is instead of
+/// swapping in a box of some other size.
+///
+/// The field says it is editable the way the platform says so. A Mac shows it
+/// when the pointer arrives, as System Settings does, because a page of
+/// permanent boxes reads as a web form. Touch has no pointer to arrive, and a
+/// tap already starts the edit, so iOS keeps it showing — faintly — and lets an
+/// iPad pointer brighten it with the system hover effect.
+private struct ValueField: ViewModifier {
+    let state: ValueFieldState
+
+    private var fill: Double {
+        switch state {
+        case .editing: return 0.07
+        case .hovered: return 0.06
+        case .resting:
+            #if os(iOS)
+            return 0.04
+            #else
+            return 0
+            #endif
+        }
+    }
+
+    func body(content: Content) -> some View {
+        let shape = RoundedRectangle(cornerRadius: 6, style: .continuous)
+        content
+            .padding(.horizontal, 7)
+            .padding(.vertical, 3)
+            .background(shape.fill(Color.primary.opacity(fill)))
+            .overlay(shape.strokeBorder(Color.accentColor.opacity(state == .editing ? 0.7 : 0),
+                                        lineWidth: 1.5))
+            // The padding is the field's, not the row's: the text sits where
+            // the row's other values do, and the field grows out around it.
+            .padding(.horizontal, -7)
+            #if os(iOS)
+            .hoverEffect(.highlight)
+            #endif
+            .animation(.easeOut(duration: 0.12), value: state)
+    }
+}
+
+/// The text cursor over a value a click would start typing in — the pointer's
+/// half of saying "editable". Pushed and popped in pairs, and popped on the way
+/// out of the hierarchy too: a click swaps the value for its editor while the
+/// pointer is still inside, and the `onHover(false)` that would have balanced
+/// the push never comes.
+private struct TextCursorOnHover: ViewModifier {
+    @State private var pushed = false
+
+    func body(content: Content) -> some View {
+        #if os(macOS)
+        content
+            .onHover { inside in
+                if inside, !pushed { NSCursor.iBeam.push(); pushed = true }
+                else if !inside, pushed { NSCursor.pop(); pushed = false }
+            }
+            .onDisappear {
+                if pushed { NSCursor.pop(); pushed = false }
+            }
+        #else
+        content
+        #endif
+    }
+}
+
+extension View {
+    func valueField(_ state: ValueFieldState) -> some View {
+        modifier(ValueField(state: state))
+    }
+
+    func textCursorOnHover() -> some View {
+        modifier(TextCursorOnHover())
     }
 }
 
@@ -1250,9 +1344,10 @@ private struct ChoiceControl<Model: PageDriving>: View {
     var body: some View {
         if model.editingId == item.id {
             TextField("value", text: $model.editBuffer)
-                .textFieldStyle(.roundedBorder)
-                .font(.system(size: 14))
-                .frame(maxWidth: 150)
+                .textFieldStyle(.plain)
+                .multilineTextAlignment(.trailing)
+                .font(.system(size: 15))
+                .valueField(.editing)
                 .accessibilityLabel(item.displayTitle ?? prettify(item.label))
                 .focused($focused)
                 .onSubmit { model.commitEdit() }

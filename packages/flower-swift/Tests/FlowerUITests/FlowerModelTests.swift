@@ -54,7 +54,9 @@ final class FlowerModelTests: XCTestCase {
     /// reason is a notice on that row; cancelling the edit drops it. News is a
     /// notice too, but one the page has nothing to draw for.
     func testARefusedValueStaysOpenWithItsReasonBesideIt() throws {
-        let model = try makeModel()
+        // JSON has no infinity, so a number too large for a double is refused.
+        let model = try FlowerModel(source: "{\"name\": \"music\", \"version\": 1}\n", format: "json")
+        model.showPages()
         guard let version = item(model, "version") else { return XCTFail("no version row") }
         model.beginEdit(version)
         model.editBuffer = "1e999999"
@@ -63,7 +65,7 @@ final class FlowerModelTests: XCTestCase {
         XCTAssertEqual(model.editBuffer, "1e999999")
         XCTAssertEqual(model.notice?.kind, .rejected)
         XCTAssertEqual(model.notice?.id, "version")
-        XCTAssertFalse(model.notice?.message.hasPrefix("rejected") ?? true)
+        XCTAssertEqual(model.notice?.message, "JSON has no way to write an infinite number")
         XCTAssertTrue(model.notice?.shows(under: "version") ?? false)
         XCTAssertFalse(model.source().contains("1e999999"))
 

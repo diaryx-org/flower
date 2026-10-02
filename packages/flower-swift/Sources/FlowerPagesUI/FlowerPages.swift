@@ -143,6 +143,11 @@ public struct FlowerPages<Model: PageDriving>: View {
             }
         }
         .onAppear { model.showPages() }
+        // A refusal is felt as well as read — and is the only sign of one that
+        // has no row on screen to be drawn under, like "nothing to undo".
+        .onChange(of: model.notice?.seq) { _ in
+            if model.notice?.kind == .rejected { signalRefusal() }
+        }
     }
 
     // ── the narrow layout, for a host that owns navigation ────────────────────
@@ -1198,6 +1203,18 @@ private struct PageRow<Model: PageDriving>: View {
         } else {
             VStack(alignment: .leading, spacing: 1) {
                 nameLine
+                // What the last thing done to this row came to, when it was
+                // refused or came with a warning: said here, beside the value
+                // it is about, rather than in a bar the eye has to go and find.
+                if let notice = model.notice, notice.shows(under: item.id) {
+                    let mark = theme.marker(forSeverity: notice.kind == .rejected ? "error" : "warning")
+                    Label(notice.message, systemImage: mark.symbol)
+                        .font(.system(size: 11))
+                        .foregroundStyle(mark.color)
+                        .lineLimit(2)
+                        .help(notice.message)
+                        .accessibilityLabel(notice.message)
+                }
                 // What the host found about this row, when it found anything.
                 // Above the note, and in the severity's colour: a finding is
                 // about *this document as it stands*, where a description is
@@ -1592,6 +1609,19 @@ private struct PageRowMenu<Model: PageDriving>: View {
     /// escape beside it would offer to write the one thing the schema refuses.
     /// An open vocabulary keeps it — there, an unlisted value is legal, and the
     /// row's own "Other…" is this same intent.
+    /// Whether the row can move that way, judged on whichever pane lists it —
+    /// the page being edited, or the one it was opened from.
+    private func movable(by offset: Int) -> Bool {
+        let pages = model.pages
+        if pages.page.items.contains(where: { $0.id == item.id }) {
+            return canMove(item.id, by: offset, in: pages.page)
+        }
+        if let parent = pages.parent, parent.items.contains(where: { $0.id == item.id }) {
+            return canMove(item.id, by: offset, in: parent)
+        }
+        return true
+    }
+
     private var canTypeValue: Bool {
         item.role == "scalar" && !item.isReadonly && !item.isClosedEnum
     }
@@ -1622,7 +1652,9 @@ private struct PageRowMenu<Model: PageDriving>: View {
         if !item.isReadonly {
             Divider()
             Button("Move Up") { model.moveItemUp(item) }
+                .disabled(!movable(by: -1))
             Button("Move Down") { model.moveItemDown(item) }
+                .disabled(!movable(by: 1))
             Divider()
             Button("Delete", role: .destructive) { model.delete(item) }
         }
@@ -1736,6 +1768,15 @@ private struct PageChipsRow<Model: PageDriving>: View {
             .foregroundStyle(Color.accentColor)
         }
     }
+}
+
+/// The platform's "no": the alert sound on a Mac, the error haptic on a phone.
+func signalRefusal() {
+    #if os(macOS)
+    NSSound.beep()
+    #elseif os(iOS)
+    UINotificationFeedbackGenerator().notificationOccurred(.error)
+    #endif
 }
 
 // ── A minimal wrapping HStack for chips ───────────────────────────────────────

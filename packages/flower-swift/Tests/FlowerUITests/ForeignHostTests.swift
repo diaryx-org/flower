@@ -519,6 +519,39 @@ final class ForeignHostTests: XCTestCase {
         XCTAssertNil(offset("gone", "name"))
     }
 
+    /// Move Up is off on the first of a row's siblings and Move Down on the
+    /// last, judged among siblings — a section's members end where the
+    /// section does, not where the page does.
+    func testAMoveIsOfferedOnlyWhereThereIsRoom() {
+        let page = MetaPage(items: [
+            MetaItem(id: "name", label: "name"),
+            MetaItem(id: "scripts", label: "scripts", kind: "map", role: "group"),
+            MetaItem(id: "scripts.dev", label: "dev", depth: 1),
+            MetaItem(id: "scripts.build", label: "build", depth: 1),
+            MetaItem(id: "type", label: "type"),
+        ])
+        XCTAssertFalse(canMove("name", by: -1, in: page))
+        XCTAssertTrue(canMove("name", by: 1, in: page))
+        XCTAssertFalse(canMove("type", by: 1, in: page))
+        XCTAssertFalse(canMove("scripts.dev", by: -1, in: page))
+        XCTAssertTrue(canMove("scripts.dev", by: 1, in: page))
+        XCTAssertFalse(canMove("scripts.build", by: 1, in: page))
+        XCTAssertFalse(canMove("gone", by: 1, in: page))
+    }
+
+    /// Only refusals and warnings are drawn, and only under their own row.
+    func testANoticeIsDrawnOnlyUnderItsRowAndOnlyWhenItIsNotNews() {
+        let refused = PageNotice(kind: .rejected, id: "port", message: "no", seq: 1)
+        XCTAssertTrue(refused.shows(under: "port"))
+        XCTAssertFalse(refused.shows(under: "host"))
+        XCTAssertTrue(PageNotice(kind: .warning, id: "port", message: "hm", seq: 2).shows(under: "port"))
+        XCTAssertFalse(PageNotice(kind: .done, id: "port", message: "moved", seq: 3).shows(under: "port"))
+        XCTAssertFalse(PageNotice(kind: .rejected, id: nil, message: "nothing to undo", seq: 4)
+            .shows(under: "port"))
+        // A host that reports nothing has nothing drawn.
+        XCTAssertNil(MetaModel([]).notice)
+    }
+
     /// A drop several places away is that many single steps, each sent for
     /// the item as it is *now* — a sequence item's id is its index, so the
     /// record the drag began with names another item after the first step.

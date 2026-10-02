@@ -41,6 +41,14 @@ public final class FlowerModel: ObservableObject {
     /// The live buffer while a key is being renamed.
     @Published public var renameBuffer: String = ""
 
+    /// What the last command came to — see ``PageNotice``. Taken from each
+    /// frame as it arrives, and dropped when the reader walks away from it
+    /// (cancelling the edit it refused).
+    @Published public private(set) var notice: PageNotice?
+    /// The newest notice taken, so a frame that repeats it does not bring
+    /// back one that was dropped.
+    private var noticeSeen: UInt64 = 0
+
     let doc: FlowerDoc
 
     /// Parse `source` as `format` (`"toml"`, `"json"`, `"yaml"`, `"zon"`, `"fig"`, …).
@@ -119,14 +127,14 @@ public final class FlowerModel: ObservableObject {
 
     /// Put the cursor on `item` — a tap on a row, in any pane.
     public func pageSelect(_ item: PageItemView) {
-        if editingId != nil, editingId != item.id { commitEdit() }
+        if editingId != nil, editingId != item.id { commitEdit(keepOpenIfRefused: false) }
         apply(doc.pageSelect(id: item.id))
     }
 
     /// Open what `id` names as a page: a drill row, a row in the pane you came out
     /// of, or a breadcrumb. `""` is the document root.
     public func pageOpen(id: String) {
-        if editingId != nil { commitEdit() }
+        if editingId != nil { commitEdit(keepOpenIfRefused: false) }
         apply(doc.pageOpen(id: id))
     }
 
@@ -142,7 +150,7 @@ public final class FlowerModel: ObservableObject {
 
     /// Pop back to the page this one was opened from.
     public func pageBack() {
-        if editingId != nil { commitEdit() }
+        if editingId != nil { commitEdit(keepOpenIfRefused: false) }
         apply(doc.pageBack())
     }
 
@@ -154,7 +162,7 @@ public final class FlowerModel: ObservableObject {
     /// Open the scalar `item` for inline editing, seeded with its current text.
     public func beginEdit(_ item: PageItemView) {
         guard item.role == "scalar", editingId != item.id else { return }
-        if editingId != nil { commitEdit() }
+        if editingId != nil { commitEdit(keepOpenIfRefused: false) }
         apply(doc.pageSelect(id: item.id))
         editBuffer = item.preview
         editingId = item.id
@@ -162,13 +170,30 @@ public final class FlowerModel: ObservableObject {
 
     /// Commit the in-flight edit: parse the buffer by literal shape and splice it
     /// losslessly through fig.
+    ///
+    /// A refused value keeps its field open, holding what was typed, with the
+    /// reason under it: retyping a value to fix one character of it is the
+    /// cost a status bar used to charge.
     public func commitEdit() {
+        commitEdit(keepOpenIfRefused: true)
+    }
+
+    /// The commit that leaving a field makes — opening another row, another
+    /// page. The reader has moved on, so a refusal is said under the row and
+    /// the field closes.
+    private func commitEdit(keepOpenIfRefused: Bool) {
         guard let id = editingId else { return }
+        let text = editBuffer
         editingId = nil
-        apply(doc.pageSetValue(id: id, text: editBuffer))
+        apply(doc.pageSetValue(id: id, text: text))
+        if keepOpenIfRefused, let notice, notice.kind == .rejected, notice.id == id {
+            editBuffer = text
+            editingId = id
+        }
     }
 
     public func cancelEdit() {
+        if let id = editingId, notice?.id == id { notice = nil }
         editingId = nil
     }
 
@@ -363,6 +388,15 @@ public final class FlowerModel: ObservableObject {
     private func apply(_ view: PagesView) {
         lastMove = move(from: pages.page, to: view.page)
         pages = view
+        if let n = view.notice, n.seq > noticeSeen {
+            noticeSeen = n.seq
+            let kind: PageNotice.Kind = switch n.kind {
+            case "rejected": .rejected
+            case "warning": .warning
+            default: .done
+            }
+            notice = PageNotice(kind: kind, id: n.id, message: n.message, seq: n.seq)
+        }
     }
 
     /// How the page view got from `old` to `new`, by depth: the trail is the

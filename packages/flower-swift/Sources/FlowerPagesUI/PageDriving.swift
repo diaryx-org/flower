@@ -36,6 +36,10 @@ public protocol PageDriving: ObservableObject {
     var renameBuffer: String { get set }
     /// Whether there is anywhere to go back to.
     var canPageBack: Bool { get }
+    /// What the last intent came to, when it is worth showing: a refusal or a
+    /// warning, drawn under the row it names. Default `nil`, so a host that
+    /// reports nothing draws nothing.
+    var notice: PageNotice? { get }
 
     // ── what the view sends ───────────────────────────────────────────────────
 
@@ -133,6 +137,7 @@ public protocol PageDriving: ObservableObject {
 }
 
 public extension PageDriving {
+    var notice: PageNotice? { nil }
     func canAddChild(pageId: String) -> Bool { false }
     func addableChildren(of id: String) -> [AddableChild] { [] }
     func pageAddChild(id: String, key: String, value: String) { pageAddChild(id: id) }
@@ -194,4 +199,52 @@ public struct AddableChild: Identifiable {
         self.description = description
         self.terms = terms
     }
+}
+
+/// What an intent came to, said where it happened rather than in a status bar.
+///
+/// A refusal is drawn under the row it names and, being a refusal, beeps (or
+/// buzzes); a warning is drawn under its row too; news — "moved", "value
+/// updated" — is not drawn at all, because the row already shows it.
+public struct PageNotice: Equatable {
+    public enum Kind: Equatable {
+        /// It happened as asked. Nothing to draw.
+        case done
+        /// It happened, with a reservation worth reading.
+        case warning
+        /// It did not happen; the document is untouched.
+        case rejected
+    }
+
+    public let kind: Kind
+    /// The id of the row it is about, or `nil` for none in particular.
+    public let id: String?
+    public let message: String
+    /// Goes up with every notice, so the same refusal twice is two notices.
+    public let seq: UInt64
+
+    public init(kind: Kind, id: String?, message: String, seq: UInt64) {
+        self.kind = kind
+        self.id = id
+        self.message = message
+        self.seq = seq
+    }
+
+    /// Whether this is something to draw under the row `id`.
+    public func shows(under id: String) -> Bool {
+        kind != .done && self.id == id
+    }
+}
+
+/// Whether the row `id` can move `offset` places among its siblings on `page`
+/// — what disables Move Up on the first row and Move Down on the last, instead
+/// of offering a move that can only be refused. `false` for a row the page
+/// does not list.
+public func canMove<Page: PageDisplaying>(_ id: String, by offset: Int, in page: Page) -> Bool {
+    let items = page.items
+    let parents = parentIds(focus: page.focus, items: items)
+    guard let at = items.firstIndex(where: { $0.id == id }) else { return false }
+    let siblings = items.indices.filter { parents[$0] == parents[at] }
+    guard let position = siblings.firstIndex(of: at) else { return false }
+    return siblings.indices.contains(position + offset)
 }

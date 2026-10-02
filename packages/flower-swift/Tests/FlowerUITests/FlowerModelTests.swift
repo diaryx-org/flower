@@ -50,6 +50,35 @@ final class FlowerModelTests: XCTestCase {
         XCTAssertTrue(model.source().contains("title = \"flower\""), "sibling preserved")
     }
 
+    /// A refused value keeps its field open with what was typed, and the
+    /// reason is a notice on that row; cancelling the edit drops it. News is a
+    /// notice too, but one the page has nothing to draw for.
+    func testARefusedValueStaysOpenWithItsReasonBesideIt() throws {
+        let model = try makeModel()
+        guard let version = item(model, "version") else { return XCTFail("no version row") }
+        model.beginEdit(version)
+        model.editBuffer = "1e999999"
+        model.commitEdit()
+        XCTAssertEqual(model.editingId, "version")
+        XCTAssertEqual(model.editBuffer, "1e999999")
+        XCTAssertEqual(model.notice?.kind, .rejected)
+        XCTAssertEqual(model.notice?.id, "version")
+        XCTAssertFalse(model.notice?.message.hasPrefix("rejected") ?? true)
+        XCTAssertTrue(model.notice?.shows(under: "version") ?? false)
+        XCTAssertFalse(model.source().contains("1e999999"))
+
+        model.cancelEdit()
+        XCTAssertNil(model.editingId)
+        XCTAssertNil(model.notice)
+
+        model.beginEdit(version)
+        model.editBuffer = "2"
+        model.commitEdit()
+        XCTAssertNil(model.editingId)
+        XCTAssertEqual(model.notice?.kind, .done)
+        XCTAssertFalse(model.notice?.shows(under: "version") ?? true)
+    }
+
     func testMarkSavedClearsTheDirtyFlag() throws {
         let model = try makeModel()
         guard let version = item(model, "version") else {

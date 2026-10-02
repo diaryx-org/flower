@@ -1161,13 +1161,16 @@ private struct PageRow<Model: PageDriving>: View {
     }
 
     private var core: some View {
-        HStack(spacing: 12) {
-            if showsTile {
-                IconTile(label: item.label, kind: item.kind, icon: item.icon, tint: item.tint)
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(spacing: 12) {
+                if showsTile {
+                    IconTile(label: item.label, kind: item.kind, icon: item.icon, tint: item.tint)
+                }
+                name
+                Spacer(minLength: 8)
+                trailing
             }
-            name
-            Spacer(minLength: 8)
-            trailing
+            noticeLine
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 9)
@@ -1178,6 +1181,25 @@ private struct PageRow<Model: PageDriving>: View {
         .onHover { hovering = $0 }
         .onTapGesture { model.pageActivate(item) }
         .contextMenu { PageRowMenu(item: item, model: model) }
+    }
+
+    /// What the last thing done to this row came to, when it was refused or
+    /// came with a warning: said here, under the value it is about, rather than
+    /// in a bar the eye has to go and find. A line of its own across the row,
+    /// under the name — squeezed in beside the name, it would take the room
+    /// the field needs exactly when the field is open.
+    @ViewBuilder private var noticeLine: some View {
+        if let notice = model.notice, notice.shows(under: item.id) {
+            let mark = theme.marker(forSeverity: notice.kind == .rejected ? "error" : "warning")
+            Label(notice.message, systemImage: mark.symbol)
+                .font(.system(size: 12))
+                .foregroundStyle(mark.color)
+                .lineLimit(3)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.leading, showsTile ? 40 : 0)
+                .help(notice.message)
+                .accessibilityLabel(notice.message)
+        }
     }
 
     /// What names the row, and — where a schema said one — the sentence under it.
@@ -1203,18 +1225,6 @@ private struct PageRow<Model: PageDriving>: View {
         } else {
             VStack(alignment: .leading, spacing: 1) {
                 nameLine
-                // What the last thing done to this row came to, when it was
-                // refused or came with a warning: said here, beside the value
-                // it is about, rather than in a bar the eye has to go and find.
-                if let notice = model.notice, notice.shows(under: item.id) {
-                    let mark = theme.marker(forSeverity: notice.kind == .rejected ? "error" : "warning")
-                    Label(notice.message, systemImage: mark.symbol)
-                        .font(.system(size: 11))
-                        .foregroundStyle(mark.color)
-                        .lineLimit(2)
-                        .help(notice.message)
-                        .accessibilityLabel(notice.message)
-                }
                 // What the host found about this row, when it found anything.
                 // Above the note, and in the severity's colour: a finding is
                 // about *this document as it stands*, where a description is

@@ -24,7 +24,7 @@ readme = "README.md"
 
 [workspace.dependencies]
 # Zig-backed config AST + lossless editor.
-fig = "5"
+fig = "5.1.1"
 # The generic, prov-agnostic schema engine
 fig-schema = "0.4.0"
 ratatui = "0.29"

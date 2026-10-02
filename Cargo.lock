@@ -296,9 +296,9 @@ checksum = "da7c62ceae207dd37ea5b845da6a0696c799f85e97da1ab5b7910be3c1c80223"
 
 [[package]]
 name = "fig"
-version = "5.0.0"
+version = "5.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ef4a4bcf8186e7cc52ec1ed4e472cb77878692527ad91454b8457e51c7a19adf"
+checksum = "5d9ce714e9702e84ff7c501757438c1aa94cf6801a00f5ee08223b096b5013dd"
 dependencies = [
  "fig-sys",
 ]
@@ -314,9 +314,9 @@ dependencies = [
 
 [[package]]
 name = "fig-sys"
-version = "5.0.0"
+version = "5.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7fdc9aa1c7bebfd173577c331e8c53d4e2a5a01622d6b307b0f5464087f4ff3e"
+checksum = "f280717354e292fd44fee7e047a6182ce74a0558fcbcf1619d0ba32539739b45"
 dependencies = [
  "fig-sys-linux-arm64-gnu",
  "fig-sys-linux-x64-gnu",
@@ -327,33 +327,33 @@ dependencies = [
 
 [[package]]
 name = "fig-sys-linux-arm64-gnu"
-version = "5.0.0"
+version = "5.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2662f139818979bc4e2d67fd44e309b481fc80d74ab325da028eff3e4f6b4759"
+checksum = "6c50a4eef286648e269ffdbb5e99d15dd708359a538551d2e198e4b085e37b0c"
 
 [[package]]
 name = "fig-sys-linux-x64-gnu"
-version = "5.0.0"
+version = "5.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1f19c8849e66e88610b1c5fef33531dbefca7869f29328eeb6c3952de6642828"
+checksum = "1d44ba149d68800202f7a056bf73bf29558031d473e5cf086da24b609df723d8"
 
 [[package]]
 name = "fig-sys-macos-arm64"
-version = "5.0.0"
+version = "5.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bd566c2d89a42634ab1a9fa14da2aef648f64984532763b99b20a6d67b8ef087"
+checksum = "4d818b93d12dd595a74c450fcf89a9ee563d13009e8925139a0df5655a7e809c"
 
 [[package]]
 name = "fig-sys-wasm32"
-version = "5.0.0"
+version = "5.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3494d0a476225d8b5c37190051e24a4556121376a3f91c4edcd8b95e89ce9cee"
+checksum = "90ac99c81a031797999c19edbf73a75b4db8b7be757f05cf9394d23c4c4eb904"
 
 [[package]]
 name = "fig-sys-windows-x64-msvc"
-version = "5.0.0"
+version = "5.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "23c5ed649e0c9f18715893960ba6cc8f252615d40df349d28a3a817e50e29743"
+checksum = "e263fe86d720da8d046032eb8d3ad2d8de950fb92f9da74afa62ee4cb555ee1e"
 
 [[package]]
 name = "flower-core"

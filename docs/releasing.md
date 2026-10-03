@@ -5,7 +5,7 @@ release is therefore one command:
 
 ```console
 $ release release minor          # bump, changelog, commit, tag
-$ release release minor --push   # …and push, which publishes
+$ release release minor --push   # …and push, which ships the binaries
 ```
 
 `release` is the shared tooling in [diaryx-org/devtools][devtools], which
@@ -19,9 +19,22 @@ program.
 Everything below is what that command does, and what it deliberately refuses to
 do on its own.
 
-## What goes to crates.io
+## How flower reaches its consumers
 
-Three crates:
+From git, not crates.io; 0.6.4 was the last version uploaded there. provui and
+the Diaryx app name the crates they use the same way:
+
+```toml
+flower-core = { git = "https://github.com/diaryx-org/flower", branch = "main" }
+```
+
+and each one's `Cargo.lock` records the exact commit it builds, which `cargo
+update -p flower-core` moves. So a change reaches them once it is pushed to
+`main`, not once it is released. The spelling has to match everywhere: cargo
+tells sources apart by it, and one consumer on a `rev` while another is on
+`branch = "main"` is two flower-cores in one graph.
+
+The crates other repositories use are three:
 
 - **`flower-core`** — the frontend-neutral structural editing model.
 - **`flower-ratatui`** — the ratatui widget. `draw` and `handle_key` are the
@@ -35,38 +48,16 @@ Three crates:
   flat view records they build are generic over the `Backend`, and an embedder
   with a backend of its own (a prov document's embedded metadata, say) needs
   them. A UniFFI *object* cannot be generic, so the `FlowerDoc` handle stays
-  nailed to `FigBackend` — the projection is the reusable half, and the reason
-  this crate is on the registry. `leaf-ffi` is published for the same reason.
+  nailed to `FigBackend` — the projection is the reusable half. `leaf-ffi` is a
+  library for the same reason.
 
-**`flower-tui`** is `publish = false`: it is the prototype binary, run from a
-checkout (`cargo run -p flower-tui -- path/to/config.toml`).
-
-It still moves with the workspace version, and still appears in the changelog —
-publishing is the only thing it is out of. To publish it, delete its
-`publish = false`: `cargo publish --workspace` derives the list and the order
-from the manifests, so nothing else needs editing. That is all `flower-ratatui`
-took to join the list at 0.4.0.
-
-A crate that joins the list this way **cannot be published on its own at the
-version it joins at**. `cargo publish -p flower-ratatui` packages it with its
-`flower-core` path dependency swapped for the registry's copy at the pinned
-version, so the build sees whatever `flower-core` shipped last rather than the
-one beside it in the tree — and fails on anything added since. `cargo publish
---workspace` is the fix: it verifies each crate against the versions it is
-uploading alongside. So a new crate goes up with the release that bumps the
-workspace, never before it.
-
-**`flower-core` 0.1.0 is already on crates.io**, published by hand on
-2026-08-17 with no matching tag. It cannot be reused; releases start at 0.2.0,
-which is also where `flower-ffi` first uploads.
+**`flower-tui`** is the prototype binary, run from a checkout (`cargo run -p
+flower-tui -- path/to/config.toml`). It moves with the workspace version, and
+appears in the changelog.
 
 ## What a tag starts
 
-Pushing `vX.Y.Z` starts **`publish.yml`**, which runs `cargo publish
---workspace` and uploads every publishable crate, in dependency order. A
-crates.io version number can be yanked but never reused.
-
-The same tag starts **`homebrew.yml`**, which builds the TUI and points the
+Pushing `vX.Y.Z` starts **`homebrew.yml`**, which builds the TUI and points the
 tap's `flower` formula at it, and **`mac-app.yml`**, which runs `cargo xtask
 package` on a macOS runner — Flower.app signed for Developer ID, notarised and
 stapled, in a `.dmg` — attaches the image to the release, and points the tap's
@@ -77,17 +68,14 @@ for a release that already has its image.
 
 That is why `release` stops at the local tag unless it is given `--push`: every
 step before the push is a commit you can amend or throw away, and the push is the
-step that spends a version number. Without `--push` the command prints the two
+step that ships. Without `--push` the command prints the two
 `git push` lines it did not run, and the two-line undo.
 
 ## What `release` checks first
 
 `release release` refuses before it writes anything if the working tree is
 dirty, the branch is not `main`, `main` is behind `origin/main`, the tag
-already exists locally or on origin, git-cliff is not installed, or **any crate
-is already on crates.io at the target version**. That last one asks the registry
-rather than the tag list, because a crate can go up from a laptop without ever
-being tagged — the registry is the record of what has been spent.
+already exists locally or on origin, or git-cliff is not installed.
 
 Then it runs the whole of CI (`cargo xtask ci`), the same jobs the workflow runs.
 `--no-verify` skips that, and is for a release you have just watched go green.
@@ -101,23 +89,7 @@ Then it runs the whole of CI (`cargo xtask ci`), the same jobs the workflow runs
 | `release changelog` | print the generated region |
 | `release changelog --write` | splice it into `docs/CHANGELOG.md` |
 | `release changelog --check` | fail if that region is stale |
-| `cargo publish --workspace --dry-run` | the publish order, derived from the manifests |
-| `cargo publish --workspace` | publish every publishable crate |
 | `release release-notes [tag]` | that release's changelog section, as a GitHub release body |
-
-`cargo publish --workspace` has no way to skip a version already on the index,
-which the hand-rolled loop it replaced did. So a release that died halfway is
-finished by naming what already went up — `cargo publish --workspace --exclude
-flower-core` — and a re-run of a tag that fully published fails on its first
-crate rather than doing nothing.
-
-Auth is the `CARGO_REGISTRY_TOKEN` secret on the repo, as in fig, twig, moid, and
-prov. It needs `publish-update` for every release, and **`publish-new` for any
-release that adds a crate** — 0.4.0 adds `flower-ratatui`, and a token without
-it fails that upload with `403 … token is not valid for crate flower-ratatui`
-after `flower-core` has already gone up. Keep it unrestricted by crate: a token
-scoped to the crates that existed when it was minted cannot create the next
-one.
 
 ## The changelog
 

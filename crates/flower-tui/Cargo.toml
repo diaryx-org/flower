@@ -3,8 +3,8 @@ name = "flower-tui"
 edition.workspace = true
 version.workspace = true
 description = "Terminal app: a structural config editor on flower-core + flower-ratatui + fig."
-# Not on crates.io while flower is a prototype: the binary is `cargo run -p
-# flower-tui` from a checkout, and the published surface is `flower-core` alone.
+# Not on crates.io, like the rest of flower: the binary is `cargo run -p
+# flower-tui` from a checkout.
 publish = false
 
 [[bin]]

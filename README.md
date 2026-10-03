@@ -347,9 +347,12 @@ framework. The check compiles `FlowerPagesUI` first and alone, with no binding o
 the search path: the only way to keep a target FFI-free is to compile it
 somewhere an FFI import would not resolve.
 
-`flower-core`, `flower-ratatui`, and `flower-ffi` are on crates.io — the binding
-crate because its view projection is generic over the `Backend`, so an embedder
-with its own can render a `Model` without reimplementing it. `flower-tui` is
-`publish = false` and moves with the same version number. See
+`flower-core`, `flower-ratatui`, and `flower-ffi` are libraries for other
+repositories to use — the binding crate because its view projection is generic
+over the `Backend`, so an embedder with its own can render a `Model` without
+reimplementing it. None of them is on crates.io (0.6.4 was the last upload): a
+consumer names them from git, `{ git = "https://github.com/diaryx-org/flower",
+branch = "main" }`, and locks the commit it builds. `flower-tui` moves with the
+same version number. See
 [docs/releasing.md](docs/releasing.md) for how a release is cut and
 [docs/CHANGELOG.md](docs/CHANGELOG.md) for what has changed.

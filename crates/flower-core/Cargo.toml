@@ -1,5 +1,6 @@
 [package]
 name = "flower-core"
+publish = false
 edition.workspace = true
 version.workspace = true
 rust-version.workspace = true

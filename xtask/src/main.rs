@@ -350,8 +350,8 @@ fn usage() -> String {
 ///
 /// flower keeps its crates under `crates/`, so a member's path and its package
 /// name are two different strings — `crates/flower-core` is read, `flower-core`
-/// is what `cargo publish -p` and crates.io are asked about. Conflating them is
-/// how a publish ends up looking for a crate named after a directory.
+/// is what `cargo check -p` is asked about. Conflating them is how a job ends up
+/// looking for a crate named after a directory.
 struct Member {
     path: String,
     name: String,
@@ -566,32 +566,19 @@ mod tests {
     fn members_are_read_across_the_whole_array() {
         let found = members(&Sh::new()).unwrap();
         assert!(
-            found.iter().any(|m| m.path == "crates/flower-core"
-                && m.name == "flower-core"
-                && m.publishable)
-        );
-        // The binding crate publishes too: its view projection is generic over
-        // the backend, so an embedder with its own needs to depend on it.
-        assert!(
             found
                 .iter()
-                .any(|m| m.name == "flower-ffi" && m.publishable),
+                .any(|m| m.path == "crates/flower-core" && m.name == "flower-core")
         );
-        // The widget publishes as of 0.4.0: `draw`/`handle_key` are usable by
-        // any ratatui host, not only `flower-tui`.
-        assert!(
-            found
-                .iter()
-                .any(|m| m.name == "flower-ratatui" && m.publishable),
-            "flower-ratatui is publish = false",
-        );
-        assert!(
-            found
-                .iter()
-                .any(|m| m.name == "flower-tui" && !m.publishable),
-            "flower-tui is publishable",
-        );
-        assert!(found.iter().any(|m| m.name == "xtask" && !m.publishable));
+        for name in ["flower-ffi", "flower-ratatui", "flower-tui", "xtask"] {
+            assert!(found.iter().any(|m| m.name == name), "{name} was not read");
+        }
+        // Nothing goes to crates.io: flower is consumed from git, by commit,
+        // and a member that loses its `publish = false` is one a stray
+        // `cargo publish` would upload.
+        for m in &found {
+            assert!(!m.publishable, "{} is not `publish = false`", m.name);
+        }
         assert!(found.len() >= 5, "the array spans several lines");
     }
 

@@ -41,11 +41,11 @@ document is only ever committed in a valid state.
 
 ## Where it fits
 
-flower is the config sibling of [leaf](id:leaf/z4z2w13):
+flower is the config sibling of [leaf](id:dxzdkqzcw/z4z2w13):
 leaf's caret model is right for permissive document formats; a
 strict config grammar wants a structural one. It edits through
-[fig](id:fig/gns15jg)'s tree, and in
-[Diaryx](id:org/80k72t9) it's a natural front end for vault
+[fig](id:dx70bkt7z/gns15jg)'s tree, and in
+[Diaryx](id:dx4hxn744/80k72t9) it's a natural front end for vault
 configuration and frontmatter.
 
 ## Status

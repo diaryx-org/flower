@@ -1,5 +1,5 @@
 ---
-part_of: id:org/kv2bv2m
+part_of: id:dx4hxn744/kv2bv2m
 title: flower
 contents:
 - '[flower on diaryx.org](/www/index.md)'
@@ -8,6 +8,7 @@ contents:
 config: .config/prov.yaml
 registry: registry.yaml
 id: rkhvqqw
+slug: flower
 ---
 # flower
 

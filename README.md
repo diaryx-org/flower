@@ -101,8 +101,8 @@ one key does both.
 cargo run -- path/to/config.toml
 ```
 
-Supported formats: JSON/JSONC/JSON5, YAML, TOML, ZON, and the `fig` dialect
-(`.fig`/`.figl`) — anything fig's default feature set parses.
+Supported formats: JSON/JSONC/JSON5, YAML, TOML, ZON, and fig's `figl` dialect
+(`.figl`, or `.fig`) — the fig language crates flower depends on.
 
 ## Architecture
 
@@ -110,7 +110,7 @@ A Cargo workspace, split so the editing logic is frontend-neutral (mirroring
 `leaf-core` / `leaf-ratatui` / `leaf-tui`):
 
 ```
-fig (Zig) → fig-sys (FFI, libfig.a) → fig crate (Editor/Document/Value)
+fig crate (Editor/Document/Value) + fig-json/-yaml/-toml/-zon/-figl
                                           │
                           crates/flower-core   (the model — no UI, no fs)
                     ┌────────────────────────┼─────────────────────────┐
@@ -206,9 +206,8 @@ notary credentials in the environment; the head of
 beside the `flower` formula for the TUI.
 
 The editor runs today on macOS and on the iOS simulator: Xcode's build phase
-compiles the `flower-ffi` staticlib for whichever slice it is building, so the
-simulator gets one from source via Zig cross-compiling rather than from the
-prebuilt macOS-arm64 lib fig-sys ships.
+compiles the `flower-ffi` staticlib for whichever slice it is building — fig is
+pure Rust, so any slice whose Rust target is installed builds with cargo alone.
 
 `scripts/build-xcframework.sh` has not caught up — it still assembles one slice
 (`aarch64-apple-darwin`), so a *distributable* `FlowerFFI.xcframework` covering
@@ -216,7 +215,7 @@ macOS-x64 and a real device is the step that remains. Running from a checkout
 does not need it.
 
 - **`crates/flower-core`** — the frontend-neutral model. Depends only on `fig`
-  and `std`.
+  (with its language crates), `fig-schema` and `std`.
   - `format.rs` — file extension → `fig::Format`.
   - `tree.rs` — flattens a `fig::Value` into navigable `Row`s, each carrying its
     `fig` path (a `Vec<Seg>` of `Key`/`Index`) — exactly what `fig::Editor` ops
@@ -324,8 +323,8 @@ app-specific bridge lives in provui, not here — flower doesn't depend on prov.
   picker), keyboard navigation, insert/reorder, and comment *editing* — the
   rows show comments, and `FlowerModel` can set them, but no control opens one
   yet. The same roadmap the TUI has, in SwiftUI.
-- **The rest of the Apple slices**: cross-compile `fig` via Zig for macOS-x64,
-  iOS, and the simulator so `scripts/build-xcframework.sh` produces a full
+- **The rest of the Apple slices**: build `flower-ffi` for macOS-x64, iOS, and
+  the simulator so `scripts/build-xcframework.sh` produces a full
   `FlowerFFI.xcframework`.
 
 ## Development

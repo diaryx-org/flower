@@ -2520,7 +2520,6 @@ mod tests {
     use super::*;
     use crate::backend::FigBackend;
     use crate::schema::Constraint;
-    use fig::Format;
 
     const SAMPLE: &str = "\
 # flower sample config — comments and formatting below should survive edits
@@ -2540,7 +2539,8 @@ timeout = 30.5
 ";
 
     fn sample_model() -> Model<FigBackend> {
-        let backend = FigBackend::open(SAMPLE.as_bytes(), Format::Toml).expect("open backend");
+        let backend =
+            FigBackend::open(SAMPLE.as_bytes(), fig_toml::format().unwrap()).expect("open backend");
         Model::new(backend).expect("build model")
     }
 
@@ -2676,7 +2676,7 @@ timeout = 30.5
 # the members
 members = [\"a\", \"b\"]
 ";
-        let backend = FigBackend::open(src.as_bytes(), Format::Toml).expect("open");
+        let backend = FigBackend::open(src.as_bytes(), fig_toml::format().unwrap()).expect("open");
         let mut model = Model::new(backend).expect("model");
         model.fit_to_room(20);
         let page = model.root_page();
@@ -2832,7 +2832,8 @@ members = [\"a\", \"b\"]
 
     #[test]
     fn hidden_top_level_keys_are_projected_out_but_kept_lossless() {
-        let backend = FigBackend::open(SAMPLE.as_bytes(), Format::Toml).expect("open");
+        let backend =
+            FigBackend::open(SAMPLE.as_bytes(), fig_toml::format().unwrap()).expect("open");
         let mut model =
             Model::with_hidden(backend, vec!["title".into(), "enabled".into()]).expect("model");
 
@@ -2871,7 +2872,8 @@ members = [\"a\", \"b\"]
 
     #[test]
     fn reorder_leaves_hidden_keys_in_place() {
-        let backend = FigBackend::open(SAMPLE.as_bytes(), Format::Toml).expect("open");
+        let backend =
+            FigBackend::open(SAMPLE.as_bytes(), fig_toml::format().unwrap()).expect("open");
         let mut model = Model::with_hidden(backend, vec!["title".into()]).expect("model");
 
         // Move a visible top-level key; the hidden `title` must keep its position.
@@ -2936,7 +2938,7 @@ members = [\"a\", \"b\"]
         use crate::schema::{Constraint, FieldRule};
         use fig_schema::{FieldType, PathPat, Term};
         let src = "audience = [\"public\"]\ntitle = \"note\"\n";
-        let backend = FigBackend::open(src.as_bytes(), Format::Toml).expect("open");
+        let backend = FigBackend::open(src.as_bytes(), fig_toml::format().unwrap()).expect("open");
         let mut model = Model::new(backend).expect("model");
         model.set_schema(crate::schema::Schema::new(vec![
             FieldRule::new(PathPat::each_item_of("audience"))
@@ -2979,7 +2981,7 @@ members = [\"a\", \"b\"]
         use crate::schema::{Constraint, FieldRule};
         use fig_schema::{FieldType, PathPat, Term};
         let src = "audience = [\"public\"]\ntitle = \"note\"\n";
-        let backend = FigBackend::open(src.as_bytes(), Format::Toml).expect("open");
+        let backend = FigBackend::open(src.as_bytes(), fig_toml::format().unwrap()).expect("open");
         let mut model =
             Model::with_hidden(backend, vec!["title".into(), "updated".into()]).expect("model");
         model.set_schema(crate::schema::Schema::new(vec![
@@ -3018,7 +3020,7 @@ members = [\"a\", \"b\"]
     #[test]
     fn a_derived_field_is_visible_but_declines_edits() {
         let src = "title = \"note\"\nupdated = \"2026-07-01\"\ncreated = \"2026-06-01\"\n";
-        let backend = FigBackend::open(src.as_bytes(), Format::Toml).expect("open");
+        let backend = FigBackend::open(src.as_bytes(), fig_toml::format().unwrap()).expect("open");
         let mut model = Model::with_managed(backend, vec!["title".into()], vec!["updated".into()])
             .expect("model");
 
@@ -3052,7 +3054,7 @@ members = [\"a\", \"b\"]
     #[test]
     fn addable_fields_are_empty_without_a_schema() {
         let src = "title = \"note\"\n";
-        let backend = FigBackend::open(src.as_bytes(), Format::Toml).expect("open");
+        let backend = FigBackend::open(src.as_bytes(), fig_toml::format().unwrap()).expect("open");
         let model = Model::new(backend).expect("model");
         assert!(model.addable_fields().is_empty());
     }
@@ -3062,7 +3064,7 @@ members = [\"a\", \"b\"]
         use crate::schema::FieldRule;
         use fig_schema::{FieldType, PathPat};
         let src = "code = \"x\"\n";
-        let backend = FigBackend::open(src.as_bytes(), Format::Toml).expect("open");
+        let backend = FigBackend::open(src.as_bytes(), fig_toml::format().unwrap()).expect("open");
         let mut model = Model::new(backend).expect("model");
         model.set_schema(crate::schema::Schema::new(vec![
             FieldRule::new(PathPat::key("code")).ty(FieldType::Str),
@@ -3081,7 +3083,8 @@ members = [\"a\", \"b\"]
     /// folded, without a toggle pass that walks the selection across the document.
     #[test]
     fn containers_can_arrive_collapsed() {
-        let backend = FigBackend::open(SAMPLE.as_bytes(), Format::Toml).expect("open");
+        let backend =
+            FigBackend::open(SAMPLE.as_bytes(), fig_toml::format().unwrap()).expect("open");
         let model = Model::with_collapsed(
             backend,
             Vec::new(),
@@ -3169,7 +3172,7 @@ members = [\"a\", \"b\"]
         use crate::schema::FieldRule;
         use fig_schema::{FieldType, PathPat};
         let src = "tags = [\"alpha\"]\n\n[meta]\nk = \"v\"\n";
-        let backend = FigBackend::open(src.as_bytes(), Format::Toml).expect("open");
+        let backend = FigBackend::open(src.as_bytes(), fig_toml::format().unwrap()).expect("open");
         let mut model = Model::new(backend).expect("model");
         model.set_schema(crate::schema::Schema::new(vec![
             // The *items* of `tags` are strings — the list itself is a seq.
@@ -3412,8 +3415,11 @@ members = [\"a\", \"b\"]
     fn losing_the_container_you_are_standing_in_pops_you_out() {
         // `b` nests a container, so it is a real drill rather than an inlined
         // group — the only kind of row a page can be opened from.
-        let backend =
-            FigBackend::open(br#"{"a": {"b": {"c": {"d": 1}}}}"#, Format::Json).expect("open");
+        let backend = FigBackend::open(
+            br#"{"a": {"b": {"c": {"d": 1}}}}"#,
+            fig_json::format().unwrap(),
+        )
+        .expect("open");
         let mut model = Model::new(backend).expect("model");
         model.set_view(ViewMode::Pages);
         model.focus_on(&[key("a"), key("b")]);
@@ -3470,7 +3476,7 @@ members = [\"a\", \"b\"]
             .map(|i| format!(r#"{{"name": "r{i}", "lang": "rust"}}"#))
             .collect();
         let src = format!(r#"{{"repo": [{}]}}"#, items.join(", "));
-        let backend = FigBackend::open(src.as_bytes(), Format::Json).expect("open");
+        let backend = FigBackend::open(src.as_bytes(), fig_json::format().unwrap()).expect("open");
         let mut model = Model::new(backend).expect("model");
         model.set_view(ViewMode::Pages);
         model
@@ -3570,7 +3576,7 @@ members = [\"a\", \"b\"]
             b"a = 1
 b = 2
 ",
-            Format::Toml,
+            fig_toml::format().unwrap(),
         )
         .expect("open");
         let flat = Model::new(flat).expect("model");
@@ -3596,7 +3602,7 @@ b = 2
     fn opening_a_compressed_row_lands_past_the_pages_that_say_nothing() {
         let backend = FigBackend::open(
             br#"{"exports": {"journal": {"label": "x", "gate": {"f": 1}}}, "z": 1}"#,
-            Format::Json,
+            fig_json::format().unwrap(),
         )
         .expect("open");
         let mut model = Model::new(backend).expect("model");
@@ -3629,7 +3635,7 @@ b = 2
     fn the_left_pane_is_the_page_that_listed_the_row_not_the_level_above() {
         let backend = FigBackend::open(
             br#"{"exports": {"journal": {"label": "x", "gate": {"f": 1}}}, "z": 1}"#,
-            Format::Json,
+            fig_json::format().unwrap(),
         )
         .expect("open");
         let mut model = Model::new(backend).expect("model");
@@ -3663,7 +3669,7 @@ b = 2
     fn a_compressed_row_still_answers_ops_as_its_outermost_node() {
         let backend = FigBackend::open(
             br#"{"exports": {"journal": {"label": "x", "gate": {"f": 1}}}, "z": 1}"#,
-            Format::Json,
+            fig_json::format().unwrap(),
         )
         .expect("open");
         let mut model = Model::new(backend).expect("model");
@@ -3685,7 +3691,7 @@ b = 2
     fn a_row_index_deletes_the_row_it_names_even_from_the_page_projection() {
         let backend = FigBackend::open(
             br#"{"alpha": 1, "beta": 2, "gamma": {"inner": 3}}"#,
-            Format::Json,
+            fig_json::format().unwrap(),
         )
         .expect("open");
         let mut model = Model::new(backend).expect("model");
@@ -3722,7 +3728,7 @@ b = 2
         // the root page nor compresses into a chain — it is a plain drill row.
         let backend = FigBackend::open(
             br#"{"alpha": 1, "beta": 2, "gamma": {"inner": {"deep": 3}, "flag": true}}"#,
-            Format::Json,
+            fig_json::format().unwrap(),
         )
         .expect("open");
         let mut model = Model::new(backend).expect("model");
@@ -3756,7 +3762,7 @@ b = 2
     fn backing_out_retraces_what_entering_skipped() {
         let backend = FigBackend::open(
             br#"{"views": {"date": {"icon": "calendar", "group": ["created"], "by": "year"}}, "fixity": "all"}"#,
-            Format::Json,
+            fig_json::format().unwrap(),
         )
         .expect("open");
         let mut model = Model::new(backend).expect("model");
@@ -3781,7 +3787,7 @@ b = 2
     fn the_skipped_level_is_still_operable_from_the_row() {
         let backend = FigBackend::open(
             br#"{"views": {"date": {"icon": "calendar", "group": ["created"], "by": "year"}}, "fixity": "all"}"#,
-            Format::Json,
+            fig_json::format().unwrap(),
         )
         .expect("open");
         let mut model = Model::new(backend).expect("model");
@@ -3800,7 +3806,7 @@ b = 2
         // `page_enter` moves exactly one level — which is what this is about.
         let backend = FigBackend::open(
             br#"{"jobs": {"plan": {"steps": {"a": 1, "b": {"c": 2}}, "id": 3}, "name": "x"}}"#,
-            Format::Json,
+            fig_json::format().unwrap(),
         )
         .expect("open");
         let mut model = Model::new(backend).expect("model");
@@ -3834,7 +3840,7 @@ b = 2
             r#"{"name": "echo", "run": "e"}"#,
             r#"], "tags": ["x", "y", "z"]}"#,
         );
-        let backend = FigBackend::open(src.as_bytes(), Format::Json).expect("open");
+        let backend = FigBackend::open(src.as_bytes(), fig_json::format().unwrap()).expect("open");
         let mut model = Model::new(backend).expect("model");
         model.set_view(ViewMode::Pages);
         // Nothing inlines, so each step is a page you can stand *in* — which is
@@ -4009,7 +4015,8 @@ b = 2
         }
 
         let src = r#"{"links": [{"id": "a", "name": "one"}, {"id": "b", "name": "one"}]}"#;
-        let backend = WithKeys(FigBackend::open(src.as_bytes(), Format::Json).expect("open"));
+        let backend =
+            WithKeys(FigBackend::open(src.as_bytes(), fig_json::format().unwrap()).expect("open"));
         let mut model = Model::new(backend).expect("model");
         model.set_view(ViewMode::Pages);
         model.set_inline_budget(InlineBudget::new(0, 0));
@@ -4090,7 +4097,7 @@ b = 2
     fn an_enum_field_offers_its_terms_and_a_retired_one_says_so() {
         let backend = FigBackend::open(
             b"status = \"active\"\naudience = [\"public\"]\n",
-            Format::Toml,
+            fig_toml::format().unwrap(),
         )
         .expect("open");
         let mut model = Model::new(backend).expect("model");
@@ -4127,8 +4134,11 @@ b = 2
 
     #[test]
     fn the_picker_filters_commits_and_falls_back_to_free_text() {
-        let backend = FigBackend::open(b"status = \"active\"\ntitle = \"a note\"\n", Format::Toml)
-            .expect("open");
+        let backend = FigBackend::open(
+            b"status = \"active\"\ntitle = \"a note\"\n",
+            fig_toml::format().unwrap(),
+        )
+        .expect("open");
         let mut model = Model::new(backend).expect("model");
         model.set_schema(status_schema());
         model.focus_on(&[Seg::Key("status".into())]);
@@ -4189,7 +4199,11 @@ b = 2
     #[test]
     fn a_backend_answers_for_a_link_field_the_schema_cannot() {
         let backend = WithCandidates(
-            FigBackend::open(b"contents = [\"id:prov/1ch2991\"]\n", Format::Toml).expect("open"),
+            FigBackend::open(
+                b"contents = [\"id:prov/1ch2991\"]\n",
+                fig_toml::format().unwrap(),
+            )
+            .expect("open"),
         );
         let mut model = Model::new(backend).expect("model");
         let item = [Seg::Key("contents".into()), Seg::Index(0)];
@@ -4226,8 +4240,11 @@ b = 2
     }
 
     fn tags_model() -> Model<FigBackend> {
-        let backend =
-            FigBackend::open(b"title = \"t\"\ntags = [\"a\"]\n", Format::Toml).expect("open");
+        let backend = FigBackend::open(
+            b"title = \"t\"\ntags = [\"a\"]\n",
+            fig_toml::format().unwrap(),
+        )
+        .expect("open");
         let mut model = Model::new(backend).expect("model");
         model.set_schema(tags_schema());
         model
@@ -4293,7 +4310,11 @@ b = 2
     #[test]
     fn a_reference_list_gains_a_backend_candidate_at_the_end() {
         let backend = WithCandidates(
-            FigBackend::open(b"contents = [\"id:prov/1ch2991\"]\n", Format::Toml).expect("open"),
+            FigBackend::open(
+                b"contents = [\"id:prov/1ch2991\"]\n",
+                fig_toml::format().unwrap(),
+            )
+            .expect("open"),
         );
         let mut model = Model::new(backend).expect("model");
         let contents = vec![Seg::Key("contents".into())];
@@ -4320,7 +4341,8 @@ b = 2
 
     #[test]
     fn a_list_with_no_vocabulary_opens_an_empty_item_editor() {
-        let backend = FigBackend::open(b"notes = [\"one\"]\n", Format::Toml).expect("open");
+        let backend =
+            FigBackend::open(b"notes = [\"one\"]\n", fig_toml::format().unwrap()).expect("open");
         let mut model = Model::new(backend).expect("model");
         let notes = vec![Seg::Key("notes".into())];
         model.focus_on(&notes);
@@ -4403,7 +4425,8 @@ b = 2
 
     #[test]
     fn a_filter_that_matches_nothing_commits_nothing() {
-        let backend = FigBackend::open(b"status = \"active\"\n", Format::Toml).expect("open");
+        let backend =
+            FigBackend::open(b"status = \"active\"\n", fig_toml::format().unwrap()).expect("open");
         let mut model = Model::new(backend).expect("model");
         model.set_schema(status_schema());
         model.focus_on(&[Seg::Key("status".into())]);
@@ -4600,7 +4623,8 @@ b = 2
 
     #[test]
     fn a_derived_key_declines_the_undo_as_it_declined_the_edit() {
-        let backend = FigBackend::open(SAMPLE.as_bytes(), Format::Toml).expect("open backend");
+        let backend =
+            FigBackend::open(SAMPLE.as_bytes(), fig_toml::format().unwrap()).expect("open backend");
         let mut model = Model::with_managed(backend, Vec::new(), vec!["version".to_string()])
             .expect("build model");
         let before = model.source_snapshot();
@@ -4669,7 +4693,8 @@ b = 2
 
     #[test]
     fn undo_and_redo_say_whether_the_document_moved() {
-        let mut model = Model::new(FigBackend::open(b"a = 1\n", Format::Toml).unwrap()).unwrap();
+        let mut model =
+            Model::new(FigBackend::open(b"a = 1\n", fig_toml::format().unwrap()).unwrap()).unwrap();
         assert!(!model.undo(), "nothing to undo yet");
         assert!(!model.redo(), "nothing to redo yet");
         model.set_value_at(&[Seg::Key("a".into())], Value::Int(2));
@@ -4698,8 +4723,11 @@ b = 2
     /// two notices.
     #[test]
     fn a_status_comes_with_a_notice_about_its_node() {
-        let backend = FigBackend::open(b"status = \"active\"\ntitle = \"a note\"\n", Format::Toml)
-            .expect("open");
+        let backend = FigBackend::open(
+            b"status = \"active\"\ntitle = \"a note\"\n",
+            fig_toml::format().unwrap(),
+        )
+        .expect("open");
         let mut model = Model::new(backend).expect("model");
         model.set_schema(status_schema());
         assert!(model.notice.is_none());

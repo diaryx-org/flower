@@ -1103,7 +1103,7 @@ timeout = 30.5
     }
 
     fn sample() -> Value {
-        value_of(SAMPLE, Format::Toml)
+        value_of(SAMPLE, fig_toml::format().unwrap())
     }
 
     fn page_of(root: &Value, focus: &[Seg]) -> Page {
@@ -1203,7 +1203,7 @@ timeout = 30.5
         for i in 0..=INLINE_MAX {
             src.push_str(&format!("k{i} = {i}\n"));
         }
-        let root = value_of(&src, Format::Toml);
+        let root = value_of(&src, fig_toml::format().unwrap());
         assert_eq!(
             shape(&page_of(&root, &[])),
             vec![("big".into(), 0, "drill")]
@@ -1217,7 +1217,7 @@ timeout = 30.5
             .rsplit_once('\n')
             .unwrap()
             .0;
-        let root = value_of(&format!("{trimmed}\n"), Format::Toml);
+        let root = value_of(&format!("{trimmed}\n"), fig_toml::format().unwrap());
         assert_eq!(page_of(&root, &[]).items[0].inset, 0);
         assert!(matches!(
             page_of(&root, &[]).items[0].kind,
@@ -1227,7 +1227,7 @@ timeout = 30.5
 
     #[test]
     fn a_container_holding_a_container_drills_however_small() {
-        let root = value_of("{\"a\": {\"b\": {\"c\": 1}}}", Format::Json);
+        let root = value_of("{\"a\": {\"b\": {\"c\": 1}}}", fig_json::format().unwrap());
         // `a` has one child — but that child is a container, so inlining it would
         // put a group inside a group and reintroduce unbounded depth.
         assert_eq!(shape(&page_of(&root, &[])), vec![("a".into(), 0, "drill")]);
@@ -1247,7 +1247,7 @@ timeout = 30.5
             .collect();
         value_of(
             &format!(r#"{{"repo": [{}]}}"#, items.join(", ")),
-            Format::Json,
+            fig_json::format().unwrap(),
         )
     }
 
@@ -1257,7 +1257,10 @@ timeout = 30.5
         // page still refuses them, because eight of them are twenty-four rows.
         let root = list_of(8);
         assert!(inlines(
-            &value_of(r#"{"name": "r0", "lang": "rust"}"#, Format::Json),
+            &value_of(
+                r#"{"name": "r0", "lang": "rust"}"#,
+                fig_json::format().unwrap()
+            ),
             InlineBudget::default()
         ));
         let page = page_of(&root, &[key("repo")]);
@@ -1301,7 +1304,7 @@ timeout = 30.5
         // first — a page whose shape depends on key order.
         let root = value_of(
             r#"{"a": {"x": 1, "y": 2, "z": 3}, "b": {"x": 1, "y": 2, "z": 3}}"#,
-            Format::Json,
+            fig_json::format().unwrap(),
         );
         let page = budgeted(
             &root,
@@ -1320,7 +1323,10 @@ timeout = 30.5
         // has nothing to expand, and one row each is the only rendering there
         // is however many of them there are.
         let items: Vec<String> = (0..40).map(|i| i.to_string()).collect();
-        let root = value_of(&format!("{{\"ns\": [{}]}}", items.join(", ")), Format::Json);
+        let root = value_of(
+            &format!("{{\"ns\": [{}]}}", items.join(", ")),
+            fig_json::format().unwrap(),
+        );
         let page = page_of(&root, &[key("ns")]);
         assert_eq!(page.items.len(), 40);
         assert!(page.items.iter().all(PageItem::is_scalar));
@@ -1366,7 +1372,7 @@ timeout = 30.5
                 members.join(", "),
                 deps.join(", ")
             ),
-            Format::Json,
+            fig_json::format().unwrap(),
         );
         let short = InlineBudget::fitting(&root, 20);
         assert_eq!(short.rows, INLINE_MAX);
@@ -1393,7 +1399,10 @@ timeout = 30.5
         // `a` inline as a group on the root page, which would draw the same
         // insets by another route: a group may nest one rank less than a
         // document, and `a` is three ranks deep.
-        let root = value_of(r#"{"a": {"b": {"c": {"d": 1}}}}"#, Format::Json);
+        let root = value_of(
+            r#"{"a": {"b": {"c": {"d": 1}}}}"#,
+            fig_json::format().unwrap(),
+        );
         let budget = InlineBudget::fitting(&root, 100);
         assert_eq!(budget.depth, FIT_MAX_DEPTH - 1);
         assert!(budgeted(&root, &[], budget).has_drills());
@@ -1424,7 +1433,7 @@ timeout = 30.5
     fn a_page_of_one_row_is_a_label_rather_than_a_choice() {
         let root = value_of(
             r#"{"repo": [{"a": 1, "b": 2, "c": 3, "d": 4}]}"#,
-            Format::Json,
+            fig_json::format().unwrap(),
         );
         assert!(!page_of(&root, &[]).has_choice());
         assert!(page_of(&root, &[key("repo"), Seg::Index(0)]).has_choice());
@@ -1434,7 +1443,7 @@ timeout = 30.5
 
     #[test]
     fn a_deeper_budget_inlines_a_nested_container_rank_by_rank() {
-        let root = value_of("{\"a\": {\"b\": {\"c\": 1}}}", Format::Json);
+        let root = value_of("{\"a\": {\"b\": {\"c\": 1}}}", fig_json::format().unwrap());
         // `a`'s subtree reaches two ranks below its header — `b`, then `c`
         // under it — so a depth of 2 admits the whole chain onto the root page.
         let page = budgeted(&root, &[], InlineBudget::new(6, 2));
@@ -1455,7 +1464,7 @@ timeout = 30.5
     fn the_row_limit_counts_the_whole_subtree_headers_included() {
         let root = value_of(
             r#"{"outer": {"g": {"x": 1, "y": 2}, "z": 3}}"#,
-            Format::Json,
+            fig_json::format().unwrap(),
         );
         // `outer` costs four rows: `g`'s header, its two members, and `z`.
         let fits = InlineBudget::new(4, 2);
@@ -1510,7 +1519,7 @@ timeout = 30.5
 
     #[test]
     fn a_budget_that_admits_a_chain_inlines_it_instead_of_compressing() {
-        let root = value_of(LONE, Format::Json);
+        let root = value_of(LONE, fig_json::format().unwrap());
         let page = budgeted(&root, &[], InlineBudget::new(99, 8));
         let exports = &page.items[0];
         // Under the default budget this row compresses to `exports › journal`;
@@ -1521,7 +1530,7 @@ timeout = 30.5
 
     #[test]
     fn a_sequence_of_nested_mappings_inlines_uniformly_under_a_deep_budget() {
-        let root = value_of(STEPS, Format::Json);
+        let root = value_of(STEPS, fig_json::format().unwrap());
         // The third step nests a `with` mapping, which the default budget's one
         // rank refuses — and uniformity then drills every item. Two ranks admit
         // it, so the whole list inlines, titles on the item headers.
@@ -1564,7 +1573,7 @@ timeout = 30.5
 
     #[test]
     fn an_empty_container_drills_rather_than_inlining_as_a_headless_group() {
-        let root = value_of("{\"empty\": {}, \"none\": []}", Format::Json);
+        let root = value_of("{\"empty\": {}, \"none\": []}", fig_json::format().unwrap());
         assert_eq!(
             shape(&page_of(&root, &[])),
             vec![("empty".into(), 0, "drill"), ("none".into(), 0, "drill")]
@@ -1576,7 +1585,7 @@ timeout = 30.5
     fn hiding_is_scoped_to_the_root_page() {
         let root = value_of(
             "{\"id\": 1, \"inner\": {\"id\": 2, \"keep\": 3}}",
-            Format::Json,
+            fig_json::format().unwrap(),
         );
         let hidden = HashSet::from(["id".to_string()]);
         let rooted = build_page(
@@ -1632,7 +1641,7 @@ timeout = 30.5
 
     #[test]
     fn a_flat_document_has_nothing_to_drill_into() {
-        let flat = value_of("{\"a\": 1, \"b\": 2}", Format::Json);
+        let flat = value_of("{\"a\": 1, \"b\": 2}", fig_json::format().unwrap());
         assert!(!page_of(&flat, &[]).has_drills());
         assert!(page_of(&sample(), &[]).has_drills());
     }
@@ -1655,7 +1664,7 @@ timeout = 30.5
 
     #[test]
     fn a_sequence_item_is_titled_by_the_field_that_distinguishes_it() {
-        let root = value_of(STEPS, Format::Json);
+        let root = value_of(STEPS, fig_json::format().unwrap());
         let page = page_of(&root, &[key("steps")]);
         assert_eq!(
             titles(&page),
@@ -1671,7 +1680,7 @@ timeout = 30.5
 
     #[test]
     fn a_key_that_reads_the_same_on_every_item_loses_to_one_that_does_not() {
-        let root = value_of(STEPS, Format::Json);
+        let root = value_of(STEPS, fig_json::format().unwrap());
         let Value::Map(entries) = &root else {
             unreachable!()
         };
@@ -1694,7 +1703,7 @@ timeout = 30.5
                 {"name": "HOME", "value": "/root"},
                 {"name": "PATH", "value": "/bin"}
             ]}"#,
-            Format::Json,
+            fig_json::format().unwrap(),
         );
         let page = page_of(&root, &[key("env")]);
         // Both items are small and all-scalar, so they inline — and the title
@@ -1722,7 +1731,7 @@ timeout = 30.5
 
     #[test]
     fn a_sequence_renders_its_items_uniformly() {
-        let root = value_of(STEPS, Format::Json);
+        let root = value_of(STEPS, fig_json::format().unwrap());
         let page = page_of(&root, &[key("steps")]);
         // The third step nests a `with` mapping, so it cannot inline — and none of
         // the others do either, however small. A list reads as a list.
@@ -1737,7 +1746,7 @@ timeout = 30.5
         // Take the nesting away and every item inlines, again as a group.
         let flat = value_of(
             r#"{"steps": [{"run": "a"}, {"run": "b", "shell": "sh"}]}"#,
-            Format::Json,
+            fig_json::format().unwrap(),
         );
         let page = page_of(&flat, &[key("steps")]);
         assert_eq!(
@@ -1754,7 +1763,7 @@ timeout = 30.5
 
     #[test]
     fn a_titled_item_carries_its_title_into_its_own_breadcrumb() {
-        let root = value_of(STEPS, Format::Json);
+        let root = value_of(STEPS, fig_json::format().unwrap());
         let page = page_of(&root, &[key("steps"), Seg::Index(3)]);
         assert_eq!(page.title.as_deref(), Some("cargo xtask ci"));
         assert_eq!(page.breadcrumb("‹document›"), "steps › cargo xtask ci");
@@ -1766,7 +1775,7 @@ timeout = 30.5
     fn a_multi_line_value_is_cut_to_its_first_line() {
         let root = value_of(
             "{\"steps\": [{\"run\": \"set -e\\ncargo test\\n\"}]}",
-            Format::Json,
+            fig_json::format().unwrap(),
         );
         let page = page_of(&root, &[key("steps")]);
         // A YAML block scalar would otherwise draw a row several lines tall and
@@ -1781,7 +1790,7 @@ timeout = 30.5
     fn a_container_that_fits_on_the_row_shows_its_contents_not_a_count() {
         let root = value_of(
             r#"{"on": {"push": {"branches": ["main"]}, "pull_request": null}}"#,
-            Format::Json,
+            fig_json::format().unwrap(),
         );
         let page = page_of(&root, &[key("on")]);
         let push = &page.items[0];
@@ -1796,13 +1805,16 @@ timeout = 30.5
         let long = "x".repeat(SUMMARY_BUDGET);
         let root = value_of(
             &format!(r#"{{"outer": {{"a": {{"b": "{long}"}}}}}}"#),
-            Format::Json,
+            fig_json::format().unwrap(),
         );
         let page = page_of(&root, &[key("outer")]);
         assert!(page.items[0].summary.is_none());
         // The budget is a length limit, not a depth one — shorten the value and
         // the same shape summarises fine.
-        let root = value_of(r#"{"outer": {"a": {"b": "x"}}}"#, Format::Json);
+        let root = value_of(
+            r#"{"outer": {"a": {"b": "x"}}}"#,
+            fig_json::format().unwrap(),
+        );
         assert_eq!(
             page_of(&root, &[key("outer")]).items[0].summary.as_deref(),
             Some("{b: x}")
@@ -1838,7 +1850,7 @@ timeout = 30.5
         let items: Vec<String> = (0..8).map(|i| format!(r#"{{"name": "r{i}"}}"#)).collect();
         let root = value_of(
             &format!(r#"{{"repo": [{}]}}"#, items.join(", ")),
-            Format::Json,
+            fig_json::format().unwrap(),
         );
         let page = budgeted(
             &root,
@@ -1863,7 +1875,7 @@ timeout = 30.5
         let root = value_of(
             r#"{"repo": [{"only": {"name": "inner", "lang": "rust", "a": 1,
                                    "b": 2, "c": 3, "d": 4, "e": 5}}]}"#,
-            Format::Json,
+            fig_json::format().unwrap(),
         );
         let row = &page_of(&root, &[key("repo")]).items[0];
         assert!(row.is_compressed(), "{:?}", row.chain_labels());
@@ -1883,7 +1895,10 @@ timeout = 30.5
     fn a_mapping_entry_summarises_whole_because_nothing_titled_it() {
         // Only a sequence item takes a title, so only a sequence item has one
         // to elide. A `name` under a key is just a field.
-        let root = value_of(r#"{"a": {"name": "x", "lang": "rust"}}"#, Format::Json);
+        let root = value_of(
+            r#"{"a": {"name": "x", "lang": "rust"}}"#,
+            fig_json::format().unwrap(),
+        );
         let page = budgeted(
             &root,
             &[],
@@ -1998,7 +2013,7 @@ timeout = 30.5
         // different field that happens to share a spelling.
         let root = value_of(
             r#"{"host": "managed", "server": {"host": "localhost", "port": 8080}}"#,
-            Format::Json,
+            fig_json::format().unwrap(),
         );
         let page = demoting(&root, &[], &["host"]);
         assert!(
@@ -2046,7 +2061,7 @@ timeout = 30.5
 
     #[test]
     fn a_row_whose_page_would_hold_only_it_names_the_chain_instead() {
-        let root = value_of(LONE, Format::Json);
+        let root = value_of(LONE, fig_json::format().unwrap());
         let page = page_of(&root, &[]);
         let exports = &page.items[0];
 
@@ -2062,7 +2077,7 @@ timeout = 30.5
 
     #[test]
     fn compression_follows_the_chain_as_far_as_it_goes_including_a_lone_seq_item() {
-        let root = value_of(LONE, Format::Json);
+        let root = value_of(LONE, fig_json::format().unwrap());
         let diaryx = &page_of(&root, &[])
             .items
             .iter()
@@ -2080,7 +2095,7 @@ timeout = 30.5
 
     #[test]
     fn a_page_with_something_to_say_is_never_compressed_past() {
-        let root = value_of(LONE, Format::Json);
+        let root = value_of(LONE, fig_json::format().unwrap());
         let page = page_of(&root, &[]);
         let plain = page.items.iter().find(|i| i.label == "plain").unwrap();
         // `plain` holds two scalars, so it inlines — nothing to compress, and
@@ -2090,7 +2105,7 @@ timeout = 30.5
         assert_eq!(plain.descend_to, plain.path);
 
         // A lone *scalar* child is a real answer too: its page shows a value.
-        let root = value_of(r#"{"outer": {"only": 1}}"#, Format::Json);
+        let root = value_of(r#"{"outer": {"only": 1}}"#, fig_json::format().unwrap());
         let outer = &page_of(&root, &[]).items[0];
         assert!(!outer.is_compressed());
     }

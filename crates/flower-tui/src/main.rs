@@ -91,7 +91,7 @@ fn run(
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.display().to_string());
-    let name = format!("{file}  [{fmt:?}]");
+    let name = format!("{file}  [{}]", fmt.name());
 
     // How much a page inlines is a fact about the room, so the room is measured
     // before the first frame rather than after it — and again on every frame,

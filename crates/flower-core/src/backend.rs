@@ -352,7 +352,7 @@ impl FigBackend {
     /// over a JSON file has no comments, rather than a read failure on every
     /// row.
     fn has_comments(&self) -> bool {
-        !matches!(self.format, Format::Json)
+        self.format.name() != "json"
     }
 }
 
@@ -444,9 +444,8 @@ j = \"w\"
     ///
     /// ```no_run
     /// # use flower_core::backend::{FigBackend, conformance};
-    /// # use fig::Format;
     /// conformance::check(|| {
-    ///     FigBackend::open(conformance::FIXTURE_TOML.as_bytes(), Format::Toml).unwrap()
+    ///     FigBackend::open(conformance::FIXTURE_TOML.as_bytes(), fig_toml::format().unwrap()).unwrap()
     /// })
     /// .unwrap();
     /// ```
@@ -749,7 +748,11 @@ mod tests {
     use super::*;
 
     fn open_fixture() -> FigBackend {
-        FigBackend::open(conformance::FIXTURE_TOML.as_bytes(), Format::Toml).expect("open fixture")
+        FigBackend::open(
+            conformance::FIXTURE_TOML.as_bytes(),
+            fig_toml::format().unwrap(),
+        )
+        .expect("open fixture")
     }
 
     /// flower's own backend is the suite's first subject.
@@ -823,7 +826,7 @@ k = \"v\"
 ";
 
     fn open_commented() -> FigBackend {
-        FigBackend::open(COMMENTED.as_bytes(), Format::Toml).expect("open")
+        FigBackend::open(COMMENTED.as_bytes(), fig_toml::format().unwrap()).expect("open")
     }
 
     fn set_leading(b: &mut FigBackend, path: &[Seg], text: Option<&str>) {
@@ -916,7 +919,7 @@ k = \"v\"
 
     #[test]
     fn strict_json_has_no_comments_to_read_and_refuses_to_write_one() {
-        let mut b = FigBackend::open(br#"{"a": 1}"#, Format::Json).expect("open");
+        let mut b = FigBackend::open(br#"{"a": 1}"#, fig_json::format().unwrap()).expect("open");
         let a = vec![Seg::Key("a".into())];
         // A read is an answer, not an error: the page over a JSON file simply
         // has no comments on it.

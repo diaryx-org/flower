@@ -17,3 +17,5 @@ ratatui.workspace = true
 # `TestBackend` renders a frame into a buffer, so the page layout is checked
 # by what it actually draws rather than by the model it draws from.
 fig.workspace = true
+fig-json.workspace = true
+fig-toml.workspace = true

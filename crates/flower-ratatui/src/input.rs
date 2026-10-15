@@ -218,7 +218,8 @@ max_connections = 100
 ";
 
     fn model() -> Model<FigBackend> {
-        let backend = FigBackend::open(SAMPLE.as_bytes(), fig::Format::Toml).expect("open");
+        let backend =
+            FigBackend::open(SAMPLE.as_bytes(), fig_toml::format().unwrap()).expect("open");
         let mut model = Model::new(backend).expect("model");
         model.set_view(ViewMode::Pages);
         model
@@ -340,7 +341,8 @@ max_connections = 100
         use flower_core::schema::{Constraint, Schema};
         use flower_core::{FieldRule, PathPat, Term};
 
-        let backend = FigBackend::open(b"status = \"draft\"\n", fig::Format::Toml).expect("open");
+        let backend =
+            FigBackend::open(b"status = \"draft\"\n", fig_toml::format().unwrap()).expect("open");
         let mut m = Model::new(backend).expect("model");
         m.set_view(ViewMode::Pages);
         m.set_schema(Schema::new(vec![
@@ -382,8 +384,11 @@ max_connections = 100
         use flower_core::schema::{Constraint, Schema};
         use flower_core::{ChoiceTarget, EditSlot, FieldRule, PathPat, Term};
 
-        let backend =
-            FigBackend::open(b"title = \"t\"\ntags = [\"a\"]\n", fig::Format::Toml).expect("open");
+        let backend = FigBackend::open(
+            b"title = \"t\"\ntags = [\"a\"]\n",
+            fig_toml::format().unwrap(),
+        )
+        .expect("open");
         let mut m = Model::new(backend).expect("model");
         m.set_view(ViewMode::Pages);
         m.set_schema(Schema::new(vec![

@@ -43,10 +43,9 @@ scripts/gen-bindings.sh
 scripts/gen-bindings.sh --check
 ```
 
-## The one `unsafe`
+## Threading
 
-`fig::Editor` holds a `NonNull` (hence `!Send`), but a UniFFI object is a
-thread-safe `Arc`, so the `Model` lives behind a `Mutex` and the guarded newtype
-carries one `unsafe impl Send`: every access is serialized through that mutex and
-the handle has no thread-affinity. Drive it from the main thread. See the safety
-comment in `src/lib.rs`.
+A UniFFI object is a thread-safe `Arc`, so the `Model` lives behind a `Mutex`.
+fig's `Editor` is `Send` (since fig 6) but not `Sync`; the mutex supplies the
+`Sync`, and every access is serialized through it. No `unsafe` is needed. Drive
+it from the main thread. See the comment on `Inner` in `src/lib.rs`.

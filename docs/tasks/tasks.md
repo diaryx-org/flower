@@ -16,4 +16,4 @@ Deferred work, one file per item, each with a `status` of `open`,
 `in-progress`, `done` or `dropped`. `contents` above lists what is open;
 closing a task is setting its status and naming the commit or release that
 resolved it, not deleting the file, and a closed task then moves to
-[Closed tasks](closed/closed.md) (`dx shelve`). A bug is a task with a repro.
+[Closed tasks](closed/closed.md) (`org shelve`). A bug is a task with a repro.

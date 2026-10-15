@@ -11,5 +11,10 @@ description = "Frontend-neutral structural editing model for config files, over 
 
 [dependencies]
 fig.workspace = true
+fig-json.workspace = true
+fig-yaml.workspace = true
+fig-toml.workspace = true
+fig-zon.workspace = true
+fig-figl.workspace = true
 fig-schema.workspace = true
 anyhow.workspace = true

@@ -10,8 +10,7 @@ name: CI
 #
 # What the runner still owns is the toolchain, because only it knows how to
 # install one: stable Rust, whatever a job's `runner` table asks for, and — for
-# jobs that compile — the pinned Zig, since flower's `fig` dependency is
-# Zig-backed and its build.rs runs `zig build`.
+# jobs that compile — the cargo cache.
 #
 # The Swift half of flower (`packages/flower-swift`, `apps/flower-editor`) is not
 # compiled here: that needs macOS and Xcode. `scripts/check-swift.sh` and
@@ -32,7 +31,7 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # Ask ship what CI consists of. Needs no Zig: it builds ship and nothing of
+  # Ask ship what CI consists of. Needs no cache: it builds ship and nothing of
   # flower's.
   plan:
     name: Plan
@@ -63,13 +62,10 @@ jobs:
     - uses: dtolnay/rust-toolchain@stable
       with: { components: "${{ matrix.job.components }}" }
     # A field a job's runner table leaves out is null here: no components, and
-    # Zig and the cache unless the job says `builds = false`.
-    - uses: mlugg/setup-zig@v2
+    # the cache set up unless the job says `builds = false`.
+    - uses: Swatinem/rust-cache@v2
       # A missing `builds` is null, and GitHub compares loosely, so `null != false`
       # is false: the test is for null itself.
-      if: matrix.job.builds == null || matrix.job.builds
-      with: { version: "0.16.0" }
-    - uses: Swatinem/rust-cache@v2
       if: matrix.job.builds == null || matrix.job.builds
     - run: cargo install --locked --git https://github.com/diaryx-org/ship ship
     - run: ship ci ${{ matrix.job.id }}

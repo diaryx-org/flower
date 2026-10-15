@@ -10,11 +10,10 @@
 # Output (under target/xcframework/, git-ignored):
 #   FlowerFFI.xcframework/    the static libs for every built slice + C headers
 #
-# fig-sys ships a prebuilt static lib for macos-arm64 today; the other Apple
-# slices (macos-x64, ios, ios-sim) build fig from source via Zig cross-compiling.
-# By default this builds only the slices whose Rust target is installed AND whose
-# fig backend links, so it works out of the box on an arm64 Mac. Add more targets
-# to APPLE_TARGETS once their fig build is wired up.
+# fig is pure Rust (since 7.0), so every Apple slice (macos-x64, ios, ios-sim)
+# builds with cargo alone once its Rust target is installed. This still builds
+# only the arm64 macOS slice; adding the others is the lipo/xcframework
+# assembly below, not anything fig needs.
 #
 # Usage: scripts/build-xcframework.sh [--debug]   (default: release)
 set -euo pipefail
@@ -32,7 +31,7 @@ GEN="$ROOT/packages/flower-swift/uniffi-generated"
 LIB_BASENAME="libflower_ffi.a"
 TARGET_DIR="$ROOT/target"
 
-# The macOS slice. Extend to universal / iOS once the fig cross-build is wired:
+# The macOS slice. Extend to universal / iOS by listing more targets here:
 #   MACOS_ARCHES=(aarch64-apple-darwin x86_64-apple-darwin)
 MACOS_ARCHES=(aarch64-apple-darwin)
 

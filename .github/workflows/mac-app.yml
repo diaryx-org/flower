@@ -63,13 +63,6 @@ jobs:
     # builds the staticlib with it.
     - uses: dtolnay/rust-toolchain@stable
 
-    # fig-sys ships a prebuilt payload for aarch64-apple-darwin, so this build
-    # should never reach for Zig; it is here so that a payload missing from
-    # some fig release costs minutes of compiling rather than a failed tag.
-    # Version mirrors ci.yml.
-    - uses: mlugg/setup-zig@v2
-      with: { version: "0.16.0" }
-
     - uses: Swatinem/rust-cache@v2
 
     - name: Write the App Store Connect API key

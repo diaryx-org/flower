@@ -379,22 +379,15 @@ pub struct FlowerDoc {
     inner: Mutex<Inner>,
 }
 
-/// The guarded model. A newtype so it can carry the `unsafe impl Send` below;
-/// every access goes through [`FlowerDoc::lock`].
+/// The guarded model; every access goes through [`FlowerDoc::lock`].
+///
+/// UniFFI hands `FlowerDoc` to Swift as a reference-counted handle that must be
+/// `Send + Sync`. fig's `Editor` is `Send` (since fig 6) but not `Sync`, so
+/// `Inner` is `Send` on its own and the `Mutex` supplies the `Sync`: it
+/// serializes every read and mutation. The intended usage is still
+/// main-thread-driven; this only lets the handle cross threads, it does not
+/// invite concurrent use.
 struct Inner(Model<FigBackend>);
-
-// SAFETY: `Model<FigBackend>` embeds a `fig::Editor`, which holds a
-// `NonNull<FigEditor>` and is therefore `!Send`. UniFFI hands `FlowerDoc` to
-// Swift as a reference-counted handle that must be `Send + Sync`, so `Inner` must
-// be `Send`. This is sound because:
-//   1. Every access goes through `FlowerDoc::lock()` — the `Mutex` serializes all
-//      reads and mutations, so there is never concurrent access to the handle.
-//   2. fig's editor handle owns a plain heap allocation with no thread-affinity
-//      (no thread-locals, no per-thread state) — moving the pointer between
-//      threads is fine as long as use is serialized, which (1) guarantees.
-// The intended usage is still main-thread-driven; this only permits the handle to
-// cross threads safely, it does not invite concurrent use.
-unsafe impl Send for Inner {}
 
 impl std::ops::Deref for Inner {
     type Target = Model<FigBackend>;
@@ -1054,21 +1047,10 @@ pub fn select_index<B: Backend>(model: &mut Model<B>, index: u32) {
     model.select_row(index as usize);
 }
 
-/// Map a format name (the file extension, lowercased) onto a `fig::Format`.
+/// Map a format name (the file extension, any case) onto a `fig::Format`.
 fn parse_format(name: &str) -> Result<Format, FlowerError> {
-    Ok(match name.to_ascii_lowercase().as_str() {
-        "json" => Format::Json,
-        "jsonc" => Format::Jsonc,
-        "json5" => Format::Json5,
-        "yaml" | "yml" => Format::Yaml,
-        "toml" => Format::Toml,
-        "zon" => Format::Zon,
-        "fig" | "figl" => Format::Fig,
-        other => {
-            return Err(FlowerError::UnknownFormat {
-                name: other.to_string(),
-            });
-        }
+    flower_core::format::from_extension(name).ok_or_else(|| FlowerError::UnknownFormat {
+        name: name.to_ascii_lowercase(),
     })
 }
 

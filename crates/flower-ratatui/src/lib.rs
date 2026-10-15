@@ -1079,7 +1079,8 @@ timeout = 30.5
 ";
 
     fn model() -> Model<FigBackend> {
-        let backend = FigBackend::open(SAMPLE.as_bytes(), fig::Format::Toml).expect("open");
+        let backend =
+            FigBackend::open(SAMPLE.as_bytes(), fig_toml::format().unwrap()).expect("open");
         let mut model = Model::new(backend).expect("model");
         model.set_view(ViewMode::Pages);
         model
@@ -1171,7 +1172,8 @@ timeout = 30.5
         use flower_core::schema::{Constraint, Schema};
         use flower_core::{FieldRule, PathPat, Term};
 
-        let backend = FigBackend::open(b"status = \"draft\"\n", fig::Format::Toml).expect("open");
+        let backend =
+            FigBackend::open(b"status = \"draft\"\n", fig_toml::format().unwrap()).expect("open");
         let mut model = Model::new(backend).expect("model");
         model.set_view(ViewMode::Pages);
         model.set_schema(Schema::new(vec![
@@ -1210,7 +1212,7 @@ timeout = 30.5
 title = \"flower\"
 port = 8080 # dev only
 ";
-        let backend = FigBackend::open(src.as_bytes(), fig::Format::Toml).expect("open");
+        let backend = FigBackend::open(src.as_bytes(), fig_toml::format().unwrap()).expect("open");
         let mut model = Model::new(backend).expect("model");
         model.set_view(ViewMode::Pages);
         let out = render(&model, 60, 8);
@@ -1227,7 +1229,7 @@ port = 8080 # dev only
     #[test]
     fn a_trailing_comment_gives_way_before_the_value_does() {
         let src = "port = 8080 # a comment far longer than the row has room for\n";
-        let backend = FigBackend::open(src.as_bytes(), fig::Format::Toml).expect("open");
+        let backend = FigBackend::open(src.as_bytes(), fig_toml::format().unwrap()).expect("open");
         let mut model = Model::new(backend).expect("model");
         model.set_view(ViewMode::Pages);
         let out = render(&model, 30, 6);
@@ -1269,7 +1271,7 @@ port = 8080 # dev only
             {"name": "js-sshconfig", "extensions": [],
              "command": ["fig-quickjs", "~/diaryx/fig-quickjs/languages/sshconfig.mjs"]}
         ]}"#;
-        let backend = FigBackend::open(src, fig::Format::Json).expect("open");
+        let backend = FigBackend::open(src, fig_json::format().unwrap()).expect("open");
         let mut model = Model::new(backend).expect("model");
         model.set_view(ViewMode::Pages);
         model.fit_to_room(page_room(30));
@@ -1361,7 +1363,7 @@ port = 8080 # dev only
     fn a_tag_list_too_long_for_its_row_keeps_a_row_per_member() {
         let tags: Vec<String> = (0..12).map(|i| format!("\"tag-number-{i}\"")).collect();
         let src = format!("tags = [{}]\n", tags.join(", "));
-        let backend = FigBackend::open(src.as_bytes(), fig::Format::Toml).expect("open");
+        let backend = FigBackend::open(src.as_bytes(), fig_toml::format().unwrap()).expect("open");
         let mut m = Model::new(backend).expect("model");
         m.set_view(ViewMode::Pages);
         m.fit_to_room(page_room(30));
@@ -1387,7 +1389,8 @@ port = 8080 # dev only
 
     #[test]
     fn a_flat_document_gets_the_whole_width() {
-        let backend = FigBackend::open(b"alpha = 1\nbeta = 2\n", fig::Format::Toml).expect("open");
+        let backend =
+            FigBackend::open(b"alpha = 1\nbeta = 2\n", fig_toml::format().unwrap()).expect("open");
         let mut model = Model::new(backend).expect("model");
         model.set_view(ViewMode::Pages);
         let out = render(&model, 76, 8);
@@ -1404,7 +1407,7 @@ port = 8080 # dev only
             .map(|i| format!(r#"{{"name": "r{i}", "lang": "rust"}}"#))
             .collect();
         let src = format!(r#"{{"repo": [{}]}}"#, items.join(", "));
-        let backend = FigBackend::open(src.as_bytes(), fig::Format::Json).expect("open");
+        let backend = FigBackend::open(src.as_bytes(), fig_json::format().unwrap()).expect("open");
         let mut model = Model::new(backend).expect("model");
         model.set_view(ViewMode::Pages);
         model.fit_to_room(page_room(24));
@@ -1465,7 +1468,7 @@ port = 8080 # dev only
     fn a_long_value_is_truncated_before_the_key_is() {
         let backend = FigBackend::open(
             format!("key = \"{}\"\n", "x".repeat(200)).as_bytes(),
-            fig::Format::Toml,
+            fig_toml::format().unwrap(),
         )
         .expect("open");
         let mut model = Model::new(backend).expect("model");
@@ -1483,7 +1486,7 @@ port = 8080 # dev only
             {"uses": "mlugg/setup-zig@v2", "with": {"version": "0.16.0"}},
             {"run": "cargo xtask ci"}
         ]}"#;
-        let backend = FigBackend::open(src, fig::Format::Json).expect("open");
+        let backend = FigBackend::open(src, fig_json::format().unwrap()).expect("open");
         let mut model = Model::new(backend).expect("model");
         model.set_view(ViewMode::Pages);
         model.focus_on(&[Seg::Key("steps".into())]);
@@ -1566,7 +1569,7 @@ port = 8080 # dev only
 title = \"flower\"
 port = 8080
 ";
-        let backend = FigBackend::open(src.as_bytes(), fig::Format::Toml).expect("open");
+        let backend = FigBackend::open(src.as_bytes(), fig_toml::format().unwrap()).expect("open");
         let mut m = Model::new(backend).expect("model");
         m.set_view(ViewMode::Pages);
         let area = Rect::new(0, 0, 40, 8);
@@ -1639,7 +1642,7 @@ port = 8080
     fn a_small_container_shows_its_contents_on_the_row() {
         let backend = FigBackend::open(
             br#"{"on": {"push": {"branches": ["main"]}, "jobs": {"a": {"b": {"c": 1}}}}}"#,
-            fig::Format::Json,
+            fig_json::format().unwrap(),
         )
         .expect("open");
         let mut m = Model::new(backend).expect("model");

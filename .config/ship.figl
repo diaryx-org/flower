@@ -34,9 +34,7 @@ tag_starts
 # `CI / <name>` — renaming it renames the required status check) and `run` (run
 # by `bash -eo pipefail -c` at the repository root). `runner` is the workflow's:
 # `components` are the rustup components it installs, and `builds = false`
-# skips both the pinned Zig (flower's `fig` dependency is Zig-backed, and its
-# build.rs runs `zig build`) and restoring the cargo cache. Cheapest and most
-# likely to fail first.
+# skips restoring the cargo cache. Cheapest and most likely to fail first.
 #
 # The Swift half of flower (`packages/flower-swift`, `apps/flower-editor`) is
 # mostly not here: compiling it needs macOS and Xcode, and
@@ -80,7 +78,7 @@ job
 > > run = bash scripts/gen-bindings.sh --check
 > *
 > > # apps/flower-editor/project.yml states the workspace version. Reads one
-> > # file and compiles nothing but xtask, so no Zig and no cache.
+> > # file and compiles nothing but xtask, so no cache.
 > > id = app-version
 > > name = App version
 > > run = cargo xtask app-version

@@ -23,10 +23,19 @@ repository = "https://github.com/diaryx-org/flower"
 readme = "README.md"
 
 [workspace.dependencies]
-# Zig-backed config AST + lossless editor.
-fig = "5.1.2"
-# The generic, prov-agnostic schema engine
-fig-schema = "0.4.0"
+# Config AST + lossless editor (pure Rust since fig 7). fig's core names no
+# language (fig 6): a `fig::Format` is a handle a language crate hands back when
+# it registers, so flower depends on the crate of each format it opens, each
+# without serde.
+fig = "7"
+fig-json = { version = "7", default-features = false, features = ["fig"] }
+fig-yaml = { version = "7", default-features = false, features = ["fig"] }
+fig-toml = { version = "7", default-features = false, features = ["fig"] }
+fig-zon = { version = "7", default-features = false, features = ["fig"] }
+fig-figl = { version = "7", default-features = false, features = ["fig"] }
+# The generic, prov-agnostic schema engine — the library alone, without its CLI
+# (0.5 is its fig 7 release).
+fig-schema = { version = "0.5", default-features = false }
 ratatui = "0.29"
 anyhow = "1"
 # Internal crates.

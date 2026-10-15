@@ -9,9 +9,9 @@
 //! decides *when* they need to run, then builds and launches.
 //!
 //! `cargo xtask sync-versions` writes the workspace version into the app's
-//! `MARKETING_VERSION`, and the `app-version` job checks the two agree. The
-//! release tooling moves every Cargo manifest and knows nothing about an Xcode
-//! setting, so `.config/release.toml` runs the sync as the bump's `post_bump`.
+//! `MARKETING_VERSION`, and the `app-version` job checks the two agree. `ship
+//! bump` moves every Cargo manifest and knows nothing about an Xcode setting,
+//! so `.config/ship.figl` runs the sync as the bump's `post_bump`.
 
 use crate::{Result, Sh};
 use std::path::{Path, PathBuf};

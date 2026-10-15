@@ -1,37 +1,22 @@
-//! flower's CI, as one program.
+//! flower's tasks: the ones too big to be a command.
 //!
-//! Every job the CI workflow runs is one entry in [`JOBS`] and one
-//! `cargo xtask <id>` invocation. The workflow itself holds no build knowledge:
-//! it asks `cargo xtask ci-matrix` what the jobs are, then runs each one by id.
-//! Adding, renaming, reordering, or retiring a job is an edit to this file and
-//! nothing else — the YAML does not change.
+//! CI itself is the `job` list in `.config/ship.figl`, run by `ship ci` here
+//! and on the runners. Most of its jobs are plain commands; the two that are
+//! real logic run a task from here — `package-isolation`, which builds each
+//! workspace member alone from a list a test keeps whole, and `app-version`,
+//! which reads the app's `project.yml` against the workspace version.
 //!
-//! Locally, `cargo xtask ci` runs the same jobs in the same order against the
-//! same commands, so a green run here is a green run there.
+//! The rest are the app's. `cargo xtask swift` builds and launches the Mac app
+//! and lives in [`app`] beside `app-version` and `sync-versions` (which a
+//! release bump runs as its `post_bump`); `cargo xtask package` — the signed,
+//! notarised `.dmg` that `mac-app.yml` attaches to a release — lives in
+//! [`package`].
 //!
-//! Cutting a release lives here too, in [`release`], for the same reason: the
-//! publish workflow asks the program what to publish rather than holding a list
-//! of crates that goes stale the moment the workspace gains one.
+//! Cutting a release does not live here. It is `ship`, configured by the same
+//! `.config/ship.figl`.
 //!
-//! There are no dependencies on purpose. Every CI job builds this crate before
-//! it can start, so its build time is paid several times over per push.
-//!
-//! The Swift half of flower — `packages/flower-swift`, and the Mac app in
-//! `apps/flower-editor` — is mostly not in this table. Compiling and testing it
-//! needs macOS and an Xcode toolchain; `scripts/check-swift.sh` and
-//! `scripts/test-swift.sh` are run by hand on a Mac until CI grows a macOS
-//! runner, at which point they become two more rows below. The one exception is
-//! `bindings`: the committed UniFFI Swift binding is generated *from Rust*
-//! metadata, so a Linux runner can regenerate and diff it without compiling any
-//! Swift. The other is `app-version`, which only reads the app's
-//! `project.yml`; `cargo xtask swift` builds and launches the app, and lives
-//! in [`app`] beside it, as `cargo xtask package` — the signed, notarised
-//! `.dmg` that `mac-app.yml` attaches to a release — lives in [`package`].
-//!
-//! Cutting a release does not live here. It is `release <command>`, from
-//! diaryx-org/devtools, configured by `.config/release.toml` — the same tool
-//! flower, prov, twig, leaf, and the historica repos all cut releases with,
-//! because five copies of one program is five places for it to drift.
+//! There are no dependencies on purpose. CI jobs build this crate before they
+//! can start, so its build time is paid on every push.
 
 mod app;
 mod package;
@@ -44,113 +29,6 @@ use std::process::{Command, ExitCode};
 /// there is nothing for a CI runner to recover from.
 type Result<T> = std::result::Result<T, String>;
 
-/// One CI job: what to call it, what the runner must install for it, and the
-/// work itself.
-struct Job {
-    /// `cargo xtask <id>`, and the key the workflow dispatches on.
-    id: &'static str,
-    /// The name GitHub shows in the checks list. Renaming it renames the
-    /// required status check, so branch protection has to be updated to match.
-    name: &'static str,
-    /// rustup components the job needs, comma-joined for
-    /// `dtolnay/rust-toolchain`. Empty means the default toolchain is enough.
-    components: &'static str,
-    /// Does this job *compile* the workspace? If so the runner needs the pinned
-    /// Zig toolchain — flower's `fig` dependency is Zig-backed and its build.rs
-    /// runs `zig build` — and restoring the cargo cache is worth its cost.
-    /// `fmt` is the one job that only ever parses.
-    builds: bool,
-    /// One line of explanation, printed by `cargo xtask` with no arguments.
-    about: &'static str,
-    run: fn(&Sh) -> Result<()>,
-}
-
-/// The whole of CI, in the order `cargo xtask ci` runs it: cheapest and most
-/// likely to fail first.
-const JOBS: &[Job] = &[
-    Job {
-        id: "fmt",
-        name: "Format",
-        components: "rustfmt",
-        builds: false,
-        about: "rustfmt, in check mode",
-        run: fmt,
-    },
-    Job {
-        id: "clippy",
-        name: "Clippy",
-        components: "clippy",
-        builds: true,
-        about: "clippy over every target, warnings denied",
-        run: clippy,
-    },
-    Job {
-        id: "test",
-        name: "Test",
-        components: "",
-        builds: true,
-        about: "the workspace test suite",
-        run: test,
-    },
-    Job {
-        id: "package-isolation",
-        name: "Package isolation",
-        components: "",
-        builds: true,
-        about: "build each crate alone, without workspace feature unification",
-        run: package_isolation,
-    },
-    Job {
-        id: "bindings",
-        name: "Swift bindings",
-        components: "",
-        builds: true,
-        about: "the committed UniFFI Swift binding matches crates/flower-ffi",
-        run: bindings,
-    },
-    Job {
-        id: "app-version",
-        name: "App version",
-        components: "",
-        builds: false,
-        about: "apps/flower-editor/project.yml states the workspace version",
-        run: app::check_version,
-    },
-    Job {
-        id: "msrv",
-        name: "MSRV",
-        components: "",
-        builds: true,
-        about: "build on the minimum supported Rust version",
-        run: msrv,
-    },
-];
-
-// ---------------------------------------------------------------------------
-// The jobs
-// ---------------------------------------------------------------------------
-
-fn fmt(sh: &Sh) -> Result<()> {
-    sh.cargo(&["fmt", "--all", "--check"])
-}
-
-/// Warnings are errors in CI, so they are errors here too — a lint that only
-/// fires on the runner is a lint found too late.
-fn clippy(sh: &Sh) -> Result<()> {
-    sh.cargo(&[
-        "clippy",
-        "--workspace",
-        "--all-targets",
-        "--",
-        "-D",
-        "warnings",
-    ])
-}
-
-fn test(sh: &Sh) -> Result<()> {
-    sh.cargo(&["test", "--workspace"])
-}
-
 /// Workspace feature unification means `cargo check --workspace` can pass even
 /// when a crate cannot compile on its own — some other member's feature
 /// selection quietly fills the gap. Each entry below builds one crate in
@@ -158,7 +36,8 @@ fn test(sh: &Sh) -> Result<()> {
 /// surprise.
 ///
 /// A new workspace member belongs in this list; the test at the bottom of this
-/// file is what says so when one is forgotten.
+/// file is what says so when one is forgotten. `ship ci package-isolation` runs
+/// it.
 const ISOLATED: &[&[&str]] = &[
     &["-p", "flower-core"],
     &["-p", "flower-ratatui"],
@@ -175,49 +54,8 @@ fn package_isolation(sh: &Sh) -> Result<()> {
     Ok(())
 }
 
-/// The Swift package is consumed by version from a bare git checkout, so its
-/// UniFFI binding under `packages/flower-swift/uniffi-generated/` is committed —
-/// and can therefore go stale against `crates/flower-ffi`. The script
-/// regenerates from the crate's embedded metadata and diffs; the output is
-/// arch-neutral source, which is what lets this row run on a Linux runner while
-/// the rest of the Swift half waits for a macOS one.
-fn bindings(sh: &Sh) -> Result<()> {
-    sh.run("bash", &["scripts/gen-bindings.sh", "--check"])
-}
-
-/// Build on the crate's declared minimum supported Rust version. A build, not a
-/// test run: MSRV is a promise about who can *compile* flower, and the
-/// dev-dependencies and test tooling need not hold to it.
-///
-/// The version is read from `workspace.package.rust-version`, so the pin can
-/// never drift from the declared floor — bump it in Cargo.toml and this follows.
-fn msrv(sh: &Sh) -> Result<()> {
-    let version = sh.workspace_rust_version()?;
-    println!("MSRV from Cargo.toml: {version}");
-    // Idempotent: rustup reports an already-installed toolchain and returns 0.
-    sh.run(
-        "rustup",
-        &[
-            "toolchain",
-            "install",
-            &version,
-            "--profile",
-            "minimal",
-            "--no-self-update",
-        ],
-    )
-    .map_err(|e| format!("{e}\n\nthe MSRV job needs rustup on PATH to pin Rust {version}"))?;
-    // `rustup run`, not `cargo +{version}`: the `+toolchain` shorthand is a
-    // rustup-proxy feature, and $CARGO may well point past the proxy at a real
-    // toolchain binary that does not understand it.
-    sh.run(
-        "rustup",
-        &["run", &version, "cargo", "build", "--workspace"],
-    )
-}
-
 // ---------------------------------------------------------------------------
-// Driving them
+// Driving the tasks
 // ---------------------------------------------------------------------------
 
 fn main() -> ExitCode {
@@ -229,29 +67,33 @@ fn main() -> ExitCode {
             print!("{}", usage());
             return ExitCode::SUCCESS;
         }
-        ["ci"] => ci(&sh),
-        ["ci-matrix"] => {
-            println!("{}", ci_matrix());
-            Ok(())
-        }
+        ["package-isolation"] => package_isolation(&sh),
+        ["app-version"] => app::check_version(&sh),
         ["swift", ref rest @ ..] => app::swift(&sh, rest),
         ["package", ref rest @ ..] => package::package(&sh, rest),
         ["sync-versions"] => app::sync_versions(&sh),
-        // These moved to the shared tool rather than being retired, and a
-        // muscle-memory `cargo xtask release` should say where they went.
+        // These moved to ship rather than being retired, and a muscle-memory
+        // `cargo xtask release` should say where they went.
         [
-            command @ ("version" | "bump" | "changelog" | "publish" | "release" | "release-notes"),
+            command @ ("ci" | "ci-matrix" | "fmt" | "clippy" | "test" | "bindings" | "msrv"),
             ..,
         ] => Err(format!(
-            "releasing moved out of xtask: `cargo xtask {command}` is now \
-                 `release {command}`,\nthe shared tooling this repo configures in \
-                 .config/release.toml.\n\n{}",
+            "CI moved out of xtask: `cargo xtask {command}` is now a job in \
+                 .config/ship.figl.\n`ship ci` runs every job, `ship ci <id>` one, and \
+                 `ship ci --list` names them.\n\n{}",
             usage()
         )),
-        [id] => match JOBS.iter().find(|job| job.id == id) {
-            Some(job) => (job.run)(&sh),
-            None => Err(format!("unknown job `{id}`\n\n{}", usage())),
-        },
+        [
+            command @ ("version" | "bump" | "changelog" | "publish" | "release" | "release-notes"
+            | "github-release"),
+            ..,
+        ] => Err(format!(
+            "releasing moved out of xtask: `cargo xtask {command}` is now `{}`,\n\
+             configured in .config/ship.figl.\n\n{}",
+            ship_spelling(command),
+            usage()
+        )),
+        [id] => Err(format!("unknown task `{id}`\n\n{}", usage())),
         [id, ..] => Err(format!("`{id}` takes no arguments\n\n{}", usage())),
     };
 
@@ -264,51 +106,32 @@ fn main() -> ExitCode {
     }
 }
 
-/// Every job, in order — what CI does, on one machine. Stops at the first
-/// failure, on the theory that a red build is worth reading before the next one
-/// buries it.
-fn ci(sh: &Sh) -> Result<()> {
-    for job in JOBS {
-        println!("\n\x1b[1m━━ {} ━━\x1b[0m", job.name);
-        (job.run)(sh)?;
+/// Where a release command that left xtask lives now.
+fn ship_spelling(command: &str) -> &'static str {
+    match command {
+        "version" => "ship version",
+        "bump" => "ship bump",
+        "changelog" => "ship changelog",
+        "release-notes" => "ship notes",
+        "github-release" => "ship github",
+        // `release` and `publish` are both the cut: `ship <spec>`, which
+        // pushes and writes the GitHub release only with --push.
+        _ => "ship <patch|minor|major|x.y.z>",
     }
-    println!("\n\x1b[32mall {} jobs passed\x1b[0m", JOBS.len());
-    Ok(())
-}
-
-/// The job table as a single line of JSON, for the workflow's `strategy.matrix`.
-///
-/// Hand-rolled rather than serde-derived: the crate has no dependencies, and
-/// every value here is a `&'static str` literal from [`JOBS`] with nothing in it
-/// that JSON would need escaped. A job name with a quote or a backslash in it
-/// would produce invalid JSON, and `cargo xtask ci-matrix` in the test below is
-/// what would notice.
-fn ci_matrix() -> String {
-    let entries: Vec<String> = JOBS
-        .iter()
-        .map(|job| {
-            format!(
-                r#"{{"id":"{}","name":"{}","components":"{}","builds":{}}}"#,
-                job.id, job.name, job.components, job.builds
-            )
-        })
-        .collect();
-    format!("[{}]", entries.join(","))
 }
 
 fn usage() -> String {
     let mut out = String::from(
-        "flower's CI, and its releases. Each job below is exactly what the CI \
-         workflow runs.\n\n\
-         usage: cargo xtask <command>\n\njobs:\n\n",
+        "flower's tasks.\n\n\
+         usage: cargo xtask <task>\n\nCI jobs that are programs:\n\n",
     );
-    for job in JOBS {
-        out.push_str(&format!("  {:<18}{}\n", job.id, job.about));
-    }
-    out.push_str(&format!("  {:<18}{}\n", "ci", "every job above, in order"));
     out.push_str(&format!(
         "  {:<18}{}\n",
-        "ci-matrix", "the job table as JSON, for the workflow matrix"
+        "package-isolation", "build each crate alone, without workspace feature unification"
+    ));
+    out.push_str(&format!(
+        "  {:<18}{}\n",
+        "app-version", "apps/flower-editor/project.yml states the workspace version"
     ));
     out.push_str("\nthe app:\n\n");
     out.push_str(&format!(
@@ -323,11 +146,9 @@ fn usage() -> String {
         "  {:<18}{}\n",
         "sync-versions", "write the workspace version into the app's project.yml"
     ));
-    // Releasing is not CI and is not here: it is one shared tool across the
-    // org, so that the changelog contract has one implementation rather than
-    // five that agree until they don't.
     out.push_str(
-        "\nreleasing:  release <command>   (diaryx-org/devtools; see .config/release.toml)\n",
+        "\nCI:         ship ci [<job>]   (the jobs are in .config/ship.figl)\n\
+         releasing:  ship <command>    (see `ship help`)\n",
     );
     out
 }
@@ -340,8 +161,8 @@ fn usage() -> String {
 // The workspace
 // ---------------------------------------------------------------------------
 //
-// This came across from `release.rs` when releasing moved to the shared tooling.
-// Only the isolation test still asks the question, and it is a CI question: a
+// This came across from `release.rs` when releasing left xtask. Only the
+// isolation test still asks the question, and it is a CI question: a
 // crate added to the workspace and left out of `ISOLATED` is built by
 // `--workspace` and by nothing alone.
 
@@ -475,57 +296,11 @@ impl Sh {
         }
         Err("no `version` under [workspace.package] in Cargo.toml".into())
     }
-
-    /// `workspace.package.rust-version`, the single source of truth for the MSRV.
-    fn workspace_rust_version(&self) -> Result<String> {
-        let manifest = self.root.join("Cargo.toml");
-        let text = std::fs::read_to_string(&manifest)
-            .map_err(|e| format!("could not read {}: {e}", manifest.display()))?;
-        text.lines()
-            .find_map(|line| line.trim().strip_prefix("rust-version"))
-            .and_then(|rest| rest.split('"').nth(1))
-            .map(str::to_owned)
-            .ok_or_else(|| format!("no `rust-version` in {}", manifest.display()))
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// The workflow's `fromJSON` is the only thing that parses `ci-matrix`, and
-    /// it fails at a point where the fix costs a push. Check the shape here
-    /// instead: one object per job, every field present, nothing needing an
-    /// escape.
-    #[test]
-    fn ci_matrix_is_well_formed_json() {
-        let json = ci_matrix();
-        assert!(json.starts_with('[') && json.ends_with(']'));
-        assert_eq!(json.matches("\"id\":").count(), JOBS.len());
-        assert_eq!(json.lines().count(), 1, "the workflow reads it as one line");
-
-        for job in JOBS {
-            for field in [job.id, job.name, job.components] {
-                assert!(
-                    !field.contains(['"', '\\']),
-                    "`{field}` would need JSON escaping, which ci_matrix does not do",
-                );
-            }
-            assert!(json.contains(&format!("\"id\":\"{}\"", job.id)));
-        }
-    }
-
-    /// `ci` and `ci-matrix` are handled before the table is consulted, so a job
-    /// by either name would be unreachable.
-    #[test]
-    fn job_ids_are_distinct_and_dispatchable() {
-        let mut ids: Vec<&str> = JOBS.iter().map(|job| job.id).collect();
-        let count = ids.len();
-        ids.sort_unstable();
-        ids.dedup();
-        assert_eq!(ids.len(), count, "duplicate job id");
-        assert!(!ids.contains(&"ci") && !ids.contains(&"ci-matrix"));
-    }
 
     /// Every member of the workspace should be built alone by the isolation
     /// job; that is the whole point of it. `xtask` is exempt — it is this
@@ -580,16 +355,5 @@ mod tests {
             assert!(!m.publishable, "{} is not `publish = false`", m.name);
         }
         assert!(found.len() >= 5, "the array spans several lines");
-    }
-
-    /// The MSRV job reads this; if the parse breaks, the job silently pins the
-    /// wrong compiler or fails far from the cause.
-    #[test]
-    fn msrv_is_readable_from_the_manifest() {
-        let version = Sh::new().workspace_rust_version().unwrap();
-        assert!(
-            version.split('.').all(|part| part.parse::<u32>().is_ok()),
-            "`{version}` does not look like a Rust version",
-        );
     }
 }

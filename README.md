@@ -193,7 +193,7 @@ project is missing (or with `--regen`), builds, and opens the file you name
 unsigned and unsandboxed. Release builds are signed for team V4322HH5HU and
 sandboxed, with access to the files the user opens. The app's
 `MARKETING_VERSION` follows the workspace version: `cargo xtask
-sync-versions` writes it, the release bump runs that, and the
+sync-versions` writes it, `ship bump` runs that, and the
 `app-version` job checks it.
 
 `cargo xtask package` needs a Developer ID identity in the keychain and
@@ -330,8 +330,8 @@ app-specific bridge lives in provui, not here — flower doesn't depend on prov.
 
 ## Development
 
-CI is a program, not a YAML file: `cargo xtask ci` runs every job the workflow
-runs, in the same order, and `cargo xtask <job>` runs one.
+CI is the `job` list in `.config/ship.figl`, not a YAML file: `ship ci` runs
+every job the workflow runs, in the same order, and `ship ci <job>` runs one.
 
 | Job | What it runs |
 |---|---|
@@ -339,6 +339,8 @@ runs, in the same order, and `cargo xtask <job>` runs one.
 | `clippy` | `cargo clippy --workspace --all-targets -- -D warnings` |
 | `test` | `cargo test --workspace` |
 | `package-isolation` | each crate built alone, so workspace feature unification can't hide a crate that fails on its own |
+| `bindings` | the committed UniFFI Swift binding regenerated from `crates/flower-ffi` and diffed |
+| `app-version` | the app's `MARKETING_VERSION` checked against the workspace version |
 | `msrv` | a build on `workspace.package.rust-version` (1.88) |
 
 The Swift half needs macOS and Xcode, so it is run by hand:

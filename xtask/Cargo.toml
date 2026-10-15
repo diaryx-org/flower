@@ -1,8 +1,8 @@
-# flower's CI, as a program. Not a published crate — `publish = false` keeps it
-# out of any `cargo publish` sweep, and it deliberately has no dependencies:
-# every job in the workspace needs `cargo xtask` to build before it can do
-# anything, so the cost of building it is paid on every CI job and in every
-# developer's first run.
+# flower's tasks too big to be a command: two CI jobs, the app's build and
+# packaging, and the version sync a release bump runs. Not a published crate —
+# `publish = false` keeps it out of any `cargo publish` sweep, and it
+# deliberately has no dependencies: CI jobs build it before they can do
+# anything, so the cost of building it is paid on every push.
 [package]
 name = "xtask"
 version = "0.0.0"

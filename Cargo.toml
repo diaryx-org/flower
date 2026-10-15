@@ -1,8 +1,8 @@
 [workspace]
 resolver = "3"
-# Listed rather than globbed: `xtask` is flower's CI as a program, and both the
-# CI matrix and the publish order are derived from this line by reading each
-# member's manifest. A glob would leave those two with nothing to read.
+# Listed rather than globbed: xtask's test that every member is built alone by
+# the `package-isolation` job reads this line, and each member's manifest from
+# it. A glob would leave it with nothing to read.
 members = [
   "crates/flower-core",
   "crates/flower-ratatui",

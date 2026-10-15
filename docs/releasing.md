@@ -4,17 +4,16 @@ The whole workspace shares one version number, one tag, and one changelog. A
 release is therefore one command:
 
 ```console
-$ release release minor          # bump, changelog, commit, tag
-$ release release minor --push   # …and push, which ships the binaries
+$ ship minor          # bump, changelog, commit, tag
+$ ship minor --push   # …and push, which ships the binaries
 ```
 
-`release` is the shared tooling in [diaryx-org/devtools][devtools], which
-flower, prov, twig, leaf, and the historica repos all cut releases with. What
-makes flower flower is `.config/release.toml` and nothing else; the behaviour
-lives there. It used to be `cargo xtask release`, one of five copies of the same
-program.
+`ship` is the org's release tool, [diaryx-org/ship][ship], which the other
+diaryx-org repositories cut releases with too. What makes flower flower is
+`.config/ship.figl` and nothing else; the behaviour lives there. It used to be
+`cargo xtask release`, one of five copies of the same program.
 
-[devtools]: https://github.com/diaryx-org/devtools
+[ship]: https://github.com/diaryx-org/ship
 
 Everything below is what that command does, and what it deliberately refuses to
 do on its own.
@@ -66,30 +65,31 @@ ref it is run on and keeps the image as a workflow artifact, touching no
 release: the rehearsal. Dispatched with `cask-tag`, it only rewrites the cask
 for a release that already has its image.
 
-That is why `release` stops at the local tag unless it is given `--push`: every
+That is why `ship` stops at the local tag unless it is given `--push`: every
 step before the push is a commit you can amend or throw away, and the push is the
 step that ships. Without `--push` the command prints the two
 `git push` lines it did not run, and the two-line undo.
 
-## What `release` checks first
+## What `ship` checks first
 
-`release release` refuses before it writes anything if the working tree is
+`ship <spec>` refuses before it writes anything if the working tree is
 dirty, the branch is not `main`, `main` is behind `origin/main`, the tag
 already exists locally or on origin, or git-cliff is not installed.
 
-Then it runs the whole of CI (`cargo xtask ci`), the same jobs the workflow runs.
+Then it runs the whole of CI (`ship ci`), the same jobs the workflow runs.
 `--no-verify` skips that, and is for a release you have just watched go green.
 
 ## The pieces, on their own
 
 | Command | What it does |
 |---|---|
-| `release version` | print the workspace version |
-| `release bump <patch\|minor\|major\|x.y.z\|as-is>` | move `[workspace.package]`, every internal `path`+`version` dependency, and the lockfile |
-| `release changelog` | print the generated region |
-| `release changelog --write` | splice it into `docs/CHANGELOG.md` |
-| `release changelog --check` | fail if that region is stale |
-| `release release-notes [tag]` | that release's changelog section, as a GitHub release body |
+| `ship` | propose: what each version would be, and what the commits say |
+| `ship version` | print the workspace version |
+| `ship bump <patch\|minor\|major\|x.y.z\|as-is>` | move `[workspace.package]`, every internal `path`+`version` dependency, and the lockfile |
+| `ship changelog` | print the generated region |
+| `ship changelog --write` | splice it into `docs/CHANGELOG.md` |
+| `ship changelog --check` | fail if that region is stale |
+| `ship notes [tag]` | that release's changelog section, as a GitHub release body |
 
 ## The changelog
 
@@ -101,7 +101,7 @@ Then it runs the whole of CI (`cargo xtask ci`), the same jobs the workflow runs
 ```
 
 inside `## Unreleased`. git-cliff fills it from the commits since the last tag
-through the shared `cliff.toml` in diaryx-org/devtools; `release` renders it one
+through ship's own `cliff.toml`; `ship` renders it one
 last time, moves it into a `## vX.Y.Z — date` section, and empties the region.
 Edits inside the markers are lost on the next write. A release **intro** — for a
 release that wants a narrative rather than a list — goes in the released section
@@ -126,7 +126,7 @@ Two conventions carry straight into the changelog.
 lacks`, not `add(model) offer …`. Much of flower's log drops it, and
 git-conventional then cannot tell where the subject ends — the whole commit body
 lands in the bullet and the trailers below it are never parsed as trailers. A
-preprocessor in the shared `cliff.toml` in diaryx-org/devtools puts the colon
+preprocessor in ship's `cliff.toml` puts the colon
 back for the known types so the existing history still reads, but it is a rescue,
 not a licence.
 
@@ -153,30 +153,33 @@ Behavioural-change: `Model::set_value_at` returns `Err` on a path the schema
 One trailer per observable difference; a commit may carry several. Continuation
 lines are indented two spaces.
 
-## CI, for the same reason
+## CI, in the same file
 
-`xtask` holds CI too, and for the same reason it holds releases: the workflow
-should not know things the manifests already say. `cargo xtask ci` runs every job
-locally, in the workflow's order; `cargo xtask <id>` runs one.
+CI is the `job` list in `.config/ship.figl`, beside the release settings, so the
+workflow knows nothing of its own: it asks `ship ci --matrix` for the jobs and
+runs each as `ship ci <id>`. `ship ci` runs every job locally, in the workflow's
+order; `ship ci <id>` runs one. A job that is real logic rather than a command
+is a `cargo xtask` task the job runs.
 
 | Job | What it runs |
 |---|---|
 | `fmt` | `cargo fmt --all --check` |
 | `clippy` | `cargo clippy --workspace --all-targets -- -D warnings` |
 | `test` | `cargo test --workspace` |
-| `package-isolation` | `cargo check -p <crate>` for each member, so workspace feature unification cannot hide a crate that fails to build alone |
-| `app-version` | reads `apps/flower-editor/project.yml` and checks its `MARKETING_VERSION` is the workspace version (`cargo xtask sync-versions` writes it, as the bump's `post_bump`) |
+| `package-isolation` | `cargo xtask package-isolation`: `cargo check -p <crate>` for each member, so workspace feature unification cannot hide a crate that fails to build alone |
+| `bindings` | `scripts/gen-bindings.sh --check`: regenerates the committed UniFFI Swift binding and diffs |
+| `app-version` | `cargo xtask app-version`: reads `apps/flower-editor/project.yml` and checks its `MARKETING_VERSION` is the workspace version (`cargo xtask sync-versions` writes it, as the bump's `post_bump`) |
 | `msrv` | a `--workspace` build on `workspace.package.rust-version` |
 
-Adding or renaming a job is an edit to `xtask/src/main.rs` and nothing else — the
-workflow reads the table from `cargo xtask ci-matrix`. Renaming one renames the
+Adding or renaming a job is an edit to `.config/ship.figl` and nothing else — the
+workflow reads the list from `ship ci --matrix`. Renaming one renames the
 required status check, so branch protection has to follow.
 
 The Swift half (`packages/flower-swift`, `apps/flower-editor`) is mostly not in
-that table: compiling it needs macOS and Xcode. `scripts/check-swift.sh`
+that list: compiling it needs macOS and Xcode. `scripts/check-swift.sh`
 type-checks FlowerUI against the generated binding, and `scripts/test-swift.sh`
-runs its XCTest bundle; run them on a Mac. They become two more rows in `JOBS`
-the day CI grows a macOS runner. The exception is the `bindings` row, which
+runs its XCTest bundle; run them on a Mac. They become two more jobs in the list
+the day CI grows a macOS runner. The exception is the `bindings` job, which
 regenerates the *committed* UniFFI binding under
 `packages/flower-swift/uniffi-generated/` from `crates/flower-ffi` and diffs —
 Rust-only work that fits the Linux runner.

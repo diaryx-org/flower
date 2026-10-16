@@ -1,0 +1,51 @@
+# Flower on Dioxus's native renderer (Blitz): the `flower-dioxus` editor
+# widget (crates/flower-dioxus) in a window, with the file around it — open,
+# save, save as, the zoom and the window title — as crates/flower-tui is the
+# terminal's host over flower-ratatui.
+#
+# A workspace of its own, like the widget's: `dioxus-native` is published only
+# as 0.8.0-alpha.2, which pins a winit beta and a large wgpu tree that nothing
+# in flower's root workspace should resolve. Build it by manifest:
+#
+#     cargo run --manifest-path apps/flower-dioxus/Cargo.toml -- config.toml
+#
+# Unlike leaf's app, it carries no patched winit: flower types into one line
+# at a time, and plain keys reach it unpatched. Press-and-hold accents and the
+# emoji picker on macOS need leaf's `patches/winit-appkit` here too.
+[workspace]
+
+[package]
+# Not `flower-dioxus`, which is the widget's name: one graph cannot hold two
+# packages by one name. The binary keeps it.
+name = "flower-dioxus-app"
+version = "0.0.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[[bin]]
+name = "flower-dioxus"
+path = "src/main.rs"
+
+[dependencies]
+flower-dioxus = { path = "../../crates/flower-dioxus" }
+flower-core = { path = "../../crates/flower-core" }
+dioxus = { version = "0.8.0-alpha.2", default-features = false, features = [
+    "macro",
+    "html",
+    "signals",
+    "hooks",
+] }
+# dioxus-native's defaults, but the classic `vello` renderer for
+# `vello-hybrid`, which the widget asks for (its Cargo.toml says why), and
+# without `hot-reload`.
+dioxus-native = { version = "0.8.0-alpha.2", default-features = false, features = [
+    "accessibility", "net", "html", "svg", "system-fonts", "clipboard", "file-dialog",
+    "woff", "text-transform-icu", "apple-font-embolden", "vello",
+] }
+# File dialogs and the unsaved-changes question. Already in the tree through
+# Blitz's own `file-dialog` feature.
+rfd = "0.17"
+# The clipboard, for ⌘V into an open value. Already in the tree through
+# Blitz's own `clipboard` feature.
+arboard = "3.7"

@@ -1,0 +1,44 @@
+# flower-dioxus — the embeddable page editor for Dioxus's native renderer
+# (Blitz): flower-core's page projection drawn by an HTML/CSS engine on wgpu,
+# with no webview. `apps/flower-dioxus` is one host for it; leaf's Dioxus
+# editor, showing a document's frontmatter, is meant to be another.
+#
+# A workspace of its own, and not a member of flower's root one: `dioxus-native`
+# is published only as 0.8.0-alpha.2, which pins a winit beta and a large wgpu
+# tree that nothing in the root workspace should resolve. The same split, for
+# the same reason, as leaf's `crates/leaf-dioxus`.
+#
+#     cargo test --manifest-path crates/flower-dioxus/Cargo.toml
+[workspace]
+
+[package]
+name = "flower-dioxus"
+version = "0.0.0"
+edition = "2024"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/diaryx-org/flower"
+description = "Embeddable Dioxus-native structural config editor widget for flower: the page view, its keys and its edit line, over flower-core."
+publish = false
+
+[dependencies]
+dioxus = { version = "0.8.0-alpha.2", default-features = false, features = [
+    "macro",
+    "html",
+    "signals",
+    "hooks",
+] }
+# What the editor needs Blitz to do to draw it correctly, and no more; the rest
+# of dioxus-native's features are the host's to choose.
+#
+# - `system-fonts`: the stylesheet names the system's monospace faces.
+# - `vello`, the classic renderer, not the default `vello-hybrid`, which cannot
+#   draw a bitmap glyph (a colour emoji in a value draws as nothing). Also what
+#   leaf-dioxus asks for, so a host carrying both builds one renderer.
+dioxus-native = { version = "0.8.0-alpha.2", default-features = false, features = [
+    "system-fonts", "vello",
+] }
+flower-core = { path = "../flower-core" }
+
+[dev-dependencies]
+fig-toml = { version = "7", default-features = false, features = ["fig"] }
+fig-yaml = { version = "7", default-features = false, features = ["fig"] }

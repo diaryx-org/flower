@@ -10,6 +10,12 @@ members = [
   "crates/flower-ffi",
   "xtask",
 ]
+# The Dioxus widget and its app are workspaces of their own, built by manifest
+# (`cargo test --manifest-path crates/flower-dioxus/Cargo.toml`): they are on
+# dioxus-native's 0.8 alpha, whose winit beta and wgpu tree nothing here should
+# resolve — the split leaf makes for crates/leaf-dioxus. Not members already;
+# excluded so a manifest that grows a glob does not take them in.
+exclude = ["crates/flower-dioxus", "apps/flower-dioxus"]
 
 [workspace.package]
 edition = "2024"

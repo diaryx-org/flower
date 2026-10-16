@@ -79,8 +79,8 @@ it, and what a window adds:
 | Key | What it does |
 |-----|--------------|
 | `j` / `k`, ↓ / ↑ | next / previous item on the page |
-| `l`, →, Return, Space | open the container as a page; on a value, edit it |
-| `h`, ←, Esc | back to the page that listed this one |
+| `l`, →, Return, Space, ⌘↓ | open the container as a page; on a value, edit it |
+| `h`, ←, Esc, ⌘↑ | back to the page that listed this one |
 | `e` / `E` | pick a value where the field has a vocabulary, else edit it / edit it as text |
 | `a` / `A` | add to the list the cursor is on or in, from the picker / as text |
 | `c` / `C` | edit the comment after the value / the block above it |

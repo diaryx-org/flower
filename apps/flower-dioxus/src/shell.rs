@@ -12,7 +12,7 @@ use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use dioxus::html::{Key, Modifiers};
+use dioxus::html::{Code, Key, Modifiers};
 use dioxus_native::winit::window::Window;
 use flower_core::{FigBackend, Model};
 use flower_dioxus::{Editor, Host, Look, Request, ZoomCommand};
@@ -44,10 +44,14 @@ impl Shell {
         }
     }
 
-    /// A key the editor did not take.
-    pub fn key(&self, ed: &Editor, key: &Key, mods: Modifiers) {
+    /// A key, from the window or replayed by a menu item: the editor's
+    /// first, and what it does not take, the shell's (⌘O).
+    pub fn chord(&self, ed: &Editor, key: Key, code: Code, mods: Modifiers) {
+        if ed.key(key.clone(), code, mods) {
+            return;
+        }
         if mods == Modifiers::SUPER
-            && let Key::Character(c) = key
+            && let Key::Character(c) = &key
             && c.eq_ignore_ascii_case("o")
         {
             self.open(ed);

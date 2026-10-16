@@ -5,8 +5,9 @@
 //! terminal and the window without relearning it — `j`/`k` and the arrows walk
 //! a page, `l`/`h` open and leave one, `e` picks or edits a value, `a` adds to
 //! a list, `c`/`C` edit the comments, `x` deletes, `u`/`U` undo and redo —
-//! with what a window adds: ⌘Z and ⇧⌘Z, ⌫ and ⌦ to delete, ⌥↑ and ⌥↓ to move
-//! an entry, and ⌘S, ⇧⌘S and the zoom for the host. Quitting is not here: a
+//! with what a window adds: ⌘Z and ⇧⌘Z, ⌘⌫ and ⌦ to delete, ⌥↑ and ⌥↓ to
+//! move an entry, the Finder's ⌘↓ and ⌘↑ to open a page and go to the one
+//! enclosing it, and ⌘S, ⇧⌘S and the zoom for the host. Quitting is not here: a
 //! window is closed by its host, the way every other window is.
 //!
 //! A chord with ⌘ or ⌃ that is not one of these is not the editor's, so a
@@ -85,6 +86,9 @@ fn normal<B: Backend>(
         },
         // ⌘⌫, as the Finder deletes.
         Key::Backspace if command => model.delete_selected(),
+        // The Finder's Go ▸ Open and Go ▸ Enclosing Folder.
+        Key::ArrowDown if command => model.page_enter(),
+        Key::ArrowUp if command => model.page_back(),
         _ if command || control => return Action::Ignored,
         Key::Character(c) => match c.as_str() {
             // The picker where the field has one, the text line where it does

@@ -46,6 +46,13 @@ dioxus-native = { version = "0.8.0-alpha.2", default-features = false, features 
 # File dialogs and the unsaved-changes question. Already in the tree through
 # Blitz's own `file-dialog` feature.
 rfd = "0.17"
+# The menu bar (`menu.rs`): Tauri's, the native NSMenu on macOS. Without its
+# default GTK backend: Linux shows no menu bar, and the menu still builds and
+# is tested there without GTK's system libraries.
+muda = { version = "0.21", default-features = false }
+# The menu bar's poll. Already in the tree: dioxus-native's `net` builds and
+# enters a tokio runtime with timers enabled.
+tokio = { version = "1", default-features = false, features = ["time"] }
 # The clipboard, for ⌘V into an open value. Already in the tree through
 # Blitz's own `clipboard` feature.
 arboard = "3.7"

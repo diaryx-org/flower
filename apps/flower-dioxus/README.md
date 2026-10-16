@@ -26,6 +26,14 @@ window around the editor.
   the system clipboard, and the window title is the file's name, "— Edited"
   while it has unsaved changes. ⌘O opens another file, asking first about
   unsaved changes.
+- `menu.rs` is the menu bar, through muda: Flower, File, Edit, Go, View and
+  Window. Every item is a key chord replayed through the same handler as the
+  keyboard, so the menu cannot disagree with it; a chord with ⌘ or ⌥ is
+  shown as the item's shortcut, and the editor's single letters are not,
+  since AppKit would take every `e` typed into a value for Edit Value. Items
+  are enabled for what the editor is doing — the page's commands off while a
+  value is open, Paste on only then, Undo and Redo by the journal. muda is
+  built without GTK, so Linux shows no menu bar but builds and tests it.
 - `file.rs` reads a file into a model, writes one back, and holds the dialogs
   — rfd's async ones, sheets on macOS, for the reason leaf-dioxus's `file.rs`
   gives.
@@ -36,8 +44,7 @@ winit beta and wgpu tree.
 
 ## Not yet
 
-- **A menu bar.** Every command is a key; leaf-dioxus's `menu.rs` (muda,
-  every editor item a key chord replayed) is the model to follow.
+- **A context menu**, as leaf-dioxus's right-click one.
 - **A patched winit.** Plain typing works unpatched; press-and-hold accents
   and the emoji picker on macOS need leaf's `patches/winit-appkit`, which a
   `[patch]` here would have to vendor again — the proposal for a shared,

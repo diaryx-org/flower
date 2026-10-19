@@ -13,7 +13,7 @@
 //! A chord with ⌘ or ⌃ that is not one of these is not the editor's, so a
 //! host's menu shortcut never types a letter into a value or deletes a row.
 
-use dioxus::html::{Key, Modifiers};
+use dioxus::html::{Key, Modifiers, NamedKey};
 use flower_core::{Backend, Mode, Model};
 
 use crate::host::Request;
@@ -41,7 +41,7 @@ pub enum ZoomCommand {
 
 /// Apply `key` to `model`.
 pub fn apply_key<B: Backend>(model: &mut Model<B>, key: &Key, mods: Modifiers) -> Action {
-    let command = mods.contains(Modifiers::SUPER);
+    let command = mods.contains(Modifiers::META);
     let control = mods.contains(Modifiers::CONTROL);
     let shift = mods.contains(Modifiers::SHIFT);
     let alt = mods.contains(Modifiers::ALT);
@@ -85,10 +85,10 @@ fn normal<B: Backend>(
             _ => return Action::Ignored,
         },
         // ⌘⌫, as the Finder deletes.
-        Key::Backspace if command => model.delete_selected(),
+        Key::Named(NamedKey::Backspace) if command => model.delete_selected(),
         // The Finder's Go ▸ Open and Go ▸ Enclosing Folder.
-        Key::ArrowDown if command => model.page_enter(),
-        Key::ArrowUp if command => model.page_back(),
+        Key::Named(NamedKey::ArrowDown) if command => model.page_enter(),
+        Key::Named(NamedKey::ArrowUp) if command => model.page_back(),
         _ if command || control => return Action::Ignored,
         Key::Character(c) => match c.as_str() {
             // The picker where the field has one, the text line where it does
@@ -115,13 +115,13 @@ fn normal<B: Backend>(
             "h" => model.page_back(),
             _ => return Action::Ignored,
         },
-        Key::ArrowDown if alt => model.move_selected_down(),
-        Key::ArrowUp if alt => model.move_selected_up(),
-        Key::ArrowDown => model.page_move_down(),
-        Key::ArrowUp => model.page_move_up(),
-        Key::ArrowRight | Key::Enter => model.page_enter(),
-        Key::ArrowLeft | Key::Escape => model.page_back(),
-        Key::Delete => model.delete_selected(),
+        Key::Named(NamedKey::ArrowDown) if alt => model.move_selected_down(),
+        Key::Named(NamedKey::ArrowUp) if alt => model.move_selected_up(),
+        Key::Named(NamedKey::ArrowDown) => model.page_move_down(),
+        Key::Named(NamedKey::ArrowUp) => model.page_move_up(),
+        Key::Named(NamedKey::ArrowRight) | Key::Named(NamedKey::Enter) => model.page_enter(),
+        Key::Named(NamedKey::ArrowLeft) | Key::Named(NamedKey::Escape) => model.page_back(),
+        Key::Named(NamedKey::Delete) => model.delete_selected(),
         _ => return Action::Ignored,
     }
     Action::Handled
@@ -137,9 +137,9 @@ fn editing<B: Backend>(model: &mut Model<B>, key: &Key, command: bool, control: 
                 model.edit_push(ch);
             }
         }
-        Key::Backspace => model.edit_backspace(),
-        Key::Enter => model.edit_commit(),
-        Key::Escape => model.edit_cancel(),
+        Key::Named(NamedKey::Backspace) => model.edit_backspace(),
+        Key::Named(NamedKey::Enter) => model.edit_commit(),
+        Key::Named(NamedKey::Escape) => model.edit_cancel(),
         _ => return Action::Ignored,
     }
     Action::Handled
@@ -157,11 +157,11 @@ fn choosing<B: Backend>(model: &mut Model<B>, key: &Key, command: bool, control:
                 model.choose_push(ch);
             }
         }
-        Key::ArrowDown => model.choose_next(),
-        Key::ArrowUp => model.choose_prev(),
-        Key::Backspace => model.choose_backspace(),
-        Key::Enter => model.choose_commit(),
-        Key::Escape => model.choose_cancel(),
+        Key::Named(NamedKey::ArrowDown) => model.choose_next(),
+        Key::Named(NamedKey::ArrowUp) => model.choose_prev(),
+        Key::Named(NamedKey::Backspace) => model.choose_backspace(),
+        Key::Named(NamedKey::Enter) => model.choose_commit(),
+        Key::Named(NamedKey::Escape) => model.choose_cancel(),
         _ => return Action::Ignored,
     }
     Action::Handled
@@ -208,7 +208,7 @@ mod tests {
         let start = m.page_selected();
         press(&mut m, ch("j"));
         assert_eq!(m.page_selected(), start + 1);
-        press(&mut m, Key::ArrowUp);
+        press(&mut m, Key::Named(NamedKey::ArrowUp));
         assert_eq!(m.page_selected(), start);
 
         m.focus_on(&[Seg::Key("version".into())]);
@@ -218,15 +218,15 @@ mod tests {
         for c in ["7", "x"] {
             press(&mut m, ch(c));
         }
-        press(&mut m, Key::Backspace);
-        press(&mut m, Key::Enter);
+        press(&mut m, Key::Named(NamedKey::Backspace));
+        press(&mut m, Key::Named(NamedKey::Enter));
         assert!(m.source_snapshot().contains("version = 17"));
         assert_eq!(
-            apply_key(&mut m, &ch("z"), Modifiers::SUPER),
+            apply_key(&mut m, &ch("z"), Modifiers::META),
             Action::Handled
         );
         assert_eq!(m.source_snapshot(), SAMPLE);
-        apply_key(&mut m, &ch("Z"), Modifiers::SUPER | Modifiers::SHIFT);
+        apply_key(&mut m, &ch("Z"), Modifiers::META | Modifiers::SHIFT);
         assert!(m.source_snapshot().contains("version = 17"));
     }
 
@@ -234,20 +234,20 @@ mod tests {
     fn save_and_the_zoom_are_the_hosts_and_nothing_else_with_command_is_ours() {
         let mut m = model();
         assert_eq!(
-            apply_key(&mut m, &ch("s"), Modifiers::SUPER),
+            apply_key(&mut m, &ch("s"), Modifiers::META),
             Action::Request(Request::Save)
         );
         assert_eq!(
-            apply_key(&mut m, &ch("S"), Modifiers::SUPER | Modifiers::SHIFT),
+            apply_key(&mut m, &ch("S"), Modifiers::META | Modifiers::SHIFT),
             Action::Request(Request::SaveAs)
         );
         assert_eq!(
-            apply_key(&mut m, &ch("="), Modifiers::SUPER),
+            apply_key(&mut m, &ch("="), Modifiers::META),
             Action::Request(Request::Zoom(ZoomCommand::In))
         );
         // ⌘X is a menu's, not `x`'s: nothing is deleted.
         assert_eq!(
-            apply_key(&mut m, &ch("x"), Modifiers::SUPER),
+            apply_key(&mut m, &ch("x"), Modifiers::META),
             Action::Ignored
         );
         assert!(!m.dirty);
@@ -259,13 +259,13 @@ mod tests {
         m.focus_on(&[Seg::Key("title".into())]);
         press(&mut m, ch("e"));
         press(&mut m, ch("q"));
-        press(&mut m, Key::Escape);
+        press(&mut m, Key::Named(NamedKey::Escape));
         assert!(matches!(m.mode, Mode::Normal));
         assert!(!m.dirty);
-        press(&mut m, Key::Delete);
+        press(&mut m, Key::Named(NamedKey::Delete));
         assert!(!m.source_snapshot().contains("title"));
         press(&mut m, ch("u"));
-        apply_key(&mut m, &Key::Backspace, Modifiers::SUPER);
+        apply_key(&mut m, &Key::Named(NamedKey::Backspace), Modifiers::META);
         assert!(!m.source_snapshot().contains("title"));
     }
 
@@ -275,9 +275,9 @@ mod tests {
         m.focus_on(&[Seg::Key("title".into())]);
         assert!(!insert_text(&mut m, "ignored"));
         press(&mut m, ch("E"));
-        assert_eq!(apply_key(&mut m, &ch("v"), Modifiers::SUPER), Action::Paste);
+        assert_eq!(apply_key(&mut m, &ch("v"), Modifiers::META), Action::Paste);
         assert!(insert_text(&mut m, "é\nsecond line"));
-        press(&mut m, Key::Enter);
+        press(&mut m, Key::Named(NamedKey::Enter));
         assert!(
             m.source_snapshot().contains("title = \"floweré\""),
             "{}",
@@ -291,7 +291,7 @@ mod tests {
         m.focus_on(&[Seg::Key("tags".into())]);
         press(&mut m, ch("A"));
         press(&mut m, ch("b"));
-        press(&mut m, Key::Enter);
+        press(&mut m, Key::Named(NamedKey::Enter));
         assert!(
             m.source_snapshot().contains("tags = [\"a\", \"b\"]"),
             "{}",

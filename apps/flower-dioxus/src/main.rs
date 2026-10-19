@@ -1,4 +1,4 @@
-//! Flower on Dioxus's **native backend** (`dioxus-native` 0.8.0-alpha.2,
+//! Flower on Dioxus's **native backend** (`dioxus-native` 0.8.0-alpha.3,
 //! Blitz): the editor widget, [`flower_dioxus`], in a window.
 //!
 //! ```sh

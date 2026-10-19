@@ -1,5 +1,5 @@
 //! flower-dioxus — an **embeddable** structural config editor for Dioxus's
-//! native backend (`dioxus-native` 0.8.0-alpha.2, Blitz): an HTML/CSS
+//! native backend (`dioxus-native` 0.8.0-alpha.3, Blitz): an HTML/CSS
 //! renderer on wgpu, with no webview and no browser engine.
 //!
 //! The page view of `flower-ratatui` and the Swift `FlowerPages`, in a
@@ -25,6 +25,7 @@
 //! - [`layout`]: the panes, the entries of a page and where they land —
 //!   no Dioxus type, so all of it tested without a window.
 //! - [`view`]: the stylesheet, light and dark, and the markup.
+//! - [`ime`]: the input method, into the edit line.
 //! - [`host`], [`keys`].
 //!
 //! Like leaf-dioxus, the editor assumes the window is its own: keys come from
@@ -33,6 +34,7 @@
 
 pub mod editor;
 pub mod host;
+pub mod ime;
 pub mod input;
 pub mod keys;
 pub mod layout;

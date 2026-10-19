@@ -23,6 +23,9 @@ pub enum Appearance {
 /// How the document root reads in a breadcrumb.
 const ROOT_LABEL: &str = "Document";
 
+/// The footer's type size in CSS pixels — `.footer` in the stylesheet.
+pub const FOOTER_TYPE: f32 = 12.0;
+
 /// The picker's most rows at once.
 const CHOICES_SHOWN: usize = 12;
 
@@ -124,7 +127,7 @@ body {{ position: relative; }}
 .flower .picker .choice.sel {{ background: var(--fl-sel); }}
 .flower .footer {{ position: absolute; z-index: 1; left: 0; right: 0; bottom: 0; height: {FOOTER}px;
                    line-height: {FOOTER}px; padding: 0 {PAD}px; box-sizing: border-box; white-space: pre;
-                   font-size: 12px; color: var(--fl-dim); background: var(--fl-chrome);
+                   font-size: {FOOTER_TYPE}px; color: var(--fl-dim); background: var(--fl-chrome);
                    border-top: 1px solid var(--fl-separator); display: flex; gap: 10px; }}
 .flower .footer .grow {{ flex: 1; }}
 .flower .badge {{ padding: 0 6px; border-radius: 4px; height: 18px; line-height: 18px; margin-top: 4px;
@@ -133,6 +136,7 @@ body {{ position: relative; }}
 .flower .badge.rejected {{ background: var(--fl-error); }}
 .flower .badge.warning {{ background: var(--fl-warning); }}
 .flower .footer .buffer {{ color: var(--fl-text); }}
+.flower .footer .marked {{ text-decoration: underline; text-decoration-color: var(--fl-accent); }}
 .flower .caret {{ display: inline-block; width: 0; height: 1.2em; vertical-align: text-bottom;
                   border-left: 2px solid var(--fl-accent); margin-right: -2px; }}
 ",
@@ -266,7 +270,7 @@ fn render<B: Backend + 'static>(ed: &Editor<B>) -> Element {
                 }
             }
             {picker(ed, &model, &g, width, picking)}
-            {footer(&model)}
+            {footer(&model, &ed.st.marked.borrow())}
         }
     }
 }
@@ -433,27 +437,36 @@ fn picker<B: Backend + 'static>(
     }
 }
 
+/// The edit line's badge: what the open value is.
+pub(crate) fn edit_badge(slot: &EditSlot) -> &'static str {
+    match slot {
+        EditSlot::Value => "edit",
+        EditSlot::TrailingComment => "comment",
+        EditSlot::LeadingComment => "comment above",
+        EditSlot::NewItem => "add",
+    }
+}
+
 /// The footer: the edit line while a value is open, what the picker takes
 /// while it is, and otherwise the last thing the model had to say — or the
-/// host's finding on the row the cursor is on — and the keys.
-fn footer<B: Backend>(model: &Model<B>) -> Element {
+/// host's finding on the row the cursor is on — and the keys. `marked` is the
+/// input method's composition, drawn after the buffer.
+fn footer<B: Backend>(model: &Model<B>, marked: &str) -> Element {
     const HINTS: &str =
         "↑↓ move · → open · ← back · e edit · a add · c/C comment · ⌫ delete · ⌘Z undo · ⌘S save";
     match &model.mode {
         Mode::Editing { buffer, slot, .. } => {
-            let badge = match slot {
-                EditSlot::Value => "edit",
-                EditSlot::TrailingComment => "comment",
-                EditSlot::LeadingComment => "comment above",
-                EditSlot::NewItem => "add",
-            };
+            let badge = edit_badge(slot);
             // The line is one line: a leading block's breaks are shown as a
             // mark rather than lost.
             let shown = buffer.replace('\n', "⏎");
             rsx! {
                 div { class: "footer",
                     span { class: "badge", "{badge}" }
-                    span { class: "buffer", "{shown}", span { class: "caret" } }
+                    span { class: "buffer", "{shown}",
+                        span { class: "marked", "{marked}" }
+                        span { class: "caret" }
+                    }
                     span { class: "grow" }
                     span { "Return to commit · Esc to cancel" }
                 }

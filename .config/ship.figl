@@ -86,8 +86,8 @@ job
 > > > builds = false
 > *
 > > # The Dioxus widget and its app, each a workspace of its own (an alpha
-> > # Dioxus; the app's winit-appkit is leaf's patched one, from git), so
-> > # nothing above reaches them. Compiles Blitz and wgpu: the slowest job.
+> > # Dioxus; the app's winit-appkit is the patched one from the Blitz fork,
+> > # by git), so nothing above reaches them. Compiles Blitz and wgpu: the slowest job.
 > > id = dioxus
 > > name = Dioxus widget and app
 > > run = cargo fmt --manifest-path crates/flower-dioxus/Cargo.toml --check && cargo clippy --manifest-path crates/flower-dioxus/Cargo.toml --all-targets -- -D warnings && cargo test --manifest-path crates/flower-dioxus/Cargo.toml && cargo fmt --manifest-path apps/flower-dioxus/Cargo.toml --check && cargo clippy --manifest-path apps/flower-dioxus/Cargo.toml --all-targets -- -D warnings && cargo test --manifest-path apps/flower-dioxus/Cargo.toml

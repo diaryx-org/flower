@@ -53,12 +53,13 @@ tokio = { version = "1", default-features = false, features = ["time"] }
 # Blitz's own `clipboard` feature.
 arboard = "3.7"
 
-# winit's macOS backend, patched in leaf (its `PATCH.md`): unpatched, its text
-# input client answers no questions about the text around the caret, so the
+# winit's macOS backend, patched (its `PATCH.md`): unpatched, its text input
+# client answers no questions about the text around the caret, so the
 # press-and-hold accent menu never opens, and it drops the emoji picker's
 # text. The editor tells the input method that text (crates/flower-dioxus's
-# `ime.rs`). From leaf's main by git, as the org takes leaf; cargo finds the
-# crate by name wherever it sits in that repository. It goes when the change
-# lands in a winit that dioxus-native takes.
+# `ime.rs`). From diaryx-org's Blitz fork, where the org keeps its patched
+# Blitz stack, winit included (`patches/` there); cargo finds the crate by
+# name wherever it sits in that repository. It goes when the change lands in
+# a winit that dioxus-native takes.
 [patch.crates-io]
-winit-appkit = { git = "https://github.com/diaryx-org/leaf", branch = "main" }
+winit-appkit = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }

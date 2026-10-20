@@ -134,5 +134,5 @@ pane's edge, where measuring it as leaf-dioxus does with parley would not.
   a composition underlined after the buffer, and tells the input method the
   text before the caret (`ime.rs`). Dead keys and composing input methods
   work on any winit; press-and-hold accents and the emoji picker on macOS
-  need leaf's patched `winit-appkit`, which a host takes in its own
-  `[patch.crates-io]`, as `apps/flower-dioxus` does.
+  need the patched `winit-appkit` in diaryx-org's Blitz fork, which a host
+  takes in its own `[patch.crates-io]`, as `apps/flower-dioxus` does.

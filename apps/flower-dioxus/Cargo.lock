@@ -5748,7 +5748,7 @@ dependencies = [
 [[package]]
 name = "winit-appkit"
 version = "0.31.0-beta.3"
-source = "git+https://github.com/diaryx-org/leaf?branch=main#3c705da58452311b503a3c5965e6e04b90d8c4eb"
+source = "git+https://github.com/diaryx-org/blitz?branch=leaf#d78620c598e07a51050f8e700620df8778470c95"
 dependencies = [
  "bitflags",
  "block2 0.6.2",

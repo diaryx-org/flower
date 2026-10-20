@@ -14,14 +14,19 @@ use std::sync::Arc;
 
 use dioxus::html::{Code, Key, Modifiers};
 use dioxus::prelude::*;
+use dioxus_native::winit::dpi::{LogicalPosition, LogicalSize};
 use dioxus_native::winit::event::{Ime, WindowEvent};
-use dioxus_native::winit::window::{Theme, Window};
+use dioxus_native::winit::window::{
+    ImeCapabilities, ImeEnableRequest, ImeRequest, ImeRequestData, ImeSurroundingText, Theme,
+    Window,
+};
 use flower_core::{Backend, FigBackend, Mode, Model, ViewMode};
 
 use crate::host::Host;
+use crate::ime;
 use crate::input::{Action, apply_key, insert_text};
 use crate::layout::Role;
-use crate::view::Appearance;
+use crate::view::{self, Appearance};
 
 /// Below this many CSS pixels the two panes leave neither one usable, so the
 /// editor is one column — the Swift host's `twoPaneMinWidth`.
@@ -120,6 +125,9 @@ pub struct State<B: Backend> {
     pub host: Rc<dyn Host<B>>,
     /// The wheel's travel not yet spent on a step of the cursor.
     wheel: Cell<f64>,
+    /// The input method's open composition, drawn after the edit line's
+    /// buffer and not in it until it commits (`ime.rs`).
+    pub marked: RefCell<String>,
 }
 
 /// What the render reads. Each is a signal, so the page is drawn again when
@@ -193,6 +201,7 @@ pub fn use_editor<B: Backend + 'static>(
             window: window.clone(),
             host: host(),
             wheel: Cell::new(0.0),
+            marked: RefCell::new(String::new()),
         };
         let ed = Editor {
             st: Rc::new(st),
@@ -289,6 +298,80 @@ impl<B: Backend + 'static> Editor<B> {
         }
         let n = *self.sig.tick.peek();
         set(self.sig.tick, n.wrapping_add(1));
+        self.sync_ime();
+    }
+
+    /// The input method on while a value is open and off otherwise, told
+    /// where the caret is, so its candidate window and the accent menu open
+    /// beside it, and what text is before the caret, so press-and-hold can
+    /// see the letter it offers accents for (`ime.rs`).
+    fn sync_ime(&self) {
+        let window = &self.st.window;
+        let on = window.ime_capabilities().is_some();
+        let (around, x) = {
+            let m = self.st.model.borrow();
+            (ime::surrounding(&m), self.caret_x(&m))
+        };
+        let Some((text, caret)) = around else {
+            self.st.marked.borrow_mut().clear();
+            if on {
+                let _ = window.request_ime_update(ImeRequest::Disable);
+            }
+            return;
+        };
+        let (_, height) = *self.sig.size.peek();
+        let mut data = ImeRequestData::default().with_cursor_area(
+            LogicalPosition::new(x as f64, (height - FOOTER) as f64).into(),
+            LogicalSize::new(2.0, FOOTER as f64).into(),
+        );
+        if let Ok(text) = ImeSurroundingText::new(text, caret, caret) {
+            data = data.with_surrounding_text(text);
+        }
+        let request = if on {
+            Some(ImeRequest::Update(data))
+        } else {
+            ImeEnableRequest::new(
+                ImeCapabilities::new()
+                    .with_cursor_area()
+                    .with_surrounding_text(),
+                data,
+            )
+            .map(ImeRequest::Enable)
+        };
+        if let Some(request) = request {
+            let _ = window.request_ime_update(request);
+        }
+    }
+
+    /// Where the edit line's caret is across the footer, in CSS pixels: the
+    /// padding, the badge, the gap, and the buffer and composition in the
+    /// footer's 12px face — `.footer` in the stylesheet.
+    fn caret_x(&self, model: &Model<B>) -> f32 {
+        let Mode::Editing { buffer, slot, .. } = &model.mode else {
+            return PAD;
+        };
+        let cell = view::FOOTER_TYPE * CELL_EM;
+        let badge = view::edit_badge(slot).chars().count() as f32 * cell + 12.0;
+        let typed = buffer.chars().count() + self.st.marked.borrow().chars().count();
+        PAD + badge + 10.0 + typed as f32 * cell
+    }
+
+    /// The input method: a composition drawn, a commit typed into what is
+    /// open, and text before the caret taken out for what replaces it.
+    fn ime(&self, event: &Ime) {
+        match event {
+            Ime::Preedit(text, _) => *self.st.marked.borrow_mut() = text.clone(),
+            Ime::Commit(text) => {
+                self.st.marked.borrow_mut().clear();
+                insert_text(&mut self.st.model.borrow_mut(), text);
+            }
+            Ime::DeleteSurrounding { before_bytes, .. } => {
+                ime::delete_before(&mut self.st.model.borrow_mut(), *before_bytes);
+            }
+            Ime::Disabled => self.st.marked.borrow_mut().clear(),
+            _ => return,
+        }
+        self.refresh();
     }
 
     /// A key, from the window ([`crate::pressed`] makes these from winit's)
@@ -315,7 +398,7 @@ impl<B: Backend + 'static> Editor<B> {
     }
 
     /// The window's events the editor reads besides its keys: its size, the
-    /// theme, and an input method's commit into an open value.
+    /// theme, and the input method while a value is open.
     pub fn window_event(&self, event: &WindowEvent) {
         match event {
             WindowEvent::SurfaceResized(size) => {
@@ -326,11 +409,7 @@ impl<B: Backend + 'static> Editor<B> {
                     self.refresh();
                 }
             }
-            WindowEvent::Ime(Ime::Commit(text)) => {
-                if insert_text(&mut self.st.model.borrow_mut(), text) {
-                    self.refresh();
-                }
-            }
+            WindowEvent::Ime(event) => self.ime(event),
             // Blitz restyles for the new theme but asks for no frame.
             WindowEvent::ThemeChanged(_) => {
                 self.refresh();

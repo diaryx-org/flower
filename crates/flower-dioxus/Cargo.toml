@@ -4,7 +4,7 @@
 # editor, showing a document's frontmatter, is meant to be another.
 #
 # A workspace of its own, and not a member of flower's root one: `dioxus-native`
-# is published only as 0.8.0-alpha.2, which pins a winit beta and a large wgpu
+# is published only as 0.8.0-alpha.3, which pins a winit beta and a large wgpu
 # tree that nothing in the root workspace should resolve. The same split, for
 # the same reason, as leaf's `crates/leaf-dioxus`.
 #
@@ -21,7 +21,7 @@ description = "Embeddable Dioxus-native structural config editor widget for flow
 publish = false
 
 [dependencies]
-dioxus = { version = "0.8.0-alpha.2", default-features = false, features = [
+dioxus = { version = "0.8.0-alpha.3", default-features = false, features = [
     "macro",
     "html",
     "signals",
@@ -34,7 +34,7 @@ dioxus = { version = "0.8.0-alpha.2", default-features = false, features = [
 # - `vello`, the classic renderer, not the default `vello-hybrid`, which cannot
 #   draw a bitmap glyph (a colour emoji in a value draws as nothing). Also what
 #   leaf-dioxus asks for, so a host carrying both builds one renderer.
-dioxus-native = { version = "0.8.0-alpha.2", default-features = false, features = [
+dioxus-native = { version = "0.8.0-alpha.3", default-features = false, features = [
     "system-fonts", "vello",
 ] }
 flower-core = { path = "../flower-core" }

@@ -1,6 +1,6 @@
 # flower-dioxus
 
-The page editor for Dioxus's native renderer: `dioxus-native` 0.8.0-alpha.2,
+The page editor for Dioxus's native renderer: `dioxus-native` 0.8.0-alpha.3,
 which draws HTML and CSS through Blitz on wgpu, with no webview and no
 browser engine. It is `flower-ratatui`'s page view in a window — one
 container at a time, two panes when there is width and depth for them, small
@@ -129,7 +129,10 @@ pane's edge, where measuring it as leaf-dioxus does with parley would not.
   stylesheet clips at `body`, and the room a page has is the window's surface
   less the footer. Sharing a window — a frontmatter panel above a document —
   needs `Geometry` to take the editor's box rather than the window's.
-- **Typing is plain keys.** The editor does not ask winit for the input
-  method; an accent typed with a dead key arrives as its key, and a host that
-  enables the input method gets its commits typed into an open value.
-  Press-and-hold accents on macOS need leaf's patched `winit-appkit`.
+- **The editor owns the window's input method.** It turns it on while a
+  value is open and off otherwise (on a page every letter is a command), draws
+  a composition underlined after the buffer, and tells the input method the
+  text before the caret (`ime.rs`). Dead keys and composing input methods
+  work on any winit; press-and-hold accents and the emoji picker on macOS
+  need the patched `winit-appkit` in diaryx-org's Blitz fork, which a host
+  takes in its own `[patch.crates-io]`, as `apps/flower-dioxus` does.

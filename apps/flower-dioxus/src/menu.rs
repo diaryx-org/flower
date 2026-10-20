@@ -25,7 +25,7 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::str::FromStr;
 
-use dioxus::html::{Code, Key, Modifiers};
+use dioxus::html::{Code, Key, Modifiers, NamedKey};
 use flower_core::{Backend, Mode, Model};
 use muda::accelerator::Accelerator;
 use muda::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu};
@@ -118,7 +118,7 @@ impl AppMenu {
 }
 
 /// ⌘ in Dioxus's terms (`SUPER`, as winit reports it).
-const CMD: Modifiers = Modifiers::SUPER;
+const CMD: Modifiers = Modifiers::META;
 const SHIFT: Modifiers = Modifiers::SHIFT;
 const ALT: Modifiers = Modifiers::ALT;
 const NONE: Modifiers = Modifiers::empty();
@@ -203,7 +203,7 @@ pub fn install() -> AppMenu {
     b.add(
         &edit,
         "Move Up",
-        Key::ArrowUp,
+        Key::Named(NamedKey::ArrowUp),
         Code::ArrowUp,
         ALT,
         Gate::Item,
@@ -211,7 +211,7 @@ pub fn install() -> AppMenu {
     b.add(
         &edit,
         "Move Down",
-        Key::ArrowDown,
+        Key::Named(NamedKey::ArrowDown),
         Code::ArrowDown,
         ALT,
         Gate::Item,
@@ -219,7 +219,7 @@ pub fn install() -> AppMenu {
     b.add(
         &edit,
         "Delete",
-        Key::Backspace,
+        Key::Named(NamedKey::Backspace),
         Code::Backspace,
         CMD,
         Gate::Item,
@@ -230,7 +230,7 @@ pub fn install() -> AppMenu {
     b.add(
         &go,
         "Open",
-        Key::ArrowDown,
+        Key::Named(NamedKey::ArrowDown),
         Code::ArrowDown,
         CMD,
         Gate::Item,
@@ -238,7 +238,7 @@ pub fn install() -> AppMenu {
     b.add(
         &go,
         "Enclosing Page",
-        Key::ArrowUp,
+        Key::Named(NamedKey::ArrowUp),
         Code::ArrowUp,
         CMD,
         Gate::Normal,
@@ -391,6 +391,10 @@ mod tests {
     /// Every item's chord is one the editor takes — or, for Open, the
     /// shell's — so the menu cannot offer what the keyboard does not do.
     #[test]
+    #[cfg_attr(
+        target_os = "macos",
+        ignore = "muda makes menu items on the main thread only"
+    )]
     fn every_item_is_a_key_the_editor_takes() {
         let menu = install();
         assert!(menu.commands.len() > 15);
@@ -434,6 +438,10 @@ mod tests {
     }
 
     #[test]
+    #[cfg_attr(
+        target_os = "macos",
+        ignore = "muda makes menu items on the main thread only"
+    )]
     fn enabling_for_the_same_state_twice_is_a_no_op() {
         let menu = install();
         let m = model();

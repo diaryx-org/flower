@@ -1,6 +1,6 @@
 # flower-dioxus
 
-Flower on Dioxus's native renderer: `dioxus-native` 0.8.0-alpha.2, which
+Flower on Dioxus's native renderer: `dioxus-native` 0.8.0-alpha.3, which
 draws HTML and CSS through Blitz on wgpu, with no webview and no browser
 engine. It edits the same files as the terminal app and the Swift one,
 through `flower-core`.
@@ -40,13 +40,15 @@ window around the editor.
 
 Both are workspaces of their own, like leaf's: `dioxus-native` is published
 only as an alpha, and nothing in flower's root workspace should resolve its
-winit beta and wgpu tree.
+winit beta and wgpu tree. CI's `dioxus` job lints and tests both.
+
+**winit's macOS backend is leaf's patched one**, taken from leaf's `main` by
+git in `[patch.crates-io]`: unpatched, macOS's press-and-hold accent menu
+never opens and the emoji picker's text is dropped. The editor turns the
+input method on while a value is open (`crates/flower-dioxus/src/ime.rs`);
+dead keys and composing input methods work without the patch too.
 
 ## Not yet
 
 - **A context menu**, as leaf-dioxus's right-click one.
-- **A patched winit.** Plain typing works unpatched; press-and-hold accents
-  and the emoji picker on macOS need leaf's `patches/winit-appkit`, which a
-  `[patch]` here would have to vendor again — the proposal for a shared,
-  patched winit in leaf's `docs/proposals/` is the better road.
 - **Settings.** The look is the default's, zoomed.

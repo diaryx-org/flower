@@ -50,7 +50,7 @@ impl Shell {
         if ed.key(key.clone(), code, mods) {
             return;
         }
-        if mods == Modifiers::SUPER
+        if mods == Modifiers::META
             && let Key::Character(c) = &key
             && c.eq_ignore_ascii_case("o")
         {

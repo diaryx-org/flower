@@ -56,7 +56,27 @@ accent menu never opens and the emoji picker's text is dropped. The editor turns
 input method on while a value is open (`crates/flower-dioxus/src/ime.rs`);
 dead keys and composing input methods work without the patch too.
 
+## On a Mac
+
+`cargo xtask mac [FILE]` builds `Flower.app` around the binary and opens the
+file through the Finder's route; `cargo xtask package` signs it for Developer
+ID, notarises it and puts it in a `.dmg` (`xtask/src/package.rs`).
+
+- `Info.plist` is the bundle's, stamped with the workspace version when it
+  is put together. It declares JSON, YAML, TOML and fig as types Flower edits,
+  as an alternate handler: Flower is in the Finder's Open With for each.
+- `Flower.entitlements` is what the release is signed with: the sandbox, and
+  the files the user opens.
+- `finder.rs` hears the files the Finder asks the app to open — an Apple
+  Event, not an argument — through an application delegate of the app's own,
+  and the document's window opens the last of them as ⌘O would.
+
 ## Not yet
 
+- **A window per document.** One window, one document; opening another
+  replaces it, asking about unsaved changes first.
+- **Autosave, Versions and Open Recent**, which the Swift app this replaced
+  had from the system's document machinery.
 - **Settings.** The look is the default's, zoomed, and the inline budget is
   the window's, not remembered.
+- **An icon.**

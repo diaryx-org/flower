@@ -57,6 +57,18 @@ tokio = { version = "1", default-features = false, features = ["time"] }
 # Blitz's own `clipboard` feature.
 arboard = "3.7"
 
+# The application delegate that hears which files the Finder asks the app to
+# open (`finder.rs`): AppKit and Foundation, at the versions winit-appkit
+# already uses.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = [
+    "std", "NSArray", "NSEnumerator", "NSObject", "NSString", "NSURL",
+] }
+objc2-app-kit = { version = "0.3", default-features = false, features = [
+    "std", "NSApplication", "NSResponder",
+] }
+
 # winit's macOS backend, patched (its `PATCH.md`): unpatched, its text input
 # client answers no questions about the text around the caret, so the
 # press-and-hold accent menu never opens, and it drops the emoji picker's

@@ -58,8 +58,9 @@ appears in the changelog.
 
 Pushing `vX.Y.Z` starts **`homebrew.yml`**, which builds the TUI and points the
 tap's `flower` formula at it, and **`mac-app.yml`**, which runs `cargo xtask
-package` on a macOS runner — Flower.app signed for Developer ID, notarised and
-stapled, in a `.dmg` — attaches the image to the release, and points the tap's
+package` on a macOS runner — Flower.app, the Dioxus app
+(`apps/flower-dioxus`), signed for Developer ID, notarised and stapled, in a
+`.dmg` — attaches the image to the release, and points the tap's
 `flower-editor` cask at it. Dispatched by hand, `mac-app.yml` builds whatever
 ref it is run on and keeps the image as a workflow artifact, touching no
 release: the rehearsal. Dispatched with `cask-tag`, it only rewrites the cask
@@ -168,14 +169,13 @@ is a `cargo xtask` task the job runs.
 | `test` | `cargo test --workspace` |
 | `package-isolation` | `cargo xtask package-isolation`: `cargo check -p <crate>` for each member, so workspace feature unification cannot hide a crate that fails to build alone |
 | `bindings` | `scripts/gen-bindings.sh --check`: regenerates the committed UniFFI Swift binding and diffs |
-| `app-version` | `cargo xtask app-version`: reads `apps/flower-editor/project.yml` and checks its `MARKETING_VERSION` is the workspace version (`cargo xtask sync-versions` writes it, as the bump's `post_bump`) |
 | `msrv` | a `--workspace` build on `workspace.package.rust-version` |
 
 Adding or renaming a job is an edit to `.config/ship.figl` and nothing else — the
 workflow reads the list from `ship ci --matrix`. Renaming one renames the
 required status check, so branch protection has to follow.
 
-The Swift half (`packages/flower-swift`, `apps/flower-editor`) is mostly not in
+The Swift package (`packages/flower-swift`) is mostly not in
 that list: compiling it needs macOS and Xcode. `scripts/check-swift.sh`
 type-checks FlowerUI against the generated binding, and `scripts/test-swift.sh`
 runs its XCTest bundle; run them on a Mac. They become two more jobs in the list

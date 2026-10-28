@@ -25,6 +25,5 @@ cargo run -p flower-tui -- build.zig.zon
 ```
 
 **Done when** the app declares the type. `.zon` has no system UTI, so the app
-needs an imported `org.ziglang.zon` in `apps/flower-editor/project.yml`, a
-`ZONFormat` whose empty document is `.{}\n` (an empty file does not parse), and
-its own `DocumentGroup`.
+needs an imported `org.ziglang.zon` in `apps/flower-dioxus/Info.plist`, and
+`zon` among the extensions its Open panel offers (`apps/flower-dioxus/src/file.rs`).

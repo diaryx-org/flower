@@ -61,13 +61,27 @@ impl Shell {
     /// ⌘O: settle the document's unsaved changes, ask for a file, and put
     /// it in the editor.
     fn open(&self, ed: &Editor) {
+        self.open_from(ed, None);
+    }
+
+    /// A file the system asked the app to open (`finder.rs`): put in the
+    /// editor as ⌘O's choice would be, once the unsaved changes are settled.
+    pub fn open_path(&self, ed: &Editor, chosen: PathBuf) {
+        self.open_from(ed, Some(chosen));
+    }
+
+    fn open_from(&self, ed: &Editor, chosen: Option<PathBuf>) {
         let (ed, window, path) = (ed.clone(), self.window.clone(), self.path.clone());
         dioxus::prelude::spawn(async move {
             if !settle_unsaved(&ed, &window, &path).await {
                 return;
             }
-            let Some(chosen) = file::pick_open(&window).await else {
-                return;
+            let chosen = match chosen {
+                Some(c) => c,
+                None => match file::pick_open(&window).await {
+                    Some(c) => c,
+                    None => return,
+                },
             };
             match file::read(&chosen) {
                 Ok(model) => {

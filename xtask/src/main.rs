@@ -1,16 +1,14 @@
 //! flower's tasks: the ones too big to be a command.
 //!
 //! CI itself is the `job` list in `.config/ship.figl`, run by `ship ci` here
-//! and on the runners. Most of its jobs are plain commands; the two that are
-//! real logic run a task from here — `package-isolation`, which builds each
-//! workspace member alone from a list a test keeps whole, and `app-version`,
-//! which reads the app's `project.yml` against the workspace version.
+//! and on the runners. Most of its jobs are plain commands; the one that is
+//! real logic runs a task from here — `package-isolation`, which builds each
+//! workspace member alone from a list a test keeps whole.
 //!
-//! The rest are the app's. `cargo xtask swift` builds and launches the Mac app
-//! and lives in [`app`] beside `app-version` and `sync-versions` (which a
-//! release bump runs as its `post_bump`); `cargo xtask package` — the signed,
-//! notarised `.dmg` that `mac-app.yml` attaches to a release — lives in
-//! [`package`].
+//! The rest are the Mac app's. `cargo xtask mac` puts `Flower.app` together
+//! from `apps/flower-dioxus` and launches it ([`app`]); `cargo xtask package`
+//! — the signed, notarised `.dmg` that `mac-app.yml` attaches to a release —
+//! lives in [`package`].
 //!
 //! Cutting a release does not live here. It is `ship`, configured by the same
 //! `.config/ship.figl`.
@@ -68,10 +66,16 @@ fn main() -> ExitCode {
             return ExitCode::SUCCESS;
         }
         ["package-isolation"] => package_isolation(&sh),
-        ["app-version"] => app::check_version(&sh),
-        ["swift", ref rest @ ..] => app::swift(&sh, rest),
+        ["mac", ref rest @ ..] => app::mac(&sh, rest),
         ["package", ref rest @ ..] => package::package(&sh, rest),
-        ["sync-versions"] => app::sync_versions(&sh),
+        // The Swift app these served is gone; the bundle takes its version
+        // from the workspace when it is put together.
+        [command @ ("swift" | "app-version" | "sync-versions"), ..] => Err(format!(
+            "`cargo xtask {command}` went with the Swift app: the Mac app is \
+             apps/flower-dioxus, built by `cargo xtask mac`, and its bundle takes \
+             the workspace's version when it is put together.\n\n{}",
+            usage()
+        )),
         // These moved to ship rather than being retired, and a muscle-memory
         // `cargo xtask release` should say where they went.
         [
@@ -129,22 +133,14 @@ fn usage() -> String {
         "  {:<18}{}\n",
         "package-isolation", "build each crate alone, without workspace feature unification"
     ));
-    out.push_str(&format!(
-        "  {:<18}{}\n",
-        "app-version", "apps/flower-editor/project.yml states the workspace version"
-    ));
     out.push_str("\nthe app:\n\n");
     out.push_str(&format!(
         "  {:<18}{}\n",
-        "swift [FILE]", "build and launch Flower, the Mac app in apps/flower-editor (--help)"
+        "mac [FILE]", "build Flower.app from apps/flower-dioxus and launch it (--help)"
     ));
     out.push_str(&format!(
         "  {:<18}{}\n",
         "package", "a signed, notarised Flower.app in a .dmg, in target/package/ (--help)"
-    ));
-    out.push_str(&format!(
-        "  {:<18}{}\n",
-        "sync-versions", "write the workspace version into the app's project.yml"
     ));
     out.push_str(
         "\nCI:         ship ci [<job>]   (the jobs are in .config/ship.figl)\n\

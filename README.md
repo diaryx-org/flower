@@ -119,9 +119,11 @@ fig crate (Editor/Document/Value) + fig-json/-yaml/-toml/-zon/-figl
                                           │
                               packages/flower-swift
                      (FlowerFFI + FlowerUI + FlowerPagesUI)
+
+            crates/flower-core ── crates/flower-dioxus (Dioxus widget, on unit)
                                           │
-                               apps/flower-editor
-                          (Flower, the macOS/iOS app)
+                               apps/flower-dioxus
+                            (Flower, the Mac app)
 ```
 
 ### The tiers
@@ -130,12 +132,11 @@ fig crate (Editor/Document/Value) + fig-json/-yaml/-toml/-zon/-figl
 |------|------|------------|
 | core | [`crates/flower-core`](crates/flower-core) | the frontend-neutral model — the navigable `Row` tree + path-addressed lossless edits over fig. No UI, no fs. |
 | widget | [`crates/flower-ratatui`](crates/flower-ratatui) | the ratatui widget: `draw(frame, &Model, header)` draws the page view, `handle_key(&mut Model, KeyEvent)` drives it and returns an `Outcome` naming what the host must do (quit, save) — the same division as `leaf-ratatui`. |
-| widget | [`crates/flower-dioxus`](crates/flower-dioxus) | the **Dioxus-native widget** (`dioxus-native` 0.8 alpha, Blitz on wgpu, no webview): the same page view in a window — two panes, captions, chips, the picker, the footer edit line — with the terminal's keys and a window's (⌘Z, ⌫, ⌥↑/⌥↓), asking a `Host` for Save and the clipboard. A workspace of its own, as leaf's `crates/leaf-dioxus` is. |
-| app | [`apps/flower-dioxus`](apps/flower-dioxus) | the Dioxus-native app (binary `flower-dioxus`): the widget in a window, with open (⌘O), save, save as, the zoom and the window title. `cargo run --manifest-path apps/flower-dioxus/Cargo.toml -- config.toml`. |
+| widget | [`crates/flower-dioxus`](crates/flower-dioxus) | the **Dioxus-native widget** (`dioxus-native` 0.8 alpha, Blitz on wgpu, no webview): the page view as a settings screen out of [unit](https://github.com/diaryx-org/unit)'s components — two panes, a section per group, chips, switches, menus, values typed in place, the picker in a modal, a context menu per row — with the terminal's keys and a window's (⌘Z, ⌫, ⌥↑/⌥↓), asking a `Host` for Save and the clipboard. A workspace of its own, as leaf's `crates/leaf-dioxus` is. |
+| app | [`apps/flower-dioxus`](apps/flower-dioxus) | **Flower**, the Mac app (`Flower.app`, built by `cargo xtask mac`; binary `flower-dioxus` elsewhere): the widget in a window, with open (⌘O, the Finder's Open With), save, save as, the zoom, the window title and a menu bar. `cargo run --manifest-path apps/flower-dioxus/Cargo.toml -- config.toml`. |
 | binding | [`crates/flower-ffi`](crates/flower-ffi) | the **UniFFI C-ABI binding** — wraps the filesystem-free `Model` so a native Apple app can drive it. The native-Apple peer of the ratatui widget. |
 | app | [`crates/flower-tui`](crates/flower-tui) | the terminal app (binary `flower`) — file I/O + event loop. |
-| Swift SDK | [`packages/flower-swift`](packages/flower-swift) | the Swift Package (manifest at the repo root, so SwiftPM can resolve it by version). `FlowerPagesUI` is the page view (`FlowerPages`) written against protocols, with **no binding behind it**; `FlowerUI` is `FlowerModel` over the UniFFI `flower-ffi` binding, and the conformances that let the page view render its records. `import FlowerUI` re-exports both. |
-| Swift app | [`apps/flower-editor`](apps/flower-editor) | **Flower**, the document app (macOS + iOS) over `packages/flower-swift`: a window per file, opened from the Finder or File ▸ Open, saved, autosaved and undone through the system's document machinery. |
+| Swift SDK | [`packages/flower-swift`](packages/flower-swift) | the Swift Package (manifest at the repo root, so SwiftPM can resolve it by version). `FlowerPagesUI` is the page view (`FlowerPages`) written against protocols, with **no binding behind it**; `FlowerUI` is `FlowerModel` over the UniFFI `flower-ffi` binding, and the conformances that let the page view render its records. `import FlowerUI` re-exports both. A host app of its own links it; flower's own Mac app is the Dioxus one. |
 
 The Swift frontend keeps the same contract as the TUI: **core owns the model**
 (the projection, selection, and every lossless edit), the frontend only renders
@@ -169,37 +170,32 @@ the arrangement the sliding window replaced.
 
 ```sh
 cargo run -- path/to/config.toml          # the TUI
-cargo xtask swift [path/to/config.toml]   # build and launch Flower, the Mac app
+cargo xtask mac [path/to/config.toml]     # build and launch Flower.app, the Mac app
 cargo xtask package                       # a signed, notarised Flower.app in a .dmg, in target/package/
 ```
 
 ### The Mac app
 
-Flower is a document app, like leaf and thorn: a window per file, one
-`FlowerDocument` behind each, with `DocumentGroup` doing the rest — the Open
-panel, Save and Save As, autosave and Versions, Open Recent, the title bar's
-proxy icon. It declares JSON, YAML, TOML and fig as types it can edit, as an
-alternate handler, so each appears in Finder's Open With without taking over
-the default. File ▸ New makes a TOML file, and its submenu offers the other
-formats. A document keeps its format for life, because flower writes back the
-format it read.
+Flower for the Mac is [`apps/flower-dioxus`](apps/flower-dioxus): the
+Dioxus widget in a window drawn by Blitz, with a menu bar (muda's `NSMenu`),
+the Open and Save panels as sheets, and an application delegate that hears
+the files the Finder asks it to open. `cargo xtask mac` builds it, puts
+`Flower.app` together around the binary — `apps/flower-dioxus/Info.plist`,
+stamped with the workspace version, so a release bump has nothing else to
+move — signs it ad hoc and opens the file you name (or a copy of
+`sample.toml`) through the Finder's route. The bundle declares JSON, YAML,
+TOML and fig as types it can edit, as an alternate handler, so each appears in
+the Finder's Open With without taking over the default.
 
-Its history is the model's own journal. Each edit registers an action on the
-window's undo manager that replays `undo()` / `redo()`, so Edit ▸ Undo, ⌘Z
-and the close button's dot all follow the history flower keeps, and undoing
-back to the saved text reads as clean.
+It replaced a SwiftUI document app over `packages/flower-swift`, which is
+still the package a SwiftUI host links. What that app had from the system's
+document machinery and this one does not yet: a window per document, autosave
+and Versions, Open Recent, and an iOS build.
 
-`cargo xtask swift` runs `apps/flower-editor/bootstrap.sh` when the Xcode
-project is missing (or with `--regen`), builds, and opens the file you name
-(or a copy of `sample.toml`) through the document system. Debug builds are
-unsigned and unsandboxed. Release builds are signed for team V4322HH5HU and
-sandboxed, with access to the files the user opens. The app's
-`MARKETING_VERSION` follows the workspace version: `cargo xtask
-sync-versions` writes it, `ship bump` runs that, and the
-`app-version` job checks it.
-
-`cargo xtask package` needs a Developer ID identity in the keychain and
-notary credentials in the environment; the head of
+`cargo xtask package` signs the release bundle for Developer ID, with the
+hardened runtime and the sandbox (`apps/flower-dioxus/Flower.entitlements`:
+the files the user opens, and nothing else). It needs a Developer ID identity
+in the keychain and notary credentials in the environment; the head of
 [`xtask/src/package.rs`](xtask/src/package.rs) names them, and
 `--no-notarize` does without the second. On a pushed `v*.*.*` tag,
 [`mac-app.yml`](.github/workflows/mac-app.yml) attaches a signed, notarised
@@ -341,7 +337,6 @@ every job the workflow runs, in the same order, and `ship ci <job>` runs one.
 | `test` | `cargo test --workspace` |
 | `package-isolation` | each crate built alone, so workspace feature unification can't hide a crate that fails on its own |
 | `bindings` | the committed UniFFI Swift binding regenerated from `crates/flower-ffi` and diffed |
-| `app-version` | the app's `MARKETING_VERSION` checked against the workspace version |
 | `msrv` | a build on `workspace.package.rust-version` (1.88) |
 
 The Swift half needs macOS and Xcode, so it is run by hand:

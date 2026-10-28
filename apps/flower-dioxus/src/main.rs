@@ -15,8 +15,10 @@
 //! - [`menu`]: the menu bar, every item a key chord replayed.
 //! - [`toolbar`]: the buttons at the end of the editor's bar.
 //! - [`file`]: reading a file into a model, and the dialogs.
+//! - [`finder`]: the files the system asks the app to open.
 
 mod file;
+mod finder;
 mod menu;
 mod shell;
 mod toolbar;
@@ -50,6 +52,7 @@ fn main() {
     // `-psn_…` process serial number first on old systems; anything that is
     // not a path is no document.
     let path = arg.filter(|a| !a.starts_with("-psn_")).map(PathBuf::from);
+    finder::install();
     dioxus_native::launch_cfg(
         App,
         vec![Box::new(move || Box::new(Opened(path.clone())))],
@@ -122,6 +125,11 @@ fn Document() -> Element {
                     tokio::time::sleep(Duration::from_millis(10)).await;
                     while let Some(menu::Chord(key, code, mods)) = menu.next() {
                         shell.chord(&ed, key, code, mods);
+                    }
+                    // One window, one document: of several files asked for
+                    // at once, the last.
+                    if let Some(asked) = finder::take().pop() {
+                        shell.open_path(&ed, asked);
                     }
                     menu.enable(menu::Enabled::of(&ed.model()));
                 }

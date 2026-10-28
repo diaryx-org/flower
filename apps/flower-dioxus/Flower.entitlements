@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  What `cargo xtask package` signs Flower.app with. Sandboxed, as the Swift
+  app's Release build was: a config file is one file and flower reads nothing
+  beside it, so the sandbox's grant of the file the user opened — through the
+  Open and Save panels, or the Finder — is the whole of what it needs.
+-->
+<plist version="1.0">
+<dict>
+	<key>com.apple.security.app-sandbox</key>
+	<true/>
+	<key>com.apple.security.files.user-selected.read-write</key>
+	<true/>
+</dict>
+</plist>

@@ -13,9 +13,8 @@
 //
 // It builds the UniFFI binding + the FlowerUI renderer **from source**; the
 // Rust staticlib itself is linked by the consuming app via a `-force_load`
-// linker flag and (re)built by a pre-build step — see
-// `apps/flower-editor/project.yml`, which does exactly that so an Xcode build
-// always picks up fresh Rust changes:
+// linker flag and (re)built by a pre-build step, so an Xcode build always
+// picks up fresh Rust changes:
 //   OTHER_LDFLAGS = -force_load <path>/libflower_ffi.a
 //
 // The two `uniffi-generated/` inputs below are committed — a version-resolved

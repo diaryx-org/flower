@@ -12,7 +12,7 @@ name: CI
 # install one: stable Rust, whatever a job's `runner` table asks for, and — for
 # jobs that compile — the cargo cache.
 #
-# The Swift half of flower (`packages/flower-swift`, `apps/flower-editor`) is not
+# The Swift package (`packages/flower-swift`) is not
 # compiled here: that needs macOS and Xcode. `scripts/check-swift.sh` and
 # `scripts/test-swift.sh` are run by hand on a Mac. The `bindings` job is the
 # exception that fits a Linux runner: it regenerates the committed UniFFI Swift

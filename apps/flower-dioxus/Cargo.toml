@@ -69,6 +69,13 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
     "std", "NSApplication", "NSResponder",
 ] }
 
+# Blitz, stylo and wgpu with their debug info are most of a debug build:
+# gigabytes, which a CI runner's disk has little room for. Only this
+# workspace's own crate keeps its debug info; a backtrace still names every
+# function.
+[profile.dev.package."*"]
+debug = false
+
 # winit's macOS backend, patched (its `PATCH.md`): unpatched, its text input
 # client answers no questions about the text around the caret, so the
 # press-and-hold accent menu never opens, and it drops the emoji picker's

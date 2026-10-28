@@ -7,7 +7,6 @@ contents:
   - "[Show a commented-out entry as a disabled row](disabled-entries.md)"
   - "[Open a ZON file](open-zon.md)"
   - '[Closed tasks](/docs/tasks/closed/closed.md)'
-  - '[The Dioxus CI job has no fontconfig](/docs/tasks/dioxus-ci-lacks-fontconfig.md)'
 part_of: '[flower](/README.md)'
 ---
 

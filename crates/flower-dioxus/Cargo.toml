@@ -53,6 +53,13 @@ unit = { git = "https://github.com/diaryx-org/unit", branch = "main" }
 fig-toml = { version = "7", default-features = false, features = ["fig"] }
 fig-yaml = { version = "7", default-features = false, features = ["fig"] }
 
+# Blitz, stylo and wgpu with their debug info are most of a debug build:
+# gigabytes, which a CI runner's disk has little room for. Only this
+# workspace's own crate keeps its debug info; a backtrace still names every
+# function.
+[profile.dev.package."*"]
+debug = false
+
 # Blitz from diaryx-org's fork, its `leaf` branch at the version
 # dioxus-native pins, as unit and leaf take it (FORK.md there): its
 # accessibility tree reads ARIA's roles and states, a node removed under

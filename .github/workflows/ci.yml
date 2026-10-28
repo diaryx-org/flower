@@ -9,8 +9,9 @@ name: CI
 # same shell.
 #
 # What the runner still owns is the toolchain, because only it knows how to
-# install one: stable Rust, whatever a job's `runner` table asks for, and — for
-# jobs that compile — the cargo cache.
+# install one: stable Rust, whatever a job's `runner` table asks for (rustup
+# components, and the Ubuntu packages of a job that links a system library),
+# and — for jobs that compile — the cargo cache.
 #
 # The Swift package (`packages/flower-swift`) is not
 # compiled here: that needs macOS and Xcode. `scripts/check-swift.sh` and
@@ -63,6 +64,9 @@ jobs:
       with: { components: "${{ matrix.job.components }}" }
     # A field a job's runner table leaves out is null here: no components, and
     # the cache set up unless the job says `builds = false`.
+    # A job that links a system library names its package in `apt`.
+    - if: matrix.job.apt
+      run: sudo apt-get update && sudo apt-get install -y --no-install-recommends ${{ matrix.job.apt }}
     - uses: Swatinem/rust-cache@v2
       # A missing `builds` is null, and GitHub compares loosely, so `null != false`
       # is false: the test is for null itself.

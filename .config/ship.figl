@@ -29,8 +29,11 @@ tag_starts
 # A job is `id` (what `ship ci <id>` takes), `name` (the check GitHub shows as
 # `CI / <name>` — renaming it renames the required status check) and `run` (run
 # by `bash -eo pipefail -c` at the repository root). `runner` is the workflow's:
-# `components` are the rustup components it installs, and `builds = false`
-# skips restoring the cargo cache. Cheapest and most likely to fail first.
+# `components` are the rustup components it installs, `apt` the Ubuntu
+# packages (space-separated) it installs for a job that links a system
+# library, and `builds = false` skips restoring the cargo cache. A job's `run`
+# never installs anything itself, so `ship ci` here asks for no `sudo`.
+# Cheapest and most likely to fail first.
 #
 # The Swift package (`packages/flower-swift`) is mostly not here: compiling it
 # needs macOS and Xcode, and `scripts/check-swift.sh` and
@@ -76,11 +79,14 @@ job
 > > # The Dioxus widget and its app, each a workspace of its own (an alpha
 > > # Dioxus; the app's winit-appkit is the patched one from the Blitz fork,
 > > # by git), so nothing above reaches them. Compiles Blitz and wgpu: the slowest job.
+> > # fontique, under Blitz's text, links fontconfig on Linux; wayland is
+> > # dlopened and the image has OpenSSL, so fontconfig is all it installs.
 > > id = dioxus
 > > name = Dioxus widget and app
 > > run = cargo fmt --manifest-path crates/flower-dioxus/Cargo.toml --check && cargo clippy --manifest-path crates/flower-dioxus/Cargo.toml --all-targets -- -D warnings && cargo test --manifest-path crates/flower-dioxus/Cargo.toml && cargo fmt --manifest-path apps/flower-dioxus/Cargo.toml --check && cargo clippy --manifest-path apps/flower-dioxus/Cargo.toml --all-targets -- -D warnings && cargo test --manifest-path apps/flower-dioxus/Cargo.toml
 > > runner
 > > > components = rustfmt, clippy
+> > > apt = libfontconfig-dev
 > *
 > > # A build, not a test run: MSRV is a promise about who can compile flower,
 > > # and the dev-dependencies need not hold to it. The version is read from

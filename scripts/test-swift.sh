@@ -5,8 +5,8 @@
 #
 # The tests build `RowView`/`DocView` fixtures in pure Swift, so they need no Rust
 # runtime — but the `FlowerFFI` module they import still references the FFI
-# symbols, so the test binary must link the Rust staticlib. We force-load it (the
-# same way the app does in apps/flower-editor/project.yml).
+# symbols, so the test binary must link the Rust staticlib. We force-load it, the
+# same way a consuming app does.
 #
 # Usage: scripts/test-swift.sh [extra `swift test` args…]
 set -euo pipefail

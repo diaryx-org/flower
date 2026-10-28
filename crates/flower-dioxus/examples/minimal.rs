@@ -10,7 +10,8 @@ use std::rc::Rc;
 use dioxus::prelude::*;
 use dioxus_native::winit::event::WindowEvent;
 use flower_core::{FigBackend, Model};
-use flower_dioxus::{Host, Look, pressed, use_editor};
+use flower_dioxus::{FlowerPages, Host, Look, pressed, use_editor};
+use unit::{Keys, UnitRoot};
 
 struct Mine;
 impl Host for Mine {}
@@ -19,6 +20,7 @@ const SAMPLE: &str = "\
 # A sample config
 title = \"flower\"
 version = 1
+debug = false
 
 [server]
 host = \"localhost\" # dev only
@@ -32,6 +34,14 @@ fn main() {
 
 #[allow(non_snake_case)]
 fn App() -> Element {
+    rsx! {
+        UnitRoot { keys: Keys::Host, Page {} }
+    }
+}
+
+/// Under the root, so the editor finds the page's unit.
+#[allow(non_snake_case)]
+fn Page() -> Element {
     let ed = use_editor(
         || {
             let backend = FigBackend::open(SAMPLE.as_bytes(), fig_toml::format().unwrap())
@@ -54,5 +64,5 @@ fn App() -> Element {
             event => ed.window_event(event),
         }
     });
-    ed.render()
+    rsx! { FlowerPages { editor: ed } }
 }

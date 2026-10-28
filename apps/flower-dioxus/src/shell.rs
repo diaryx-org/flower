@@ -61,17 +61,32 @@ impl Shell {
     /// ⌘O: settle the document's unsaved changes, ask for a file, and put
     /// it in the editor.
     fn open(&self, ed: &Editor) {
+        self.open_from(ed, None);
+    }
+
+    /// A file the system asked the app to open (`finder.rs`): put in the
+    /// editor as ⌘O's choice would be, once the unsaved changes are settled.
+    pub fn open_path(&self, ed: &Editor, chosen: PathBuf) {
+        self.open_from(ed, Some(chosen));
+    }
+
+    fn open_from(&self, ed: &Editor, chosen: Option<PathBuf>) {
         let (ed, window, path) = (ed.clone(), self.window.clone(), self.path.clone());
         dioxus::prelude::spawn(async move {
             if !settle_unsaved(&ed, &window, &path).await {
                 return;
             }
-            let Some(chosen) = file::pick_open(&window).await else {
-                return;
+            let chosen = match chosen {
+                Some(c) => c,
+                None => match file::pick_open(&window).await {
+                    Some(c) => c,
+                    None => return,
+                },
             };
             match file::read(&chosen) {
                 Ok(model) => {
                     *path.borrow_mut() = Some(chosen);
+                    name_root(&ed, &path);
                     ed.install(model);
                 }
                 Err(e) => {
@@ -90,9 +105,8 @@ impl Shell {
         }
         .clamp(ZOOM_MIN, ZOOM_MAX);
         self.zoom.set(now);
-        let base = Look::default();
         ed.set_look(Look {
-            size: (base.size * now).round(),
+            zoom: now as f64,
             ..ed.look()
         });
     }
@@ -162,9 +176,16 @@ async fn save_as_now(ed: &Editor, window: &Arc<dyn Window>, path: &SharedPath) -
     let ok = file::write(&mut ed.model(), &to);
     if ok {
         *path.borrow_mut() = Some(to);
+        name_root(ed, path);
     }
     ed.refresh();
     ok
+}
+
+/// The breadcrumb's root is the file's name, as the window's title is.
+fn name_root(ed: &Editor, path: &SharedPath) {
+    let root = file::name_of(path.borrow().as_deref());
+    ed.set_look(Look { root, ..ed.look() });
 }
 
 /// Before the document is replaced: save it, drop its changes, or stay —

@@ -26,6 +26,10 @@ path = "src/main.rs"
 [dependencies]
 flower-dioxus = { path = "../../crates/flower-dioxus" }
 flower-core = { path = "../../crates/flower-core" }
+# diaryx-org's components for Dioxus: the root the editor's controls sit
+# under, its overlay for the prompts and toasts, and the toolbar's controls.
+# `apple`: the accent and highlight chosen in System Settings, on a Mac.
+unit = { git = "https://github.com/diaryx-org/unit", branch = "main", features = ["apple"] }
 dioxus = { version = "0.8.0-alpha.3", default-features = false, features = [
     "macro",
     "html",
@@ -53,6 +57,25 @@ tokio = { version = "1", default-features = false, features = ["time"] }
 # Blitz's own `clipboard` feature.
 arboard = "3.7"
 
+# The application delegate that hears which files the Finder asks the app to
+# open (`finder.rs`): AppKit and Foundation, at the versions winit-appkit
+# already uses.
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = { version = "0.3", default-features = false, features = [
+    "std", "NSArray", "NSEnumerator", "NSObject", "NSString", "NSURL",
+] }
+objc2-app-kit = { version = "0.3", default-features = false, features = [
+    "std", "NSApplication", "NSResponder",
+] }
+
+# Blitz, stylo and wgpu with their debug info are most of a debug build:
+# gigabytes, which a CI runner's disk has little room for. Only this
+# workspace's own crate keeps its debug info; a backtrace still names every
+# function.
+[profile.dev.package."*"]
+debug = false
+
 # winit's macOS backend, patched (its `PATCH.md`): unpatched, its text input
 # client answers no questions about the text around the caret, so the
 # press-and-hold accent menu never opens, and it drops the emoji picker's
@@ -62,4 +85,19 @@ arboard = "3.7"
 # name wherever it sits in that repository. It goes when the change lands in
 # a winit that dioxus-native takes.
 [patch.crates-io]
+# Blitz from diaryx-org's fork, its `leaf` branch at the version
+# dioxus-native pins, as unit and leaf take it (FORK.md there): its
+# accessibility tree reads ARIA's roles and states and carries out assistive
+# tech's press, a node removed under `display: none` is forgotten by its
+# layout parent, and a press focuses what it lands on. Every Blitz crate in
+# the graph comes from the fork, as the fork's crates depend on each other by
+# path.
+blitz-dom = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
+blitz-traits = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
+blitz-shell = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
+blitz-paint = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
+blitz-net = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
+stylo_taffy = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
+debug_timer = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
+accesskit_xplat = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
 winit-appkit = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }

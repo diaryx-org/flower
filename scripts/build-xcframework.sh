@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #
 # Build FlowerFFI.xcframework from crates/flower-ffi — the distributable
-# prebuilt binary for a consumer who doesn't build Rust. (For day-to-day dev the
-# app rebuilds the staticlib itself via a pre-build step; see
-# apps/flower-editor/project.yml.) The Swift package itself no longer involves
+# prebuilt binary for a consumer who doesn't build Rust. (For day-to-day dev a
+# consuming app rebuilds the staticlib itself via a pre-build step.) The Swift
+# package itself no longer involves
 # it: the committed binding under packages/flower-swift/uniffi-generated/ (kept
 # fresh here via gen-bindings.sh) is what the root Package.swift compiles.
 #

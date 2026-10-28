@@ -13,7 +13,8 @@
 # `flower-editor`, not `flower`: `flower` is the tap's formula for the TUI
 # (homebrew.yml), as Leaf's app is `leaf-editor` beside the `leaf` formula.
 #
-# The app is sandboxed, so what it keeps lives in its container, not in
+# The app (apps/flower-dioxus, packaged by `cargo xtask package`) is
+# sandboxed, so what it keeps lives in its container, not in
 # ~/Library/Preferences or ~/Library/Caches.
 set -euo pipefail
 

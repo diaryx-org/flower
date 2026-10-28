@@ -1,108 +1,61 @@
-//! The Apple app in `apps/flower-editor`: building and launching it, and the
-//! one version number of its that no manifest parser reaches.
+//! The Mac app, `Flower.app`: `apps/flower-dioxus` in a bundle, built and
+//! launched.
 //!
-//! `cargo xtask swift` is the chain behind ⌘R, four toolchains deep: cargo
-//! builds `crates/flower-ffi`, uniffi-bindgen turns it into Swift, xcodegen
-//! turns `project.yml` into an Xcode project, and xcodebuild builds the app
-//! (its own pre-build script rebuilding the Rust staticlib). The first two and
-//! the third are `apps/flower-editor/bootstrap.sh`'s job and stay there — this
-//! decides *when* they need to run, then builds and launches.
+//! The app is a cargo binary, so its bundle is put together here rather than
+//! by Xcode, as leaf's is: the binary as `Contents/MacOS/Flower`, and
+//! `apps/flower-dioxus/Info.plist` with the workspace's version stamped in —
+//! so the version is stated once, in the workspace manifest, and a release
+//! bump has nothing else to move. The bundle is signed ad hoc, which is what
+//! lets a Mac run it; `cargo xtask package` signs it again for others.
 //!
-//! `cargo xtask sync-versions` writes the workspace version into the app's
-//! `MARKETING_VERSION`, and the `app-version` job checks the two agree. `ship
-//! bump` moves every Cargo manifest and knows nothing about an Xcode setting,
-//! so `.config/ship.figl` runs the sync as the bump's `post_bump`.
+//! `FLOWER_BUNDLE_ID` names another bundle identifier, so a build under test
+//! keeps its own preferences and recents apart from the copy of Flower the
+//! Mac has installed.
 
 use crate::{Result, Sh};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-pub(crate) const APP_DIR: &str = "apps/flower-editor";
-/// The scheme, the product and the process are all named this, by
-/// `apps/flower-editor/project.yml`.
-pub(crate) const SCHEME: &str = "Flower";
-const PROJECT_YML: &str = "apps/flower-editor/project.yml";
-/// How the version line in [`PROJECT_YML`] begins.
-const VERSION_PREFIX: &str = "        MARKETING_VERSION: \"";
+/// The app's directory, the cargo workspace it is.
+pub(crate) const APP_DIR: &str = "apps/flower-dioxus";
+/// The bundle, its executable and its process are all named this.
+pub(crate) const APP: &str = "Flower";
+/// The binary cargo builds, which the bundle names [`APP`].
+const BINARY: &str = "flower-dioxus";
+/// The target the bundle is built for: Apple Silicon.
+pub(crate) const TARGET: &str = "aarch64-apple-darwin";
 
 /// The file a launch opens when none is given, copied to `target/` so the
-/// developer can edit and save it: a document app with nothing to open shows
-/// the Open panel at launch.
+/// developer can edit and save it.
 const SAMPLE: &str = "sample.toml";
 
-const SWIFT_USAGE: &str =
-    "usage: cargo xtask swift [--release] [--regen] [--build-only] [--verbose] [FILE]";
+const MAC_USAGE: &str = "usage: cargo xtask mac [--release] [--build-only] [FILE]";
 
-/// `cargo xtask swift …`.
-pub fn swift(sh: &Sh, args: &[&str]) -> Result<()> {
+/// `cargo xtask mac …`.
+pub fn mac(sh: &Sh, args: &[&str]) -> Result<()> {
     let mut release = false;
-    let mut regen = false;
     let mut build_only = false;
-    let mut verbose = false;
     let mut file = None;
     for &arg in args {
         match arg {
             "--release" => release = true,
-            "--regen" => regen = true,
             "--build-only" => build_only = true,
-            "--verbose" => verbose = true,
             "-h" | "--help" => {
-                println!("{SWIFT_USAGE}");
+                println!("{MAC_USAGE}");
                 return Ok(());
             }
             flag if flag.starts_with('-') => {
-                return Err(format!("unknown flag `{flag}`\n\n{SWIFT_USAGE}"));
+                return Err(format!("unknown flag `{flag}`\n\n{MAC_USAGE}"));
             }
             path if file.is_none() => file = Some(PathBuf::from(path)),
-            _ => return Err(format!("one file at a time\n\n{SWIFT_USAGE}")),
+            _ => return Err(format!("one file at a time\n\n{MAC_USAGE}")),
         }
     }
-
-    let app_dir = sh.root.join(APP_DIR);
-    let project = app_dir.join(format!("{SCHEME}.xcodeproj"));
-    // The project is git-ignored and regenerable, so a fresh checkout lands
-    // here on the first run rather than in an xcodebuild error about a missing
-    // project.
-    if regen || !project.exists() {
-        sh.run("bash", &[&format!("{APP_DIR}/bootstrap.sh")])?;
-    }
-
-    let config = if release { "Release" } else { "Debug" };
-    let derived = app_dir.join("build/DD");
-    let (project, derived) = (path_str(&project)?, path_str(&derived)?);
-    let mut build = vec![
-        "-project",
-        project,
-        "-scheme",
-        SCHEME,
-        "-configuration",
-        config,
-        "-destination",
-        "platform=macOS",
-        "-derivedDataPath",
-        derived,
-        "build",
-    ];
-    if !verbose {
-        build.push("-quiet");
-    }
-    sh.run("xcodebuild", &build)?;
-
-    let product = app_dir
-        .join("build/DD/Build/Products")
-        .join(config)
-        .join(format!("{SCHEME}.app"));
-    if !product.is_dir() {
-        return Err(format!(
-            "xcodebuild reported success but {} is missing",
-            product.display()
-        ));
-    }
+    let app = bundle(sh, release)?;
     if build_only {
-        println!("built {}", product.display());
+        println!("✓ Built {}", app.display());
         return Ok(());
     }
-
     let file = match file {
         Some(file) => std::fs::canonicalize(&file)
             .map_err(|e| format!("no such file {}: {e}", file.display()))?,
@@ -111,9 +64,85 @@ pub fn swift(sh: &Sh, args: &[&str]) -> Result<()> {
     // `open` on a bundle that is already running only raises its window, which
     // would silently show the *previous* build. Retiring the old instance first
     // makes "run" mean the thing that was just built.
-    let _ = Command::new("pkill").args(["-x", SCHEME]).status();
-    // Through the document system, as a double-click in the Finder would.
-    sh.run("open", &["-a", path_str(&product)?, path_str(&file)?])
+    let _ = Command::new("pkill").args(["-x", APP]).status();
+    // Through the Finder's route, an Apple Event, as a double-click would.
+    sh.run("open", &["-a", path_str(&app)?, path_str(&file)?])?;
+    println!("✓ Running {APP}, with {}", file.display());
+    Ok(())
+}
+
+/// Build the binary and put `Flower.app` together around it, in
+/// `apps/flower-dioxus/target/<target>/<profile>/`. Answers the bundle's
+/// path.
+pub fn bundle(sh: &Sh, release: bool) -> Result<PathBuf> {
+    let manifest = format!("{APP_DIR}/Cargo.toml");
+    let mut build = vec!["build", "--manifest-path", &manifest, "--target", TARGET];
+    if release {
+        build.push("--release");
+    }
+    sh.cargo(&build)?;
+
+    let profile = if release { "release" } else { "debug" };
+    let out = sh
+        .root
+        .join(APP_DIR)
+        .join("target")
+        .join(TARGET)
+        .join(profile);
+    let app = out.join(format!("{APP}.app"));
+    if app.exists() {
+        std::fs::remove_dir_all(&app)
+            .map_err(|e| format!("could not clear {}: {e}", app.display()))?;
+    }
+    let contents = app.join("Contents");
+    let macos = contents.join("MacOS");
+    std::fs::create_dir_all(&macos)
+        .map_err(|e| format!("could not create {}: {e}", macos.display()))?;
+    std::fs::create_dir_all(contents.join("Resources"))
+        .map_err(|e| format!("could not create the bundle's Resources: {e}"))?;
+    std::fs::copy(out.join(BINARY), macos.join(APP))
+        .map_err(|e| format!("could not copy the built binary: {e}"))?;
+
+    let plist = contents.join("Info.plist");
+    let source = sh.read(&format!("{APP_DIR}/Info.plist"))?;
+    let version = sh.workspace_version()?;
+    let mut stamped = stamp_version(&source, &version)?;
+    if let Ok(id) = std::env::var("FLOWER_BUNDLE_ID") {
+        stamped = stamp_key(&stamped, "CFBundleIdentifier", &id)?;
+    }
+    std::fs::write(&plist, stamped)
+        .map_err(|e| format!("could not write {}: {e}", plist.display()))?;
+    std::fs::write(contents.join("PkgInfo"), "APPL????")
+        .map_err(|e| format!("could not write the bundle's PkgInfo: {e}"))?;
+
+    sh.run("codesign", &["--force", "--sign", "-", path_str(&app)?])?;
+    Ok(app)
+}
+
+/// `Info.plist` with `version` as the bundle's short version.
+pub(crate) fn stamp_version(plist: &str, version: &str) -> Result<String> {
+    stamp_key(plist, "CFBundleShortVersionString", version)
+}
+
+/// `plist` with `key`'s string value replaced by `value`: the `<string>`
+/// on the line after the key's, as the file is laid out.
+fn stamp_key(plist: &str, key: &str, value: &str) -> Result<String> {
+    let mut lines: Vec<String> = plist.lines().map(str::to_owned).collect();
+    let at = lines
+        .iter()
+        .position(|l| l.trim() == format!("<key>{key}</key>"))
+        .ok_or_else(|| format!("no {key} in {APP_DIR}/Info.plist"))?;
+    let next = lines
+        .get_mut(at + 1)
+        .filter(|l| l.trim().starts_with("<string>"))
+        .ok_or_else(|| format!("{key} in {APP_DIR}/Info.plist is not followed by a <string>"))?;
+    let indent: String = next.chars().take_while(|c| c.is_whitespace()).collect();
+    *next = format!("{indent}<string>{value}</string>");
+    let mut out = lines.join("\n");
+    if plist.ends_with('\n') {
+        out.push('\n');
+    }
+    Ok(out)
 }
 
 /// [`SAMPLE`], copied to `target/flower-sample/`.
@@ -132,73 +161,32 @@ pub(crate) fn path_str(path: &Path) -> Result<&str> {
         .ok_or_else(|| format!("{} is not UTF-8", path.display()))
 }
 
-/// The CI job: the app states the workspace version.
-pub fn check_version(sh: &Sh) -> Result<()> {
-    let version = sh.workspace_version()?;
-    let (_, current) = app_version(&sh.read(PROJECT_YML)?)?;
-    if current == version {
-        println!("{PROJECT_YML} is at {version}");
-        Ok(())
-    } else {
-        Err(format!(
-            "{PROJECT_YML} says {current} but the workspace is at {version} — \
-             run `cargo xtask sync-versions`"
-        ))
-    }
-}
-
-/// `cargo xtask sync-versions`: write the workspace version into the app.
-/// Idempotent.
-pub fn sync_versions(sh: &Sh) -> Result<()> {
-    let version = sh.workspace_version()?;
-    let text = sh.read(PROJECT_YML)?;
-    let (line, current) = app_version(&text)?;
-    if current == version {
-        println!("{PROJECT_YML} already at {version}");
-        return Ok(());
-    }
-    let mut out: Vec<String> = text.lines().map(str::to_owned).collect();
-    out[line] = format!("{VERSION_PREFIX}{version}\"");
-    let mut joined = out.join("\n");
-    if text.ends_with('\n') {
-        joined.push('\n');
-    }
-    let path = sh.root.join(PROJECT_YML);
-    std::fs::write(&path, joined)
-        .map_err(|e| format!("could not write {}: {e}", path.display()))?;
-    println!("{PROJECT_YML}: {current} → {version}");
-    Ok(())
-}
-
-/// The version `project.yml` states, and the line it states it on.
-fn app_version(text: &str) -> Result<(usize, String)> {
-    text.lines()
-        .enumerate()
-        .find_map(|(i, line)| {
-            let rest = line.strip_prefix(VERSION_PREFIX)?;
-            Some((i, rest.split('"').next().unwrap_or_default().to_string()))
-        })
-        .ok_or_else(|| {
-            format!("no version line in {PROJECT_YML} (looked for one starting {VERSION_PREFIX:?})")
-        })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn the_app_version_line_is_found() {
-        let yml = "settings:\n  base:\n        MARKETING_VERSION: \"1.2.3\"\n";
-        assert_eq!(app_version(yml).unwrap(), (2, "1.2.3".to_string()));
-        assert!(app_version("MARKETING_VERSION: \"1.2.3\"\n").is_err());
+    fn the_version_is_stamped_on_the_line_after_its_key() {
+        let plist =
+            "<dict>\n\t<key>CFBundleShortVersionString</key>\n\t<string>0.0.0</string>\n</dict>\n";
+        let out = stamp_version(plist, "1.2.3").unwrap();
+        assert_eq!(
+            out,
+            "<dict>\n\t<key>CFBundleShortVersionString</key>\n\t<string>1.2.3</string>\n</dict>\n"
+        );
+        assert!(stamp_version("<dict></dict>", "1.2.3").is_err());
     }
 
-    /// The real file, so a reformatted `project.yml` fails here rather than at
-    /// release time.
+    /// The real file, so a reformatted `Info.plist` fails here rather than
+    /// at release time.
     #[test]
-    fn project_yml_states_a_version() {
+    fn the_apps_info_plist_takes_a_version_and_an_identifier() {
         let sh = Sh::new();
-        app_version(&sh.read(PROJECT_YML).unwrap()).unwrap();
+        let plist = sh.read(&format!("{APP_DIR}/Info.plist")).unwrap();
+        let out = stamp_version(&plist, "9.9.9").unwrap();
+        assert!(out.contains("<string>9.9.9</string>"));
+        let out = stamp_key(&out, "CFBundleIdentifier", "org.diaryx.flower-test").unwrap();
+        assert!(out.contains("<string>org.diaryx.flower-test</string>"));
+        assert!(out.contains(&format!("<string>{APP}</string>")));
     }
 }

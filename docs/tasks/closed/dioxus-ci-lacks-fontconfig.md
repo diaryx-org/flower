@@ -1,13 +1,22 @@
 ---
 title: The Dioxus CI job has no fontconfig
-part_of: '[Tasks](/docs/tasks/tasks.md)'
-status: open
+part_of: '[Closed tasks](/docs/tasks/closed/closed.md)'
+status: done
 created: 2026-10-21
-updated: 2026-10-21
+updated: 2026-10-28
 description: 'The `dioxus` job added to CI on 2026-10-19 has failed on every push to main since: fontique, reached through dioxus-native, builds yeslogic-fontconfig-sys, which needs `fontconfig.pc`, and the runner installs nothing but Rust'
 ---
 
 # The Dioxus CI job has no fontconfig
+
+**Status: done**: the first choice. A job's `runner` table takes
+`apt`, the Ubuntu packages to install, and ship already hands any key of
+that table through `ship ci --matrix`. `ci.yml` installs them before the
+cache step, and the `dioxus` job asks for `libfontconfig-dev`. Its `run` is
+unchanged. fontconfig was the only one: wayland-sys is built with `dlopen`,
+and the image has OpenSSL. The same change took dependencies' debug info
+out of both Dioxus workspaces' dev profile, which halves the job's ~14 GB of
+`target/`.
 
 **Repro.** `CI / Dioxus widget and app` is red on main from `6c87174`
 (2026-10-20) on, and every other job is green. The job stops in the first

@@ -38,7 +38,33 @@ dioxus-native = { version = "0.8.0-alpha.3", default-features = false, features 
     "system-fonts", "vello",
 ] }
 flower-core = { path = "../flower-core" }
+# fig's `Value`, which flower-core's model hands out: whether a container is
+# a mapping, which takes a field, or a list, which takes an item. Already in
+# the tree through flower-core, at its version.
+fig = "7"
+# diaryx-org's components for Dioxus, which work on Blitz and are read by
+# assistive tech: every control on a page (its rows and sections, switches,
+# selects, chips and buttons), the picker's modal, the row's context menu,
+# the prompts for a key, and the pages' scrolling (`unit::scroll`). Only
+# Dioxus beneath it.
+unit = { git = "https://github.com/diaryx-org/unit", branch = "main" }
 
 [dev-dependencies]
 fig-toml = { version = "7", default-features = false, features = ["fig"] }
 fig-yaml = { version = "7", default-features = false, features = ["fig"] }
+
+# Blitz from diaryx-org's fork, its `leaf` branch at the version
+# dioxus-native pins, as unit and leaf take it (FORK.md there): its
+# accessibility tree reads ARIA's roles and states, a node removed under
+# `display: none` is forgotten by its layout parent, and a press focuses what
+# it lands on. Every Blitz crate in the graph comes from the fork, as the
+# fork's crates depend on each other by path. A [patch] applies only at the
+# root of the workspace that has it, so a host patches its own, as
+# apps/flower-dioxus does.
+[patch.crates-io]
+blitz-dom = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
+blitz-traits = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
+blitz-shell = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
+blitz-paint = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
+stylo_taffy = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }
+debug_timer = { git = "https://github.com/diaryx-org/blitz", branch = "leaf" }

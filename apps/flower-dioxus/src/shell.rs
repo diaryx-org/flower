@@ -72,6 +72,7 @@ impl Shell {
             match file::read(&chosen) {
                 Ok(model) => {
                     *path.borrow_mut() = Some(chosen);
+                    name_root(&ed, &path);
                     ed.install(model);
                 }
                 Err(e) => {
@@ -90,9 +91,8 @@ impl Shell {
         }
         .clamp(ZOOM_MIN, ZOOM_MAX);
         self.zoom.set(now);
-        let base = Look::default();
         ed.set_look(Look {
-            size: (base.size * now).round(),
+            zoom: now as f64,
             ..ed.look()
         });
     }
@@ -162,9 +162,16 @@ async fn save_as_now(ed: &Editor, window: &Arc<dyn Window>, path: &SharedPath) -
     let ok = file::write(&mut ed.model(), &to);
     if ok {
         *path.borrow_mut() = Some(to);
+        name_root(ed, path);
     }
     ed.refresh();
     ok
+}
+
+/// The breadcrumb's root is the file's name, as the window's title is.
+fn name_root(ed: &Editor, path: &SharedPath) {
+    let root = file::name_of(path.borrow().as_deref());
+    ed.set_look(Look { root, ..ed.look() });
 }
 
 /// Before the document is replaced: save it, drop its changes, or stay —

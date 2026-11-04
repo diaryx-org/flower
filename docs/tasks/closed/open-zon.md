@@ -1,13 +1,19 @@
 ---
 title: Open a ZON file
-description: flower-core opens ZON since fig 7 (it depends on fig-zon), so flower-tui and the FFI accept `.zon`; the Mac app still leaves the type out
-status: open
+description: flower-core opens ZON since fig 7 (it depends on fig-zon), so flower-tui and the FFI accept `.zon`, and the Mac app declares the type
+status: done
 created: 2026-09-30
-updated: 2026-10-15
-part_of: '[Tasks](/docs/tasks/tasks.md)'
+updated: 2026-11-03
+part_of: '[Closed tasks](/docs/tasks/closed/closed.md)'
 ---
 
 # Open a ZON file
+
+**Status: done.** `apps/flower-dioxus/Info.plist` imports `org.ziglang.zon` and
+lists it among the app's document types, as it does `org.diaryx.fig`; the Open
+panel already offered `zon`. A test in `apps/flower-dioxus/src/file.rs` holds
+the two together. Checked on Linux, against the plist alone: it has not been
+tried in the Finder.
 
 **Repro.** In the Mac app, a `.zon` file cannot be opened: the app declares no
 document type for it.

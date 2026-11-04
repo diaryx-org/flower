@@ -5,6 +5,7 @@ contents:
 - '[The Dioxus CI job has no fontconfig](/docs/tasks/closed/dioxus-ci-lacks-fontconfig.md)'
 - '[Undo and redo in the model](/docs/tasks/closed/undo-journal.md)'
 - '[Append a list item from the picker](/docs/tasks/closed/append-from-the-picker.md)'
+- '[Open a ZON file](/docs/tasks/closed/open-zon.md)'
 ---
 
 # Closed tasks

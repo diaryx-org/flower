@@ -8,9 +8,9 @@
   The document types are what put Flower in the Finder's Open With for a
   config file, and let the Open panel enable one. Flower is an alternate
   handler for every one of them: a `.json` is anybody's, and a text editor is
-  the right default for a file flower may meet half-written. fig has no
-  system type, so it is imported rather than exported: Flower is one reader
-  of the format, not the app that defines it.
+  the right default for a file flower may meet half-written. fig and ZON have
+  no system type, so each is imported rather than exported: Flower is one
+  reader of the format, not the app that defines it.
 -->
 <plist version="1.0">
 <dict>
@@ -92,6 +92,18 @@
 				<string>org.diaryx.fig</string>
 			</array>
 		</dict>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>ZON Document</string>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>LSHandlerRank</key>
+			<string>Alternate</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>org.ziglang.zon</string>
+			</array>
+		</dict>
 	</array>
 	<key>UTImportedTypeDeclarations</key>
 	<array>
@@ -110,6 +122,23 @@
 				<array>
 					<string>fig</string>
 					<string>figl</string>
+				</array>
+			</dict>
+		</dict>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>org.ziglang.zon</string>
+			<key>UTTypeDescription</key>
+			<string>ZON Document</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.plain-text</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>zon</string>
 				</array>
 			</dict>
 		</dict>

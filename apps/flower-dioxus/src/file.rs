@@ -143,6 +143,27 @@ pub async fn ask_unsaved(window: &Arc<dyn Window>, name: &str) -> Unsaved {
 mod tests {
     use super::*;
 
+    /// `.zon` has no system type, so the Open panel and the Finder only know
+    /// one through the type the app imports for it.
+    #[test]
+    fn the_app_declares_the_zon_type_the_open_panel_offers() {
+        let plist = include_str!("../Info.plist");
+        let imported = plist
+            .split_once("<key>UTImportedTypeDeclarations</key>")
+            .expect("the app imports types")
+            .1;
+        let documents = plist
+            .split_once("<key>CFBundleDocumentTypes</key>")
+            .and_then(|(_, rest)| rest.split_once("<key>UTImportedTypeDeclarations</key>"))
+            .expect("the app declares document types")
+            .0;
+
+        assert!(EXTENSIONS.contains(&"zon"));
+        assert!(documents.contains("<string>org.ziglang.zon</string>"));
+        assert!(imported.contains("<string>org.ziglang.zon</string>"));
+        assert!(imported.contains("<string>zon</string>"));
+    }
+
     #[test]
     fn the_sample_opens_untitled_and_a_bad_path_says_why() {
         let (m, path) = open_or_sample(None);

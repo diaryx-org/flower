@@ -11,6 +11,7 @@
 //!   and `close`.
 //! - `start()` before the event loop runs, `launched()` once it does, and
 //!   `event_loop(&mut builder)` for the loop's own settings.
+//! - `identified(attributes)`: any window, named as the app's to the desktop.
 //! - `document_window(attributes)` and `TITLE_BAR`: how a document window
 //!   is dressed, and how far its page runs up behind the system's title.
 //! - `new_document`, `open_sample`, `sample`, `resources`.

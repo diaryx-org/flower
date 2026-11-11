@@ -46,6 +46,29 @@ pub fn document_window(attributes: WindowAttributes) -> WindowAttributes {
     attributes
 }
 
+/// The app's name to the desktop, which every window carries: a Wayland
+/// app id, an X11 class. A desktop finds the app's entry
+/// (`org.diaryx.flower.desktop`, which `scripts/install-linux.sh` writes) by
+/// it, and so the icon for the window in a dock or a switcher.
+pub const APP_ID: &str = "org.diaryx.flower";
+
+/// A window's attributes, any window's: named as the app's to the desktop.
+pub fn identified(attributes: WindowAttributes) -> WindowAttributes {
+    #[cfg(target_os = "linux")]
+    {
+        use dioxus_native::winit::platform::{wayland, x11};
+        let named: Box<dyn dioxus_native::winit::window::PlatformWindowAttributes> =
+            if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+                Box::new(wayland::WindowAttributesWayland::default().with_name(APP_ID, ""))
+            } else {
+                Box::new(x11::WindowAttributesX11::default().with_name(APP_ID, APP_ID))
+            };
+        attributes.with_platform_attributes(named)
+    }
+    #[cfg(not(target_os = "linux"))]
+    attributes
+}
+
 /// How far a document window's page runs up behind the title bar: not at
 /// all, since the title bar is the window manager's.
 pub const TITLE_BAR: f64 = 0.0;

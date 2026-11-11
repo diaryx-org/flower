@@ -106,6 +106,13 @@ cargo xtask mac notes.md     # …with a document of your own
 cargo xtask package          # a signed, notarised Flower.app in a .dmg, in target/package/
 ```
 
+On Linux, a development build is installed for the user, with the icon and a
+desktop entry, by a script; run it again to update:
+
+```sh
+scripts/install-linux.sh     # ~/.local/bin/flower-app, and Flower in the app launcher
+```
+
 `cargo xtask --help` lists every task and flag. `cargo xtask package` needs a
 Developer ID identity in the keychain and notary credentials in the
 environment; the head of [`xtask/src/package.rs`](xtask/src/package.rs) names

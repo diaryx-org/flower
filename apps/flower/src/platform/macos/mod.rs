@@ -101,6 +101,12 @@ pub fn document_window(attributes: WindowAttributes) -> WindowAttributes {
 /// How far a document window's page runs up behind the title bar.
 pub const TITLE_BAR: f64 = 28.0;
 
+/// A window's attributes, any window's, named as the app's to the desktop:
+/// on a Mac the bundle says whose a window is, so as they came.
+pub fn identified(attributes: WindowAttributes) -> WindowAttributes {
+    attributes
+}
+
 define_class!(
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]

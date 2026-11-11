@@ -407,6 +407,7 @@ impl App {
         contexts: Vec<Box<dyn Any>>,
         attributes: WindowAttributes,
     ) -> (Arc<dyn Window>, Rc<dioxus_core::Runtime>) {
+        let attributes = platform::identified(attributes);
         let proxy = self.blitz.proxy.clone();
         let mut vdom = VirtualDom::new(root);
         for c in contexts {

@@ -1,6 +1,6 @@
-# Leaf, in a browser
+# Flower, in a browser
 
-This is **leaf**, a Markdown editor that draws what you write as it will
+This is **flower**, a Markdown editor that draws what you write as it will
 read: the same editor as the Mac app, compiled to WebAssembly and drawn
 into a canvas by [Blitz](https://github.com/DioxusLabs/blitz).
 
@@ -26,7 +26,7 @@ to make it _bold_; **⌘I** for italics; **⌘Z** to undo.
 
 ```rust
 fn main() {
-    println!("hello from leaf");
+    println!("hello from flower");
 }
 ```
 

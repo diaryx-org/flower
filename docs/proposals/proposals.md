@@ -13,7 +13,7 @@ contents:
 - '[Directives a host names, inserts and draws](host-directives.md)'
 - '[Editors inside a document](embedded-editors.md)'
 - '[A shared, patched winit for the Dioxus work](/docs/proposals/a-shared-patched-winit-for-the-dioxus-work.md)'
-- '[The flower-doc-editor editor in a terminal](/docs/proposals/the-flower-doc-editor-editor-in-a-terminal.md)'
+- '[The flower-doc-editor editor in a terminal](/docs/proposals/the-leaf-dioxus-editor-in-a-terminal.md)'
 - '[An edit format shared by flower and the core](/docs/proposals/an-edit-format-shared-by-leaf-and-the-core.md)'
 - '[What you see is what twig-export sets](/docs/proposals/what-you-see-is-what-twig-export-sets.md)'
 - '[Prestructured pages: Typst sets every view, from templates](/docs/proposals/prestructured-pages.md)'

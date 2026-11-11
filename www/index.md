@@ -2,10 +2,10 @@
 title: flower
 nav_title: flower
 nav_order: 40
-description: flower — a caret-based rich-text editor that edits the document's AST. One editing core, from terminal to iOS to the browser.
+description: flower — an editor for documents and data files that edits the syntax tree. A caret for Markdown, Djot and HTML; a tree for JSON, YAML and TOML.
 audience: public
 part_of: '[flower](/README.md)'
-id: z4z2w13
+id: v817zvg
 ---
 <section class="pj-head">
   <div class="wrap">
@@ -18,7 +18,8 @@ id: z4z2w13
       </span>
     </div>
     <p class="pj-tagline">
-      A caret-based rich-text editor that edits the document's AST.
+      An editor for documents and data files that edits the syntax tree:
+      a caret for Markdown, Djot and HTML, a tree for JSON, YAML and TOML.
     </p>
   </div>
 </section>
@@ -27,7 +28,14 @@ id: z4z2w13
 <div class="wrap pj-layout reveal">
 <div class="pj-body">
 
-flower gives you an ordinary text caret — mouse, selection, a
+flower is one editor for two kinds of file. A data file — JSON, YAML,
+TOML, ZON, figl — opens as its tree: you move into mappings and along
+lists and edit one value at a time, each change a lossless splice
+through fig, so comments, key order and quoting stay as they were. A
+document's frontmatter opens the same way, from the document's own
+window.
+
+For a document, flower gives you an ordinary text caret — mouse, selection, a
 formatting toolbar — and turns every keystroke into an
 offset-addressed edit on twig's tree. The document stays a live,
 round-trippable AST the whole time you type into it, so a Markdown

@@ -28,7 +28,7 @@ cargo run -p flower-tui -- --dump-html document.md  # the same, in its colours
 - `FLOWER_TRACE=1 FLOWER_DTUI_LOG=<file>` logs keys and frame timings to the file.
 
 The case for it, what it does and does not do yet, and what replacing leaf-tui
-would take: [the proposal](../../docs/proposals/the-flower-doc-editor-editor-in-a-terminal.md).
+would take: [the proposal](../../docs/proposals/the-leaf-dioxus-editor-in-a-terminal.md).
 
 ## How it fits together
 

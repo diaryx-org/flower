@@ -7,26 +7,51 @@ contents:
 - '[Audiences](/vocab/audiences.md)'
 - '[Proposals](/docs/proposals/proposals.md)'
 - '[Tasks](/docs/tasks/tasks.md)'
+- '[Releasing flower](/docs/releasing.md)'
+- '[Changelog of leaf, to 0.5.1](/docs/CHANGELOG-leaf.md)'
 - '[Archive](/archive/README.md)'
 config: .config/prov.yaml
 registry: registry.yaml
-id: 6h2bs8f
+id: rkhvqqw
 slug: flower
 ---
 # flower (Work in progress!!)
 
-A caret-based rich-text editor for documents, built on [`twig`](https://github.com/diaryx-org/twig).
+An editor for the files a person keeps: **documents** (Markdown, Djot, HTML)
+under an ordinary caret, and **data files** (JSON, YAML, TOML, ZON, figl) as a
+tree edited a value at a time. Either way the file stays a live, lossless
+syntax tree while it is edited: a document's is
+[`twig`](https://github.com/diaryx-org/twig)'s, a data file's
+[`fig`](https://github.com/diaryx-org/fig)'s, and what an edit does not touch
+is written back byte for byte.
+
+flower was two projects. **leaf** was the document editor, and most of what
+is here is its code; **flower** was the structural editor for config files.
+They are one now, under flower's name and leaf's icon, and one app opens
+both:
+
+```sh
+cargo run -p flower-app -- notes.md       # a document: the caret, the toolbar, Reflow and Pages
+cargo run -p flower-app -- config.toml    # a data file: its tree, a page per container
+```
+
+A document with frontmatter has both halves in one window: **View ▸
+Frontmatter** (and the toolbar's button) shows the fields between its fences
+in the structural editor, and writes each edit back into the document.
 
 ## Workspace layout
 
-The caret/selection model and the AST→glyph mapping live in a
-frontend-neutral **core**. One editor widget draws it: `flower-doc-editor`, on
+Each half is a frontend-neutral **model** and an editor **widget** that draws
+it. The document's caret/selection model and AST→glyph mapping are
+`flower-doc`; the data file's projection, cursor and lossless edits are
+`flower-data`. Their widgets are `flower-doc-editor` and
+`flower-data-editor`, on
 Dioxus's native renderer, which draws HTML and CSS through
 [the Blitz fork](https://github.com/diaryx-org/blitz) (branch `leaf`) with no
 webview. Thin **apps** host the widget with a window or a terminal, a
 clipboard and file I/O.
 
-The other frontends (Swift for iOS and the Mac, the web package and its wasm
+leaf's other frontends (Swift for iOS and the Mac, the web package and its wasm
 binding, gpui for the desktop, Android, and the ratatui terminal editor) are
 archived under [`archive/`](archive/README.md). They stay readable there as a
 guide to what each platform needs; the tasks under `docs/tasks` say which of
@@ -44,18 +69,28 @@ those behaviours the Dioxus path does not have yet.
 | [`flower-mermaid`](crates/flower-mermaid) | Mermaid diagrams to SVG, through mmdr, for the editor to draw a fence with. |
 | [`flower-session`](crates/flower-session) | the editors flower runs itself for a region of a document (a formula today), behind one interface: keys in, splices on the region's content out. |
 | [`flower-math-edit`](crates/flower-math-edit) | a structural formula editor whose file format stays TeX (a spike), which `flower-session` runs. |
+| [`flower-data`](crates/flower-data) | the data file's model, over `fig`: the page projection (one container a page, small groups inlined), the cursor, typed scalar edits, comments, undo and redo, a schema's vocabulary for a field, and a host's findings beside the rows they are about. No UI and no file system. [Its README](crates/flower-data/README.md) is the guide to this half: the keys, the tiers, the `Backend` trait. |
+| [`flower-data-editor`](crates/flower-data-editor) | the **data file's widget on Dioxus's native renderer**: the pages as a settings screen out of unit's components — a switch for a boolean, chips for a short list, a menu for a field with a vocabulary, values typed in place. |
+| [`flower-ratatui`](crates/flower-ratatui) | the data file's widget for a ratatui terminal, which provui's terminal frontend hosts. |
+| [`flower-ffi`](crates/flower-ffi) | `flower-data` behind UniFFI, for the Swift package in [`packages/flower-swift`](packages/flower-swift) (`Package.swift` at the root is its manifest). |
 
 ### `apps/` — runnable frontends
 
 | app | what it is |
 |-----|------------|
-| [`flower-doc-editor`](apps/flower) | **Flower**, in Rust from `main` up, for every platform Dioxus's native renderer reaches — the Mac's is `Flower.app` (`org.diaryx.flower`). A window per document, each a Dioxus page: the toolbar, `crates/flower-doc-editor`'s editor, the context menu and Settings, their buttons, menus and dialogs [unit](https://github.com/diaryx-org/unit)'s. What a platform does its own way is `platform/`: on the Mac an `NSDocument` per window (Open, autosave, Versions, Rename, recents, Finder's Open With), the menu bar, the spelling checker, Look Up and the print panel, through objc2. Export as PDF and Print from the editor's own layout. What it does not do yet is the task "What the Mac app does not do yet". |
-| [`flower-tui`](apps/flower-tui) | the terminal editor: the same `flower-doc-editor` editor, laid out by Blitz and painted into character cells by `blitz-tui`, with unit's menus and dialogs in their cell density. It replaces the archived `leaf-tui`; what it does not do yet is in [its proposal](docs/proposals/the-flower-doc-editor-editor-in-a-terminal.md) and the task "The terminal editor after leaf-tui". |
+| [`flower`](apps/flower) | **Flower**, in Rust from `main` up, for every platform Dioxus's native renderer reaches — the Mac's is `Flower.app` (`org.diaryx.flower`). A window per file. A data file's is `crates/flower-data-editor`'s pages. A document's is a Dioxus page: the toolbar, `crates/flower-doc-editor`'s editor, its frontmatter in the structural editor when asked, the context menu and Settings, their buttons, menus and dialogs [unit](https://github.com/diaryx-org/unit)'s. What a platform does its own way is `platform/`: on the Mac an `NSDocument` per window (Open, autosave, Versions, Rename, recents, Finder's Open With), the menu bar, the spelling checker, Look Up and the print panel, through objc2. Export as PDF and Print from the editor's own layout. What it does not do yet is the task "What the Mac app does not do yet". |
+| [`flower-tui`](apps/flower-tui) | the terminal editor: the same `flower-doc-editor` editor, laid out by Blitz and painted into character cells by `blitz-tui`, with unit's menus and dialogs in their cell density. It replaces the archived `leaf-tui`; what it does not do yet is in [its proposal](docs/proposals/the-leaf-dioxus-editor-in-a-terminal.md) and the task "The terminal editor after leaf-tui". |
+
+| [`flower-data-tui`](apps/flower-data-tui) | the terminal editor for a data file, on `flower-ratatui`: the binary `flower` that the tap's `flower` formula installs. |
+| [`flower-web`](apps/flower-web) | the document editor in a browser tab (`cargo xtask web`). |
 
 ```sh
-cargo run -p flower-app -- path/to/document.md
+cargo run -p flower-app -- path/to/document.md    # or a data file
 cargo run -p flower-tui -- path/to/document.md
+cargo run -p flower-data-tui -- path/to/config.toml
 ```
+
+The terminal and the browser open one half each still: a task says so.
 
 Every crate and app is a member of one workspace, on Dioxus 0.8's alpha;
 the root `Cargo.toml` patches in the Blitz fork, the Mac's winit backend
@@ -85,8 +120,13 @@ region of [`docs/CHANGELOG.md`](docs/CHANGELOG.md) into a released section,
 and commits and tags — locally. Pushing takes `--push`, and a pushed tag is a
 release: [`mac-app.yml`](.github/workflows/mac-app.yml) attaches a signed,
 notarised `Flower-<version>-aarch64.dmg` to the release and points the tap's
-`flower-editor` cask at it (`brew install --cask diaryx-org/tap/flower-editor`).
-The crates are not on crates.io (0.5.0 was the last upload): provui and the
+`flower-editor` cask at it (`brew install --cask diaryx-org/tap/flower-editor`),
+[`homebrew.yml`](.github/workflows/homebrew.yml) builds the terminal data
+editor and writes the tap's `flower` formula, and
+[`pages.yml`](.github/workflows/pages.yml) deploys the browser build.
+[docs/releasing.md](docs/releasing.md) is what a release does, step by step.
+The crates are not on crates.io (leaf's last upload was 0.5.0, flower's
+0.6.4, under the names they had then): provui and the
 Diaryx app name them from git, `{ git = "https://github.com/diaryx-org/flower",
 branch = "main" }`, and lock the commit they build.
 
@@ -94,8 +134,10 @@ branch = "main" }`, and lock the commit they build.
 with too; what makes flower flower is [`.config/ship.figl`](.config/ship.figl) and
 nothing else.
 
+## The document editor
+
 Sibling to [`bough`](https://github.com/diaryx-org/bough): **same backend, opposite model.** Where bough
-moves a selection through the document's AST and edits the *tree*, flower gives you
+moves a selection through the document's AST and edits the *tree*, flower's document editor gives you
 an ordinary text **caret**, mouse, selection, and a formatting toolbar — and
 turns every keystroke into one of twig's offset-addressed edits. The document
 stays a live, round-trippable AST the whole time you type into it, so a Markdown

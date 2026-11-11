@@ -12,6 +12,7 @@ contents:
 - '[An IME composition undoes a keystroke at a time](ime-composition-undo.md)'
 - '[Handoff of an open document between the Mac and iOS apps](handoff.md)'
 - '[A force click on a date shows no Calendar card](date-event-popover.md)'
+- '[Show a commented-out entry as a disabled row](/docs/tasks/disabled-entries.md)'
 - '[Closed tasks](/docs/tasks/closed/closed.md)'
 - '[What the Mac app does not do yet](/docs/tasks/what-the-mac-app-does-not-do-yet.md)'
 - '[Try Libero again](/docs/tasks/try-libero-again.md)'
@@ -23,6 +24,9 @@ contents:
 - '[What Linux and Windows do not do yet](/docs/tasks/what-linux-and-windows-do-not-do-yet.md)'
 - '[A quote''s bar breaks a line Blitz was told not to wrap](/docs/tasks/a-quotes-bar-breaks-a-line-blitz-was-told-not-to-wrap.md)'
 - '[Tests leave their fixtures in the temp directory](/docs/tasks/tests-leave-their-fixtures-in-temp.md)'
+- '[The terminal and the browser open one half each](/docs/tasks/the-terminal-and-the-browser-open-one-half-each.md)'
+- '[The Mac app''s data windows and frontmatter view have not been run on a Mac](/docs/tasks/the-mac-apps-data-windows-have-not-been-run-on-a-mac.md)'
+- '[The next generated changelog lists leaf''s whole history](/docs/tasks/the-next-generated-changelog-lists-leafs-whole-history.md)'
 part_of: '[flower](/README.md)'
 ---
 # Tasks

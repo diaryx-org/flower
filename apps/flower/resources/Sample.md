@@ -1,6 +1,6 @@
-# leaf, natively
+# flower, natively
 
-A native **SwiftUI** front end driving *leaf-core* over the FFI — the same caret model and AST→glyph map the terminal and desktop apps use, on macOS and iOS.
+A native **SwiftUI** front end driving *flower-doc* over the FFI — the same caret model and AST→glyph map the terminal and desktop apps use, on macOS and iOS.
 
 ## What's live
 
@@ -33,7 +33,7 @@ Toggle the ⏎ menu to fold them into flowing prose or preserve them as written.
 
 ```rust
 fn main() {
-    println!("rendered by leaf-core");
+    println!("rendered by flower-doc");
 }
 ```
 

@@ -5,7 +5,7 @@ edition.workspace = true
 version.workspace = true
 license.workspace = true
 repository.workspace = true
-readme.workspace = true
+readme = "README.md"
 description = "Frontend-neutral structural editing model for config files, over fig."
 
 [dependencies]

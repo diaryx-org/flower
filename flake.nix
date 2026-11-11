@@ -1,5 +1,5 @@
 {
-  description = "flower — a caret-based rich-text document editor";
+  description = "flower — an editor for documents and data files";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";

@@ -1,3 +1,7 @@
+---
+title: Releasing flower
+part_of: '[flower](/README.md)'
+---
 # Releasing flower
 
 The whole workspace shares one version number, one tag, and one changelog. A

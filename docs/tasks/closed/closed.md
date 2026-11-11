@@ -2,6 +2,10 @@
 title: Closed tasks
 part_of: '[Tasks](/docs/tasks/tasks.md)'
 contents:
+- '[The Dioxus CI job has no fontconfig](/docs/tasks/closed/dioxus-ci-lacks-fontconfig.md)'
+- '[Undo and redo in the model](/docs/tasks/closed/undo-journal.md)'
+- '[Append a list item from the picker](/docs/tasks/closed/append-from-the-picker.md)'
+- '[Open a ZON file](/docs/tasks/closed/open-zon.md)'
 - '[Bold inside code inserts visible delimiters](/docs/tasks/closed/bold-inside-code-inserts-delimiters.md)'
 - '[Bold over italic does not toggle off](/docs/tasks/closed/bold-over-italic-does-not-toggle-off.md)'
 - '[Editor Is Proportional To The Document Per Interaction](/docs/tasks/closed/editor-is-proportional-to-the-document-per-interaction.md)'

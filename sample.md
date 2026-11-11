@@ -1,7 +1,7 @@
 ---
 part_of: '[README](README.md)'
 ---
-# leaf
+# flower
 
 A sample document. Select a word and press **Alt+B** to _bold_ it.
 

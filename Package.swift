@@ -1,6 +1,6 @@
 // swift-tools-version:5.9
 //
-// The Swift package a SwiftUI app links to drive flower-core. The manifest
+// The Swift package a SwiftUI app links to drive flower-data. The manifest
 // lives at the repository root — not in packages/flower-swift/ — because
 // SwiftPM resolves git dependencies only from a root Package.swift, and
 // by-version resolution is how a consumer is meant to take this package:

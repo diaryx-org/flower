@@ -2,15 +2,15 @@
 //! with every request ignored.
 //!
 //! ```sh
-//! cargo run --manifest-path crates/flower-dioxus/Cargo.toml --example minimal
+//! cargo run --manifest-path crates/flower-data-editor/Cargo.toml --example minimal
 //! ```
 
 use std::rc::Rc;
 
 use dioxus::prelude::*;
 use dioxus_native::winit::event::WindowEvent;
-use flower_core::{FigBackend, Model};
-use flower_dioxus::{FlowerPages, Host, Look, pressed, use_editor};
+use flower_data::{FigBackend, Model};
+use flower_data_editor::{FlowerPages, Host, Look, pressed, use_editor};
 use unit::{Keys, UnitRoot};
 
 struct Mine;

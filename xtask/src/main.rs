@@ -37,9 +37,9 @@ type Result<T> = std::result::Result<T, String>;
 /// file is what says so when one is forgotten. `ship ci package-isolation` runs
 /// it.
 const ISOLATED: &[&[&str]] = &[
-    &["-p", "flower-core"],
+    &["-p", "flower-data"],
     &["-p", "flower-ratatui"],
-    &["-p", "flower-tui"],
+    &["-p", "flower-data-tui"],
     &["-p", "flower-ffi"],
 ];
 
@@ -166,7 +166,7 @@ fn usage() -> String {
 /// A workspace member: where its manifest lives, and what the registry calls it.
 ///
 /// flower keeps its crates under `crates/`, so a member's path and its package
-/// name are two different strings — `crates/flower-core` is read, `flower-core`
+/// name are two different strings — `crates/flower-data` is read, `flower-data`
 /// is what `cargo check -p` is asked about. Conflating them is how a job ends up
 /// looking for a crate named after a directory.
 struct Member {
@@ -210,8 +210,8 @@ fn members(sh: &Sh) -> Result<Vec<Member>> {
 }
 
 #[cfg(test)]
-/// `name = "flower-core"` from a member manifest. The first such line: a
-/// `[dependencies]` entry is `flower-core = …`, never `name = …`, so nothing
+/// `name = "flower-data"` from a member manifest. The first such line: a
+/// `[dependencies]` entry is `flower-data = …`, never `name = …`, so nothing
 /// below `[package]` can be mistaken for it.
 fn package_name(manifest: &str) -> Option<String> {
     manifest
@@ -323,9 +323,9 @@ mod tests {
     #[test]
     fn package_names_come_from_the_manifest() {
         assert_eq!(
-            package_name("[package]\nname = \"flower-core\"\nedition.workspace = true\n")
+            package_name("[package]\nname = \"flower-data\"\nedition.workspace = true\n")
                 .as_deref(),
-            Some("flower-core")
+            Some("flower-data")
         );
         assert_eq!(package_name("[workspace]\nresolver = \"3\"\n"), None);
     }
@@ -339,9 +339,9 @@ mod tests {
         assert!(
             found
                 .iter()
-                .any(|m| m.path == "crates/flower-core" && m.name == "flower-core")
+                .any(|m| m.path == "crates/flower-data" && m.name == "flower-data")
         );
-        for name in ["flower-ffi", "flower-ratatui", "flower-tui", "xtask"] {
+        for name in ["flower-ffi", "flower-ratatui", "flower-data-tui", "xtask"] {
             assert!(found.iter().any(|m| m.name == name), "{name} was not read");
         }
         // Nothing goes to crates.io: flower is consumed from git, by commit,

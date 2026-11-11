@@ -569,7 +569,7 @@ fileprivate struct FfiConverterString: FfiConverter {
 
 /**
  * A live flower document bound for a native Apple frontend: a
- * `flower_core::Model` over a [`FigBackend`], behind a mutex. Constructed from
+ * `flower_data::Model` over a [`FigBackend`], behind a mutex. Constructed from
  * in-memory bytes and driven entirely through method calls — there is no
  * filesystem behind it; the host reads the file and persists [`FlowerDoc::source`].
  */
@@ -841,7 +841,7 @@ public protocol FlowerDocProtocol: AnyObject, Sendable {
      * in, not about the document.
      *
      * A page's own row limit comes with it
-     * ([`InlineBudget::new`](flower_core::InlineBudget::new)): a list of items
+     * ([`InlineBudget::new`](flower_data::InlineBudget::new)): a list of items
      * that each fit `rows` is still drilled when there are enough of them to
      * bury the page, and asking for more rows per subtree asks for a page that
      * can hold them.
@@ -902,7 +902,7 @@ public protocol FlowerDocProtocol: AnyObject, Sendable {
 }
 /**
  * A live flower document bound for a native Apple frontend: a
- * `flower_core::Model` over a [`FigBackend`], behind a mutex. Constructed from
+ * `flower_data::Model` over a [`FigBackend`], behind a mutex. Constructed from
  * in-memory bytes and driven entirely through method calls — there is no
  * filesystem behind it; the host reads the file and persists [`FlowerDoc::source`].
  */
@@ -1529,7 +1529,7 @@ open func setAnnotations(annotations: [AnnotationInput]) -> PagesView  {
      * in, not about the document.
      *
      * A page's own row limit comes with it
-     * ([`InlineBudget::new`](flower_core::InlineBudget::new)): a list of items
+     * ([`InlineBudget::new`](flower_data::InlineBudget::new)): a list of items
      * that each fit `rows` is still drilled when there are enough of them to
      * bury the page, and asking for more rows per subtree asks for a page that
      * can hold them.
@@ -2130,7 +2130,7 @@ public func FfiConverterTypeNoticeView_lower(_ value: NoticeView) -> RustBuffer 
 
 
 /**
- * One line of a page — the projection of `flower_core::PageItem`.
+ * One line of a page — the projection of `flower_data::PageItem`.
  *
  * Where a [`RowView`] is a line of the whole document indented by `depth`, this
  * is a line of *one container's* listing: no depth, because everything on a page
@@ -2472,7 +2472,7 @@ public struct PageView: Equatable, Hashable {
     /**
      * The trail from the root down to [`focus`](Self::focus), each step openable
      * by its `id`. **Empty at the root**, whose name is the frontend's to choose
-     * — flower-core has none for it (the TUI calls it `‹document›`).
+     * — flower-data has none for it (the TUI calls it `‹document›`).
      */
     public var crumbs: [CrumbView]
     public var items: [PageItemView]
@@ -2497,7 +2497,7 @@ public struct PageView: Equatable, Hashable {
         /**
          * The trail from the root down to [`focus`](Self::focus), each step openable
          * by its `id`. **Empty at the root**, whose name is the frontend's to choose
-         * — flower-core has none for it (the TUI calls it `‹document›`).
+         * — flower-data has none for it (the TUI calls it `‹document›`).
          */crumbs: [CrumbView], items: [PageItemView], 
         /**
          * The selected item, or `None` for a pane that doesn't hold the cursor — a
@@ -2724,7 +2724,7 @@ public func FfiConverterTypePagesView_lower(_ value: PagesView) -> RustBuffer {
 
 
 /**
- * One visible line of the config tree — a projection of `flower_core::Row` for
+ * One visible line of the config tree — a projection of `flower_data::Row` for
  * the renderer. The SwiftUI side indents by `depth`, draws a disclosure twisty
  * when `is_container`, and shows `preview` as the value (or child count).
  */

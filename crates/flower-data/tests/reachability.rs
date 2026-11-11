@@ -1,4 +1,4 @@
-//! Every fig-schema type an embedder needs is reachable *through* `flower_core`.
+//! Every fig-schema type an embedder needs is reachable *through* `flower_data`.
 //!
 //! An integration test rather than a unit one, deliberately: it compiles
 //! outside the crate and so sees exactly what a host sees — which is the only
@@ -8,7 +8,7 @@
 //! ## Why this exists
 //!
 //! flower's facade offers embedders a single dependency: a host takes
-//! `flower-core` and never names fig-schema. That promise is kept by the
+//! `flower-data` and never names fig-schema. That promise is kept by the
 //! re-export list in `lib.rs`, and it is quietly broken every time a type is
 //! added upstream and not added there.
 //!
@@ -23,8 +23,8 @@
 //! it simply remains unreachable. This is the check that does.
 
 use fig::Value;
-use flower_core::schema::Constraint;
-use flower_core::{
+use flower_data::schema::Constraint;
+use flower_data::{
     Consequence, FieldRule, FieldType, PathPat, Presentation, Severity, Term, Tint,
     guards_without_terms,
 };

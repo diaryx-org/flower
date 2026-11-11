@@ -19,7 +19,7 @@
 //! `Cargo.toml`). Unpatched, the dead keys and composing input methods work,
 //! and holding a key repeats it.
 
-use flower_core::{Backend, Mode, Model};
+use flower_data::{Backend, Mode, Model};
 
 /// The most text winit takes around the caret
 /// (`ImeSurroundingText::MAX_TEXT_BYTES`).
@@ -67,7 +67,7 @@ pub fn delete_before<B: Backend>(model: &mut Model<B>, bytes: usize) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use flower_core::{FigBackend, Seg, ViewMode};
+    use flower_data::{FigBackend, Seg, ViewMode};
 
     use crate::input::insert_text;
 

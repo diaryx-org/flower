@@ -9,8 +9,8 @@
 //! document on one page.
 
 use dioxus::prelude::*;
-use flower_core::{InlineBudget, Mode};
-use flower_dioxus::Editor;
+use flower_data::{InlineBudget, Mode};
+use flower_data_editor::Editor;
 use unit::icon::paths;
 use unit::{Button, Segmented, Variant, use_unit};
 

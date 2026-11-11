@@ -14,8 +14,8 @@ use std::sync::Arc;
 
 use dioxus::html::{Code, Key, Modifiers};
 use dioxus_native::winit::window::Window;
-use flower_core::{FigBackend, Model};
-use flower_dioxus::{Editor, Host, Look, Request, ZoomCommand};
+use flower_data::{FigBackend, Model};
+use flower_data_editor::{Editor, Host, Look, Request, ZoomCommand};
 
 use crate::file::{self, Unsaved};
 

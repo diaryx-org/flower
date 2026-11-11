@@ -1,6 +1,6 @@
-//! flower — a structural TUI editor for config files, built on flower-core.
+//! flower — a structural TUI editor for config files, built on flower-data.
 //!
-//! This binary owns the two things flower-core deliberately does not: the file
+//! This binary owns the two things flower-data deliberately does not: the file
 //! (read on open, written on save) and the terminal event loop. The keys and
 //! the mouse themselves belong to `flower-ratatui` — this host forwards an
 //! event and acts on the [`flower_ratatui::Outcome`] that comes back, so an app
@@ -16,7 +16,7 @@ use ratatui::crossterm::event::{
 use ratatui::crossterm::execute;
 use ratatui::layout::Rect;
 
-use flower_core::{FigBackend, Model, ViewMode};
+use flower_data::{FigBackend, Model, ViewMode};
 use flower_ratatui::Outcome;
 
 /// The one-line usage, shared by the no-argument error and `--help` so the two
@@ -55,7 +55,7 @@ fn main() -> Result<()> {
 
     let path = PathBuf::from(arg);
 
-    let fmt = flower_core::detect(&path).with_context(|| {
+    let fmt = flower_data::detect(&path).with_context(|| {
         format!(
             "unrecognized config extension for {} (want json/yaml/toml/zon/fig)",
             path.display()

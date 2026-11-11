@@ -24,18 +24,18 @@ From git, not crates.io; 0.6.4 was the last version uploaded there. provui and
 the Diaryx app name the crates they use the same way:
 
 ```toml
-flower-core = { git = "https://github.com/diaryx-org/flower", branch = "main" }
+flower-data = { git = "https://github.com/diaryx-org/flower", branch = "main" }
 ```
 
 and each one's `Cargo.lock` records the exact commit it builds, which `cargo
-update -p flower-core` moves. So a change reaches them once it is pushed to
+update -p flower-data` moves. So a change reaches them once it is pushed to
 `main`, not once it is released. The spelling has to match everywhere: cargo
 tells sources apart by it, and one consumer on a `rev` while another is on
-`branch = "main"` is two flower-cores in one graph.
+`branch = "main"` is two flower-datas in one graph.
 
 The crates other repositories use are three:
 
-- **`flower-core`** — the frontend-neutral structural editing model.
+- **`flower-data`** — the frontend-neutral structural editing model.
 - **`flower-ratatui`** — the ratatui widget. `draw` and `handle_key` are the
   whole of it, and the `Outcome` `handle_key` returns is what lets a host own
   the event loop rather than surrender it. It draws into a `Rect`, not only
@@ -50,8 +50,8 @@ The crates other repositories use are three:
   nailed to `FigBackend` — the projection is the reusable half. `leaf-ffi` is a
   library for the same reason.
 
-**`flower-tui`** is the prototype binary, run from a checkout (`cargo run -p
-flower-tui -- path/to/config.toml`). It moves with the workspace version, and
+**`flower-data-tui`** is the prototype binary, run from a checkout (`cargo run -p
+flower-data-tui -- path/to/config.toml`). It moves with the workspace version, and
 appears in the changelog.
 
 ## What a tag starts

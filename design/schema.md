@@ -1,6 +1,6 @@
 # The schema layer
 
-Status: design. Greenfield — no schema type exists yet in `flower-core`, `fig`,
+Status: design. Greenfield — no schema type exists yet in `flower-data`, `fig`,
 or the FFI (grep confirms: only doc-comment TODOs today).
 
 ## What this is for
@@ -28,15 +28,15 @@ design preserves:
 1. **fig stays schema-free.** fig is format-level, released as a versioned crate,
    and shared by consumers (flower, prov, leaf) with *different* schema sources.
    Per-key semantics don't belong in the parser.
-2. **flower-core stays config-generic; prov stays consumer-agnostic.** The
-   app-specific bridge lives in `provui`, not here — `flower-core` never learns
+2. **flower-data stays config-generic; prov stays consumer-agnostic.** The
+   app-specific bridge lives in `provui`, not here — `flower-data` never learns
    the word "prov."
 
 So the mechanism (a generic `Schema` type, validation, type-directed parsing,
-presentation) lives in **`flower-core`**. The prov-specific *source* (translating
+presentation) lives in **`flower-data`**. The prov-specific *source* (translating
 prov's controlled vocabularies + relations into that generic `Schema`) lives in
 **`provui`**, exactly mirroring how `ProvBackend` already adapts prov's
-`MetaEditor` into `flower_core::Backend`.
+`MetaEditor` into `flower_data::Backend`.
 
 Schema travels the **same seam as edits** — the `Backend` trait — via one new,
 defaulted method:
@@ -63,7 +63,7 @@ so it is the right place to know what governs it. This also matches the existing
 ## The generic `Schema` type
 
 ```rust
-// crates/flower-core/src/schema.rs — generic, prov-agnostic
+// crates/flower-data/src/schema.rs — generic, prov-agnostic
 
 pub struct Schema { rules: Vec<FieldRule> }
 
@@ -124,7 +124,7 @@ picker is populated from documents, not from a static term list.
 
 ## Presentation — renderer-neutral
 
-`flower-core` drives both a ratatui TUI and SwiftUI, so it must emit **semantic**
+`flower-data` drives both a ratatui TUI and SwiftUI, so it must emit **semantic**
 hints, never SF Symbols or RGB. Each frontend maps them (Swift → SF Symbols +
 theme-adaptive `Color`; ratatui → unicode + ANSI):
 
@@ -165,7 +165,7 @@ Resolution is two-tier, so nothing regresses when a document has no schema:
 
 Prov already *detects* all of this by resolving the workspace config, so Flower
 never re-implements detection — it consumes the resolved `Schema`. This is why
-"schema detection" is not a flower-core concern for prov documents: prov owns
+"schema detection" is not a flower-data concern for prov documents: prov owns
 detection, flower owns application.
 
 ## Wiring into the model
@@ -210,7 +210,7 @@ FigBackend experience is unchanged.
 
 ## Build order
 
-1. `crates/flower-core/src/schema.rs` — the types above + `Backend::schema()`
+1. `crates/flower-data/src/schema.rs` — the types above + `Backend::schema()`
    defaulted to `None`. Compiles standalone, changes no behaviour.
 2. Wire the three model integration points behind "if a rule matches"; absent a
    schema, behaviour is byte-for-byte what it is today.

@@ -3,11 +3,11 @@ name: Homebrew
 # mechanics are shared with fig, twig, moid, and prov and live in
 # diaryx-org/.github; only what makes flower different is below.
 #
-# flower is a Rust workspace and the CLI is `flower-tui`, whose binary is named
+# flower is a Rust workspace and the CLI is `flower-data-tui`, whose binary is named
 # `flower` — hence `cargo-package` and `name` differing. That crate is
 # `publish = false` and stays that way: Homebrew builds from this tag's tree,
 # not from crates.io, so the binary ships without the crate ever being uploaded.
-# publish.yml still handles the registry half (flower-core, flower-ffi) off the
+# publish.yml still handles the registry half (flower-data, flower-ffi) off the
 # same tag.
 #
 # No `needs-zig:` — fig is pure Rust since 7.0, so every leg of the matrix
@@ -40,7 +40,7 @@ jobs:
       name: flower
       desc: "Structural terminal editor for JSON, YAML, TOML, ZON, and fig config"
       language: rust
-      cargo-package: flower-tui
+      cargo-package: flower-data-tui
     secrets:
       TAP_APP_ID: ${{ secrets.TAP_APP_ID }}
       TAP_APP_KEY: ${{ secrets.TAP_APP_KEY }}

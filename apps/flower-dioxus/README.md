@@ -1,22 +1,22 @@
-# flower-dioxus
+# flower-data-editor
 
 Flower on Dioxus's native renderer: `dioxus-native` 0.8.0-alpha.3, which
 draws HTML and CSS through Blitz on wgpu, with no webview and no browser
 engine. It edits the same files as the terminal app and the Swift one,
-through `flower-core`.
+through `flower-data`.
 
 ```sh
 cargo run --manifest-path apps/flower-dioxus/Cargo.toml -- config.toml
 cargo test --manifest-path apps/flower-dioxus/Cargo.toml
-cargo test --manifest-path crates/flower-dioxus/Cargo.toml   # the editor
+cargo test --manifest-path crates/flower-data-editor/Cargo.toml   # the editor
 ```
 
 **Two crates, as leaf's Dioxus editor is.** The editor is a widget,
-[`crates/flower-dioxus`](../../crates/flower-dioxus): the panes, the keys,
+[`crates/flower-data-editor`](../../crates/flower-data-editor): the panes, the keys,
 the picker and the prompts, out of
 [unit](https://github.com/diaryx-org/unit)'s components, over a `Host` it
 asks for what it does not own. Its README is how to host it. This app
-(package `flower-dioxus-app`, binary `flower-dioxus`) is one host: the file
+(package `flower-dioxus-app`, binary `flower-data-editor`) is one host: the file
 and the window around the editor.
 
 - `main.rs` opens the file named on the command line, or the flower sample
@@ -53,7 +53,7 @@ winit beta and wgpu tree. CI's `dioxus` job lints and tests both.
 in `[patch.crates-io]`: Blitz's accessibility tree reads unit's ARIA roles
 and states; and with winit's backend unpatched, macOS's press-and-hold
 accent menu never opens and the emoji picker's text is dropped. The editor turns the
-input method on while a value is open (`crates/flower-dioxus/src/ime.rs`);
+input method on while a value is open (`crates/flower-data-editor/src/ime.rs`);
 dead keys and composing input methods work without the patch too.
 
 ## On a Mac

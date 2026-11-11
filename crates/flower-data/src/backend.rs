@@ -443,7 +443,7 @@ j = \"w\"
     /// into the next.
     ///
     /// ```no_run
-    /// # use flower_core::backend::{FigBackend, conformance};
+    /// # use flower_data::backend::{FigBackend, conformance};
     /// conformance::check(|| {
     ///     FigBackend::open(conformance::FIXTURE_TOML.as_bytes(), fig_toml::format().unwrap()).unwrap()
     /// })

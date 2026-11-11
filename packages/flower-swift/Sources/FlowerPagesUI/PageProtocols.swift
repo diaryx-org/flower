@@ -65,7 +65,7 @@ public protocol PageItemDisplaying: Identifiable where ID == String {
 
     // ── what the schema says, for a host that has one ─────────────────────────
     //
-    // flower-core already carries a `Schema` — `Constraint::Enum { values,
+    // flower-data already carries a `Schema` — `Constraint::Enum { values,
     // closed }` and the rest — so a host that resolves it knows things about a
     // scalar that the scalar's own *value* does not say: that only certain terms
     // are legal, and that some fields are not the reader's to type at all. A

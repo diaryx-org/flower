@@ -58,14 +58,14 @@ yet.
 <aside class="pj-aside">
 <div class="install">
 <span class="install-head">Install</span>
-<div class="cmd">cargo add flower-core <small>Rust</small></div>
+<div class="cmd">cargo add flower-data <small>Rust</small></div>
 </div>
 <div class="facts">
 <div class="row"><span class="k">Language</span><span class="v">Rust (on fig)</span></div>
 <div class="row"><span class="k">Built on</span><span class="v"><a href="../fig/index.md">fig</a></span></div>
 <div class="row"><span class="k">Used by</span><span class="v"><a href="../index.html">Diaryx</a> — config &amp; metadata editing</span></div>
 <div class="row"><span class="k">Source</span><span class="v"><a href="https://github.com/diaryx-org/flower">github.com/diaryx-org/flower</a></span></div>
-<div class="row"><span class="k">Packages</span><span class="v"><a href="https://crates.io/crates/flower-core">crates.io/crates/flower-core</a></span></div>
+<div class="row"><span class="k">Packages</span><span class="v"><a href="https://crates.io/crates/flower-data">crates.io/crates/flower-data</a></span></div>
 <div class="row"><span class="k">License</span><span class="v">MIT or Apache-2.0</span></div>
 </div>
 </aside>

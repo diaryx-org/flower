@@ -1,5 +1,5 @@
 //! Flower on Dioxus's **native backend** (`dioxus-native` 0.8.0-alpha.3,
-//! Blitz): the editor widget, [`flower_dioxus`], in a window, under unit's
+//! Blitz): the editor widget, [`flower_data_editor`], in a window, under unit's
 //! root.
 //!
 //! ```sh
@@ -7,8 +7,8 @@
 //! ```
 //!
 //! The editor — the panes, the keys, the picker, the prompts — is the
-//! widget's (`crates/flower-dioxus`). This is what an app adds around it, the
-//! two things flower-core deliberately does not own: the file, and the window.
+//! widget's (`crates/flower-data-editor`). This is what an app adds around it, the
+//! two things flower-data deliberately does not own: the file, and the window.
 //!
 //! - [`shell`]: the `Host` — Save, Save As, the zoom, the window title — and
 //!   Open (⌘O), the one key that is the app's and not the editor's.
@@ -30,7 +30,7 @@ use std::time::Duration;
 use dioxus::prelude::*;
 use dioxus_native::winit;
 use dioxus_native::winit::event::WindowEvent;
-use flower_dioxus::{FlowerPages, Host, Look, pressed, use_editor};
+use flower_data_editor::{FlowerPages, Host, Look, pressed, use_editor};
 use unit::{Accent, Clipboard, Keys, UnitRoot, use_unit};
 
 use crate::shell::Shell;
@@ -39,11 +39,11 @@ fn main() {
     let arg = std::env::args().nth(1);
     match arg.as_deref() {
         Some("--version" | "-V") => {
-            println!("flower-dioxus {}", env!("CARGO_PKG_VERSION"));
+            println!("flower-data-editor {}", env!("CARGO_PKG_VERSION"));
             return;
         }
         Some("--help" | "-h") => {
-            println!("usage: flower-dioxus [config-file]");
+            println!("usage: flower-data-editor [config-file]");
             return;
         }
         _ => {}

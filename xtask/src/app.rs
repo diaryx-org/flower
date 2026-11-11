@@ -21,7 +21,7 @@ pub(crate) const APP_DIR: &str = "apps/flower-dioxus";
 /// The bundle, its executable and its process are all named this.
 pub(crate) const APP: &str = "Flower";
 /// The binary cargo builds, which the bundle names [`APP`].
-const BINARY: &str = "flower-dioxus";
+const BINARY: &str = "flower-data-editor";
 /// The target the bundle is built for: Apple Silicon.
 pub(crate) const TARGET: &str = "aarch64-apple-darwin";
 

@@ -4,24 +4,24 @@ resolver = "3"
 # the `package-isolation` job reads this line, and each member's manifest from
 # it. A glob would leave it with nothing to read.
 members = [
-  "crates/flower-core",
+  "crates/flower-data",
   "crates/flower-ratatui",
-  "crates/flower-tui",
+  "apps/flower-data-tui",
   "crates/flower-ffi",
   "xtask",
 ]
 # The Dioxus widget and its app are workspaces of their own, built by manifest
-# (`cargo test --manifest-path crates/flower-dioxus/Cargo.toml`): they are on
+# (`cargo test --manifest-path crates/flower-data-editor/Cargo.toml`): they are on
 # dioxus-native's 0.8 alpha, whose winit beta and wgpu tree nothing here should
 # resolve — the split leaf makes for crates/leaf-dioxus. Not members already;
 # excluded so a manifest that grows a glob does not take them in.
-exclude = ["crates/flower-dioxus", "apps/flower-dioxus"]
+exclude = ["crates/flower-data-editor", "apps/flower-dioxus"]
 
 [workspace.package]
 edition = "2024"
 version = "0.6.4"
 # Minimum supported Rust version, enforced by the `msrv` CI job (which reads this
-# very value). Edition 2024 needs 1.85, but `flower-core` uses an `if let … && let …`
+# very value). Edition 2024 needs 1.85, but `flower-data` uses an `if let … && let …`
 # let-chain in a stable position, stabilized in 1.88 — so 1.88 is the true floor.
 rust-version = "1.88"
 license = "MIT OR Apache-2.0"
@@ -45,5 +45,5 @@ fig-schema = { version = "0.5", default-features = false }
 ratatui = "0.29"
 anyhow = "1"
 # Internal crates.
-flower-core = { path = "crates/flower-core", version = "0.6.4" }
+flower-data = { path = "crates/flower-data", version = "0.6.4" }
 flower-ratatui = { path = "crates/flower-ratatui" }

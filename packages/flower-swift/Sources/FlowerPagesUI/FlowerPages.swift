@@ -1,7 +1,7 @@
 //  FlowerPageView.swift
 //
 //  The page face of the editor: one container at a time, pushed and popped —
-//  flower-core's `page` projection, rendered the way a settings app renders a
+//  flower-data's `page` projection, rendered the way a settings app renders a
 //  preference pane.
 //
 //  It is the only face. Showing the whole document at once used to be a second
@@ -56,7 +56,7 @@
 //  Nothing here imports a binding. The views take whatever satisfies
 //  `PageDriving` and `PageItemDisplaying` (PageProtocols.swift), which the
 //  generated `FlowerDoc` records do as they are and a second host's records do
-//  with an empty extension. That is the Swift echo of what flower-core already
+//  with an empty extension. That is the Swift echo of what flower-data already
 //  does in Rust, where the projection is generic over the backend and only the
 //  UniFFI handle is not.
 
@@ -100,7 +100,7 @@ public enum PageNavigation {
 /// FlowerPages(model: model)          // or: FlowerPages(model: model, rootLabel: "note.yaml")
 /// ```
 ///
-/// `rootLabel` names the document root in the breadcrumb. flower-core has no name
+/// `rootLabel` names the document root in the breadcrumb. flower-data has no name
 /// for it — the document is bytes the host opened — so the host supplies one; the
 /// TUI calls it `‹document›`.
 public struct FlowerPages<Model: PageDriving>: View {
@@ -339,7 +339,7 @@ private enum PaneRole {
     var isInteractive: Bool { self != .preview }
 }
 
-/// The fold, at the same seam flower-core offers it (`Page::partitioned`): a
+/// The fold, at the same seam flower-data offers it (`Page::partitioned`): a
 /// stable partition on `demoted`, each entry keeping the index it has in the
 /// whole item list — which is what `selected` counts, and what must not shift
 /// when the fold rearranges what is *drawn*.

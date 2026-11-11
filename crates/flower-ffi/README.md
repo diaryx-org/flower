@@ -1,7 +1,7 @@
 # flower-ffi
 
 The C-ABI / UniFFI **Rust binding** for flower: it wraps the filesystem-free
-`flower-core` `Model` behind UniFFI so a native Apple app can drive the
+`flower-data` `Model` behind UniFFI so a native Apple app can drive the
 structural config tree — navigate mappings/sequences/scalars and commit
 path-addressed, lossless edits through fig.
 
@@ -15,7 +15,7 @@ The Swift side built on top of it lives elsewhere:
 ## The contract (same as every flower/leaf frontend)
 
 - **Core owns the model.** The tree, the collapsed set, selection, and every
-  path-addressed edit live in `flower-core`; the edit is spliced losslessly
+  path-addressed edit live in `flower-data`; the edit is spliced losslessly
   through `fig::Editor`, so comments, key order, and formatting survive.
 - **The boundary is *visible rows*.** Every call returns a `DocView`: the flat
   list of currently-visible `RowView`s (core already honours the collapsed set)

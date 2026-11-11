@@ -1,10 +1,10 @@
-# flower-dioxus
+# flower-data-editor
 
 The page editor for Dioxus's native renderer: `dioxus-native` 0.8.0-alpha.3,
 which draws HTML and CSS through Blitz on wgpu, with no webview and no
 browser engine. It is flower's page view as a settings screen, built from
 [unit](https://github.com/diaryx-org/unit)'s components, over the same
-`flower_core::Model` the terminal edits:
+`flower_data::Model` the terminal edits:
 
 - one container at a time, two panes when there is width and depth for them,
   the left the page the right was opened from;
@@ -22,8 +22,8 @@ browser engine. It is flower's page view as a settings screen, built from
 document's frontmatter, is meant to be another.
 
 ```sh
-cargo test --manifest-path crates/flower-dioxus/Cargo.toml
-cargo run  --manifest-path crates/flower-dioxus/Cargo.toml --example minimal
+cargo test --manifest-path crates/flower-data-editor/Cargo.toml
+cargo run  --manifest-path crates/flower-data-editor/Cargo.toml --example minimal
 ```
 
 A workspace of its own, not a member of flower's root one, for the reason
@@ -37,7 +37,7 @@ use std::rc::Rc;
 
 use dioxus::prelude::*;
 use dioxus_native::winit::event::WindowEvent;
-use flower_dioxus::{FlowerPages, Host, Look, pressed, use_editor};
+use flower_data_editor::{FlowerPages, Host, Look, pressed, use_editor};
 use unit::{Keys, UnitRoot};
 
 struct Mine;
@@ -51,7 +51,7 @@ fn App() -> Element {
 #[allow(non_snake_case)]
 fn Page() -> Element {
     let ed = use_editor(
-        || flower_core::Model::new(backend()).unwrap(),
+        || flower_data::Model::new(backend()).unwrap(),
         Look::default,
         || Rc::new(Mine) as Rc<dyn Host>,
     );
@@ -93,7 +93,7 @@ fn Page() -> Element {
 - **`Editor::set_budget`** fixes how much inlines onto a page; `None`, the
   default, fits it to the window.
 
-The editor is generic over flower-core's `Backend`, defaulting to
+The editor is generic over flower-data's `Backend`, defaulting to
 `FigBackend`, so `Editor` and `Host` name the fig-backed model unless a host
 says otherwise. `FlowerPages` is for the fig-backed model; any other draws
 with `Editor::render`.
@@ -137,7 +137,7 @@ pointer; the keys scroll a pane to follow the cursor.
 | `read_clipboard` | ⌘V while a value is open | nothing |
 | `repainted` | after every change, with the model: a window title, a dirty dot, the document the model's text belongs in | nothing |
 
-Like flower-core, the editor never touches a file. Save is a request: the
+Like flower-data, the editor never touches a file. Save is a request: the
 host writes `Model::source_snapshot` wherever the document came from, then
 calls `Model::mark_saved` and `Model::set_status`.
 

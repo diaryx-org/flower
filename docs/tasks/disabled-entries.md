@@ -17,7 +17,7 @@ entry of its container, because fig's editor does not read the dangling run.
 
 **What this adds.**
 
-- **Detection**, in flower-core, when a page is annotated: parse each leading
+- **Detection**, in flower-data, when a page is annotated: parse each leading
   block (and, once readable, each dangling run) as a fragment in the
   document's format. A fragment that yields key-shaped entries whose keys are
   *absent* from the container is a run of disabled entries. One that repeats a

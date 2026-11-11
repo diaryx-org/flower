@@ -508,7 +508,7 @@ impl<B: Backend> Model<B> {
     /// a workspace can check ([`annotate`](crate::annotate)).
     ///
     /// Out-of-band like [`set_schema`](Self::set_schema) and
-    /// [`set_demoted`](Self::set_demoted), and for the same reason: flower-core
+    /// [`set_demoted`](Self::set_demoted), and for the same reason: flower-data
     /// is one document with no filesystem, so it can never compute one of
     /// these. They are re-attached to the rows on every rebuild, so an edit
     /// does not wipe the markers out from under a reader — but nothing here

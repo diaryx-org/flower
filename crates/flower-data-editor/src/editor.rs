@@ -22,7 +22,7 @@ use dioxus_native::winit::event::{Ime, MouseScrollDelta, WindowEvent};
 use dioxus_native::winit::window::{
     ImeCapabilities, ImeEnableRequest, ImeRequest, ImeRequestData, ImeSurroundingText, Window,
 };
-use flower_core::{
+use flower_data::{
     Backend, EditSlot, FigBackend, InlineBudget, ItemKind, Mode, Model, NoticeKind, Seg, ViewMode,
 };
 use unit::{Answer, Dialog, Toast, Tone, Unit, use_unit};
@@ -49,7 +49,7 @@ pub struct Look {
     /// density, a Mac's sizes.
     pub zoom: f64,
     /// What the document's root is called in the breadcrumb: a file's name,
-    /// usually. flower-core has no name for it — the document is bytes the
+    /// usually. flower-data has no name for it — the document is bytes the
     /// host opened.
     pub root: String,
 }
@@ -386,7 +386,7 @@ impl<B: Backend + 'static> Editor<B> {
 
     /// How many lines a row has under its title — a refusal said under it, a
     /// host's finding, the comment written above it — as `view.rs` draws it.
-    pub(crate) fn sublines(&self, model: &Model<B>, item: &flower_core::PageItem) -> usize {
+    pub(crate) fn sublines(&self, model: &Model<B>, item: &flower_data::PageItem) -> usize {
         let said = notice_under(model, &item.path).is_some();
         let found = item.annotation.is_some();
         let note = item.leading_comment.is_some()
@@ -407,7 +407,7 @@ impl<B: Backend + 'static> Editor<B> {
                 let laid = layout::lay_out(&s.page, g.column(), &g.sizes);
                 let open = advanced.contains(&s.page.focus) || fold_held_open(&m, &laid, &s);
                 let adds = s.role == Role::Current && adds_here(&m, &s.page.focus);
-                let sub = |i: &flower_core::PageItem| self.sublines(&m, i);
+                let sub = |i: &flower_data::PageItem| self.sublines(&m, i);
                 let placed =
                     layout::place(&laid, s.role != Role::Current, adds, open, &sub, &g.sizes);
                 Some(PaneGeometry {
@@ -700,7 +700,7 @@ impl<B: Backend + 'static> Editor<B> {
             let Some(item) = m.page_item() else { return };
             match item.kind {
                 ItemKind::Drill { .. } => m.page_enter(),
-                ItemKind::Scalar if item.vkind != flower_core::VKind::Bool => m.page_enter(),
+                ItemKind::Scalar if item.vkind != flower_data::VKind::Bool => m.page_enter(),
                 _ => {}
             }
         });
@@ -943,7 +943,7 @@ impl<B: Backend + 'static> Editor<B> {
 pub(crate) fn notice_under<'m, B: Backend>(
     model: &'m Model<B>,
     path: &[Seg],
-) -> Option<&'m flower_core::Notice> {
+) -> Option<&'m flower_data::Notice> {
     let n = model.notice.as_ref()?;
     (n.kind != NoticeKind::Done && n.path.as_deref() == Some(path) && !model.status.is_empty())
         .then_some(n)

@@ -1,6 +1,6 @@
 //! flower-ffi — the Swift / C-ABI frontend binding for flower.
 //!
-//! This is the native-Apple frontend for `flower-core`: it takes the
+//! This is the native-Apple frontend for `flower-data`: it takes the
 //! frontend-neutral structural [`Model`] — the navigable tree of config [`Row`]s
 //! and the path-addressed, lossless edits routed through fig's editor — and
 //! exposes it across a C ABI (via UniFFI) in the shape a SwiftUI outline wants.
@@ -10,7 +10,7 @@
 //!
 //! ## The boundary is *visible rows*, not the whole tree
 //!
-//! `flower-core` already flattens the document to the list of rows currently
+//! `flower-data` already flattens the document to the list of rows currently
 //! visible (honoring the collapsed set). Every call here returns a [`DocView`]:
 //! that flat row list plus the selection, dirty flag, and status — one boundary
 //! crossing both mutates and repaints, the same one-shot contract every flower /
@@ -74,10 +74,10 @@
 use std::sync::{Arc, Mutex};
 
 use fig::{Format, Value};
-use flower_core::annotate::Severity;
-use flower_core::page::{self, InlineBudget, Page, PageItem};
-use flower_core::schema::FieldRuleExt;
-use flower_core::{
+use flower_data::annotate::Severity;
+use flower_data::page::{self, InlineBudget, Page, PageItem};
+use flower_data::schema::FieldRuleExt;
+use flower_data::{
     Annotation, Backend, Choice, FigBackend, ItemKind, Model, NoticeKind, Seg, VKind, ViewMode,
     tree,
 };
@@ -96,7 +96,7 @@ pub enum FlowerError {
     Open { message: String },
 }
 
-/// One visible line of the config tree — a projection of `flower_core::Row` for
+/// One visible line of the config tree — a projection of `flower_data::Row` for
 /// the renderer. The SwiftUI side indents by `depth`, draws a disclosure twisty
 /// when `is_container`, and shows `preview` as the value (or child count).
 #[derive(uniffi::Record, Clone)]
@@ -183,7 +183,7 @@ pub fn notice_of<B: Backend>(model: &Model<B>) -> Option<NoticeView> {
 
 // ── the page projection ──────────────────────────────────────────────────────
 
-/// One line of a page — the projection of `flower_core::PageItem`.
+/// One line of a page — the projection of `flower_data::PageItem`.
 ///
 /// Where a [`RowView`] is a line of the whole document indented by `depth`, this
 /// is a line of *one container's* listing: no depth, because everything on a page
@@ -323,7 +323,7 @@ pub struct PageView {
     pub focus: String,
     /// The trail from the root down to [`focus`](Self::focus), each step openable
     /// by its `id`. **Empty at the root**, whose name is the frontend's to choose
-    /// — flower-core has none for it (the TUI calls it `‹document›`).
+    /// — flower-data has none for it (the TUI calls it `‹document›`).
     pub crumbs: Vec<CrumbView>,
     pub items: Vec<PageItemView>,
     /// The selected item, or `None` for a pane that doesn't hold the cursor — a
@@ -371,7 +371,7 @@ pub struct PagesView {
 }
 
 /// A live flower document bound for a native Apple frontend: a
-/// `flower_core::Model` over a [`FigBackend`], behind a mutex. Constructed from
+/// `flower_data::Model` over a [`FigBackend`], behind a mutex. Constructed from
 /// in-memory bytes and driven entirely through method calls — there is no
 /// filesystem behind it; the host reads the file and persists [`FlowerDoc::source`].
 #[derive(uniffi::Object)]
@@ -677,7 +677,7 @@ impl FlowerDoc {
     /// in, not about the document.
     ///
     /// A page's own row limit comes with it
-    /// ([`InlineBudget::new`](flower_core::InlineBudget::new)): a list of items
+    /// ([`InlineBudget::new`](flower_data::InlineBudget::new)): a list of items
     /// that each fit `rows` is still drilled when there are enough of them to
     /// bury the page, and asking for more rows per subtree asks for a page that
     /// can hold them.
@@ -1049,7 +1049,7 @@ pub fn select_index<B: Backend>(model: &mut Model<B>, index: u32) {
 
 /// Map a format name (the file extension, any case) onto a `fig::Format`.
 fn parse_format(name: &str) -> Result<Format, FlowerError> {
-    flower_core::format::from_extension(name).ok_or_else(|| FlowerError::UnknownFormat {
+    flower_data::format::from_extension(name).ok_or_else(|| FlowerError::UnknownFormat {
         name: name.to_ascii_lowercase(),
     })
 }
@@ -1118,7 +1118,7 @@ pub fn path_id(path: &[Seg]) -> String {
 }
 
 /// Snapshot the model's page state as a [`PagesView`] — the page projection's
-/// peer of [`view_of`], and the only place `flower_core::Page` crosses into the
+/// peer of [`view_of`], and the only place `flower_data::Page` crosses into the
 /// view shape.
 ///
 /// Which pane holds the cursor is decided here rather than in Swift, because it
@@ -1307,7 +1307,7 @@ fn path_for_id_anywhere<B: Backend>(model: &Model<B>, id: &str) -> Option<Vec<Se
         };
         for seg in children {
             at.push(seg);
-            let child = flower_core::tree::value_at(node, &at[at.len() - 1..]);
+            let child = flower_data::tree::value_at(node, &at[at.len() - 1..]);
             if let Some(child) = child
                 && let Some(found) = walk(child, at, id)
             {
@@ -1445,8 +1445,8 @@ tags = [\"alpha\", \"beta\"]
 
     #[test]
     fn a_picker_crosses_the_binding_as_rows_and_comes_back_as_a_value() {
-        use flower_core::schema::{Constraint, Schema};
-        use flower_core::{FieldRule, PathPat, Term};
+        use flower_data::schema::{Constraint, Schema};
+        use flower_data::{FieldRule, PathPat, Term};
 
         let doc = doc();
         {
@@ -1490,8 +1490,8 @@ tags = [\"alpha\", \"beta\"]
 
     #[test]
     fn a_list_gains_a_chosen_item_across_the_binding() {
-        use flower_core::schema::{Constraint, Schema};
-        use flower_core::{FieldRule, PathPat, Term};
+        use flower_data::schema::{Constraint, Schema};
+        use flower_data::{FieldRule, PathPat, Term};
 
         let doc = FlowerDoc::new(
             "title = \"t\"\ntags = [\"a\"]\n".to_string(),

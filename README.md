@@ -81,7 +81,7 @@ Deliberately not here yet — see the roadmap.
 | `s` | save to disk |
 | `q` | quit |
 
-One projection, so one table. flower-core still offers the indented tree it
+One projection, so one table. flower-data still offers the indented tree it
 started as, and an embedder driving the model by row index still uses it — the
 terminal doesn't, because depth there costs an indent column every row below
 pays for, where a page spends it once on a breadcrumb.
@@ -112,15 +112,15 @@ A Cargo workspace, split so the editing logic is frontend-neutral (mirroring
 ```
 fig crate (Editor/Document/Value) + fig-json/-yaml/-toml/-zon/-figl
                                           │
-                          crates/flower-core   (the model — no UI, no fs)
+                          crates/flower-data   (the model — no UI, no fs)
                     ┌────────────────────────┼─────────────────────────┐
-      crates/flower-ratatui        crates/flower-ffi            crates/flower-tui
+      crates/flower-ratatui        crates/flower-ffi            apps/flower-data-tui
          (ratatui widget)        (UniFFI C-ABI binding)      (app: file I/O + loop)
                                           │
                               packages/flower-swift
                      (FlowerFFI + FlowerUI + FlowerPagesUI)
 
-            crates/flower-core ── crates/flower-dioxus (Dioxus widget, on unit)
+            crates/flower-data ── crates/flower-data-editor (Dioxus widget, on unit)
                                           │
                                apps/flower-dioxus
                             (Flower, the Mac app)
@@ -130,12 +130,12 @@ fig crate (Editor/Document/Value) + fig-json/-yaml/-toml/-zon/-figl
 
 | Tier | Path | What it is |
 |------|------|------------|
-| core | [`crates/flower-core`](crates/flower-core) | the frontend-neutral model — the navigable `Row` tree + path-addressed lossless edits over fig. No UI, no fs. |
+| core | [`crates/flower-data`](crates/flower-data) | the frontend-neutral model — the navigable `Row` tree + path-addressed lossless edits over fig. No UI, no fs. |
 | widget | [`crates/flower-ratatui`](crates/flower-ratatui) | the ratatui widget: `draw(frame, &Model, header)` draws the page view, `handle_key(&mut Model, KeyEvent)` drives it and returns an `Outcome` naming what the host must do (quit, save) — the same division as `leaf-ratatui`. |
-| widget | [`crates/flower-dioxus`](crates/flower-dioxus) | the **Dioxus-native widget** (`dioxus-native` 0.8 alpha, Blitz on wgpu, no webview): the page view as a settings screen out of [unit](https://github.com/diaryx-org/unit)'s components — two panes, a section per group, chips, switches, menus, values typed in place, the picker in a modal, a context menu per row — with the terminal's keys and a window's (⌘Z, ⌫, ⌥↑/⌥↓), asking a `Host` for Save and the clipboard. A workspace of its own, as leaf's `crates/leaf-dioxus` is. |
-| app | [`apps/flower-dioxus`](apps/flower-dioxus) | **Flower**, the Mac app (`Flower.app`, built by `cargo xtask mac`; binary `flower-dioxus` elsewhere): the widget in a window, with open (⌘O, the Finder's Open With), save, save as, the zoom, the window title and a menu bar. `cargo run --manifest-path apps/flower-dioxus/Cargo.toml -- config.toml`. |
+| widget | [`crates/flower-data-editor`](crates/flower-data-editor) | the **Dioxus-native widget** (`dioxus-native` 0.8 alpha, Blitz on wgpu, no webview): the page view as a settings screen out of [unit](https://github.com/diaryx-org/unit)'s components — two panes, a section per group, chips, switches, menus, values typed in place, the picker in a modal, a context menu per row — with the terminal's keys and a window's (⌘Z, ⌫, ⌥↑/⌥↓), asking a `Host` for Save and the clipboard. A workspace of its own, as leaf's `crates/leaf-dioxus` is. |
+| app | [`apps/flower-dioxus`](apps/flower-dioxus) | **Flower**, the Mac app (`Flower.app`, built by `cargo xtask mac`; binary `flower-data-editor` elsewhere): the widget in a window, with open (⌘O, the Finder's Open With), save, save as, the zoom, the window title and a menu bar. `cargo run --manifest-path apps/flower-dioxus/Cargo.toml -- config.toml`. |
 | binding | [`crates/flower-ffi`](crates/flower-ffi) | the **UniFFI C-ABI binding** — wraps the filesystem-free `Model` so a native Apple app can drive it. The native-Apple peer of the ratatui widget. |
-| app | [`crates/flower-tui`](crates/flower-tui) | the terminal app (binary `flower`) — file I/O + event loop. |
+| app | [`apps/flower-data-tui`](apps/flower-data-tui) | the terminal app (binary `flower`) — file I/O + event loop. |
 | Swift SDK | [`packages/flower-swift`](packages/flower-swift) | the Swift Package (manifest at the repo root, so SwiftPM can resolve it by version). `FlowerPagesUI` is the page view (`FlowerPages`) written against protocols, with **no binding behind it**; `FlowerUI` is `FlowerModel` over the UniFFI `flower-ffi` binding, and the conformances that let the page view render its records. `import FlowerUI` re-exports both. A host app of its own links it; flower's own Mac app is the Dioxus one. |
 
 The Swift frontend keeps the same contract as the TUI: **core owns the model**
@@ -212,7 +212,7 @@ pure Rust, so any slice whose Rust target is installed builds with cargo alone.
 macOS-x64 and a real device is the step that remains. Running from a checkout
 does not need it.
 
-- **`crates/flower-core`** — the frontend-neutral model. Depends only on `fig`
+- **`crates/flower-data`** — the frontend-neutral model. Depends only on `fig`
   (with its language crates), `fig-schema` and `std`.
   - `format.rs` — file extension → `fig::Format`.
   - `tree.rs` — flattens a `fig::Value` into navigable `Row`s, each carrying its
@@ -242,8 +242,8 @@ does not need it.
   keys it cannot answer for itself come back as `Outcome::Quit` / `Outcome::Save`
   for the host, which is the only party with a terminal and a file. A
   third-party TUI can therefore embed flower as a pane without reimplementing
-  the app's event loop. Depends on `flower-core` + `ratatui`.
-- **`crates/flower-tui`** — the terminal app (binary `flower`): reads the file,
+  the app's event loop. Depends on `flower-data` + `ratatui`.
+- **`apps/flower-data-tui`** — the terminal app (binary `flower`): reads the file,
   runs the event loop, forwards each key to the widget, and writes on
   `Outcome::Save`. Depends on both.
 
@@ -254,7 +254,7 @@ canonical.
 
 ### The commit-sink `Backend` trait
 
-`flower-core::Model` is generic over a `Backend` — it never touches a concrete
+`flower-data::Model` is generic over a `Backend` — it never touches a concrete
 editor. It builds path-addressed `EditOp`s, applies them through the backend,
 and reads the tree back via `Backend::to_value`:
 
@@ -266,7 +266,7 @@ pub trait Backend {
 }
 ```
 
-- `FigBackend` (in flower-core) drives a raw `fig::Editor` — a standalone config
+- `FigBackend` (in flower-data) drives a raw `fig::Editor` — a standalone config
   file.
 - A **prov backend** (`ProvBackend`, in the [`provui`](https://github.com/diaryx-org/provui) repo) drives
   the *metadata region* of a prov document through prov's carrier-aware
@@ -274,7 +274,7 @@ pub trait Backend {
   metadata + leaf for the body, over one prov document) is proven by a headless
   test in provui.
 
-flower-core stays config-generic and prov stays consumer-agnostic, so the
+flower-data stays config-generic and prov stays consumer-agnostic, so the
 app-specific bridge lives in provui, not here — flower doesn't depend on prov.
 
 ## Roadmap
@@ -346,12 +346,12 @@ framework. The check compiles `FlowerPagesUI` first and alone, with no binding o
 the search path: the only way to keep a target FFI-free is to compile it
 somewhere an FFI import would not resolve.
 
-`flower-core`, `flower-ratatui`, and `flower-ffi` are libraries for other
+`flower-data`, `flower-ratatui`, and `flower-ffi` are libraries for other
 repositories to use — the binding crate because its view projection is generic
 over the `Backend`, so an embedder with its own can render a `Model` without
 reimplementing it. None of them is on crates.io (0.6.4 was the last upload): a
 consumer names them from git, `{ git = "https://github.com/diaryx-org/flower",
-branch = "main" }`, and locks the commit it builds. `flower-tui` moves with the
+branch = "main" }`, and locks the commit it builds. `flower-data-tui` moves with the
 same version number. See
 [docs/releasing.md](docs/releasing.md) for how a release is cut and
 [docs/CHANGELOG.md](docs/CHANGELOG.md) for what has changed.

@@ -1,4 +1,4 @@
-//! flower-dioxus — an **embeddable** structural config editor for Dioxus's
+//! flower-data-editor — an **embeddable** structural config editor for Dioxus's
 //! native backend (`dioxus-native` 0.8.0-alpha.3, Blitz): an HTML/CSS
 //! renderer on wgpu, with no webview and no browser engine.
 //!
@@ -8,7 +8,7 @@
 //! depth for them, a section per group, short lists as chips, a switch for a
 //! boolean and a menu for a field with a vocabulary, values typed in place,
 //! the picker in a modal, and every row's operations in its context menu.
-//! flower-core owns the model — the projection, the cursor, every lossless
+//! flower-data owns the model — the projection, the cursor, every lossless
 //! edit — and this draws it and hands it intents, as the other frontends do.
 //!
 //! A host makes an [`Editor`] with [`use_editor`] in a component under a

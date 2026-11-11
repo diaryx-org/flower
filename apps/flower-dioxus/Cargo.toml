@@ -1,6 +1,6 @@
-# Flower on Dioxus's native renderer (Blitz): the `flower-dioxus` editor
-# widget (crates/flower-dioxus) in a window, with the file around it — open,
-# save, save as, the zoom and the window title — as crates/flower-tui is the
+# Flower on Dioxus's native renderer (Blitz): the `flower-data-editor` editor
+# widget (crates/flower-data-editor) in a window, with the file around it — open,
+# save, save as, the zoom and the window title — as apps/flower-data-tui is the
 # terminal's host over flower-ratatui.
 #
 # A workspace of its own, like the widget's: `dioxus-native` is published only
@@ -11,7 +11,7 @@
 [workspace]
 
 [package]
-# Not `flower-dioxus`, which is the widget's name: one graph cannot hold two
+# Not `flower-data-editor`, which is the widget's name: one graph cannot hold two
 # packages by one name. The binary keeps it.
 name = "flower-dioxus-app"
 version = "0.0.0"
@@ -20,12 +20,12 @@ license = "MIT OR Apache-2.0"
 publish = false
 
 [[bin]]
-name = "flower-dioxus"
+name = "flower-data-editor"
 path = "src/main.rs"
 
 [dependencies]
-flower-dioxus = { path = "../../crates/flower-dioxus" }
-flower-core = { path = "../../crates/flower-core" }
+flower-data-editor = { path = "../../crates/flower-data-editor" }
+flower-data = { path = "../../crates/flower-data" }
 # diaryx-org's components for Dioxus: the root the editor's controls sit
 # under, its overlay for the prompts and toasts, and the toolbar's controls.
 # `apple`: the accent and highlight chosen in System Settings, on a Mac.
@@ -79,7 +79,7 @@ debug = false
 # winit's macOS backend, patched (its `PATCH.md`): unpatched, its text input
 # client answers no questions about the text around the caret, so the
 # press-and-hold accent menu never opens, and it drops the emoji picker's
-# text. The editor tells the input method that text (crates/flower-dioxus's
+# text. The editor tells the input method that text (crates/flower-data-editor's
 # `ime.rs`). From diaryx-org's Blitz fork, where the org keeps its patched
 # Blitz stack, winit included (`patches/` there); cargo finds the crate by
 # name wherever it sits in that repository. It goes when the change lands in

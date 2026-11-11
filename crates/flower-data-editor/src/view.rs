@@ -15,7 +15,7 @@
 
 use dioxus::prelude::*;
 use fig::Value;
-use flower_core::{
+use flower_data::{
     Backend, ChoiceTarget, EditSlot, FieldRuleExt, Mode, Model, NoticeKind, PageItem, Seg, VKind,
 };
 use unit::icon::paths;
@@ -336,7 +336,7 @@ fn pane_view<B: Backend + 'static>(
 struct Ctx<'a, B: Backend + 'static> {
     ed: &'a Editor<B>,
     model: &'a Model<B>,
-    page: &'a flower_core::Page,
+    page: &'a flower_data::Page,
     role: Role,
     selected: Option<usize>,
     verbatim: &'a std::collections::HashSet<usize>,
@@ -463,9 +463,9 @@ fn said_under<B: Backend>(model: &Model<B>, item: &PageItem) -> (Option<String>,
     match &item.annotation {
         Some(a) => {
             let class = match a.severity {
-                flower_core::annotate::Severity::Error => "fl-said-error",
-                flower_core::annotate::Severity::Warning => "fl-said-warning",
-                flower_core::annotate::Severity::Info => "fl-said-info",
+                flower_data::annotate::Severity::Error => "fl-said-error",
+                flower_data::annotate::Severity::Warning => "fl-said-warning",
+                flower_data::annotate::Severity::Info => "fl-said-info",
             };
             (Some(a.message.clone()), class.into())
         }
@@ -764,7 +764,7 @@ fn add_row<B: Backend + 'static>(c: &Ctx<'_, B>) -> Element {
             .addable_fields()
             .iter()
             .filter_map(|r| match r.at.0.as_slice() {
-                [flower_core::SegPat::Key(k)] => Some(k.clone()),
+                [flower_data::SegPat::Key(k)] => Some(k.clone()),
                 _ => None,
             })
             .collect()

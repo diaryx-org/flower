@@ -1,4 +1,4 @@
-//! A ratatui **widget** over a [`flower_core::Model`]: a header line, the
+//! A ratatui **widget** over a [`flower_data::Model`]: a header line, the
 //! document body, and a footer that doubles as the edit line — plus the keys
 //! that drive them.
 //!
@@ -12,9 +12,9 @@
 //! by re-implementing the app's event loop — and its clicks by forwarding the
 //! event and the `Rect` it drew into, not by restating the layout. `header` is
 //! whatever the app wants to name the document (e.g. a file name) —
-//! flower-core has no filesystem concept of its own.
+//! flower-data has no filesystem concept of its own.
 //!
-//! The body is the **page** projection ([`Model::page`](flower_core::Model::page))
+//! The body is the **page** projection ([`Model::page`](flower_data::Model::page))
 //! — a settings-menu layout that is two panes when there is width and depth to
 //! justify them, and one pane when there isn't. That fallback is a rendering
 //! decision, not a mode: the model holds one page state and this decides how much
@@ -23,15 +23,15 @@
 //! How much a page inlines is a fact about the room, so the app is expected to
 //! keep the model's budget sized to the terminal — [`page_room`] is the height
 //! this crate's chrome leaves for it, and
-//! [`Model::fit_to_room`](flower_core::Model::fit_to_room) is what reads it. A
+//! [`Model::fit_to_room`](flower_data::Model::fit_to_room) is what reads it. A
 //! document that fits the terminal is then drawn whole, with no navigation at
 //! all, and the same document in a short one goes back to a page per level.
 //!
-//! It is the only projection drawn here. flower-core still offers the indented
+//! It is the only projection drawn here. flower-data still offers the indented
 //! tree, and an embedder that drives the model by row index still wants it, but a
 //! terminal does not: depth costs an indent column the tree keeps paying on every
 //! row below it, where a page spends it once on a breadcrumb. The app is expected
-//! to hold the model in [`ViewMode::Pages`](flower_core::ViewMode::Pages), which
+//! to hold the model in [`ViewMode::Pages`](flower_data::ViewMode::Pages), which
 //! is what makes an edit resolve against the cursor this draws.
 
 mod input;
@@ -46,8 +46,8 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, Clear};
 
-use flower_core::annotate::Severity;
-use flower_core::{Backend, ChoiceTarget, EditSlot, ItemKind, Mode, Model, Page, PageItem, VKind};
+use flower_data::annotate::Severity;
+use flower_data::{Backend, ChoiceTarget, EditSlot, ItemKind, Mode, Model, Page, PageItem, VKind};
 
 /// Below this width a two-pane split leaves neither pane usable, so the page view
 /// collapses to the single-pane (push/pop) layout — the same interaction, one
@@ -65,7 +65,7 @@ const CHROME_ROWS: u16 = 3;
 /// How many rows of items a page has, in a terminal `height` rows tall.
 ///
 /// The app calls this to size the model's inline budget
-/// ([`Model::fit_to_room`](flower_core::Model::fit_to_room)) — how much a page
+/// ([`Model::fit_to_room`](flower_data::Model::fit_to_room)) — how much a page
 /// inlines is a fact about the room, and this crate is what knows how much of
 /// the room the chrome took. It is arithmetic on a layout constant rather than
 /// on a measured `Rect` because the app needs the answer *before* the frame it
@@ -1059,7 +1059,7 @@ mod tests {
     // the tests set it up the same way — rendering reads the page state either
     // way, but an edit routed from a test model should route where the app's
     // would.
-    use flower_core::{FigBackend, Seg, ViewMode};
+    use flower_data::{FigBackend, Seg, ViewMode};
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
@@ -1124,7 +1124,7 @@ timeout = 30.5
     #[test]
     fn the_page_is_drawn_whatever_view_the_model_is_in() {
         let mut model = model();
-        // Deliberately the *other* view: flower-core still has a tree, and this
+        // Deliberately the *other* view: flower-data still has a tree, and this
         // is what says the widget no longer has a renderer to fall into.
         model.set_view(ViewMode::Tree);
         let out = render(&model, 76, 14);
@@ -1138,8 +1138,8 @@ timeout = 30.5
 
     #[test]
     fn a_host_finding_marks_its_row_and_names_itself_in_the_footer() {
-        use flower_core::Annotation;
-        use flower_core::annotate::Severity;
+        use flower_data::Annotation;
+        use flower_data::annotate::Severity;
 
         let mut model = model();
         let port = vec![Seg::Key("server".into()), Seg::Key("port".into())];
@@ -1169,8 +1169,8 @@ timeout = 30.5
 
     #[test]
     fn the_picker_draws_over_the_page_with_its_filter_on_the_frame() {
-        use flower_core::schema::{Constraint, Schema};
-        use flower_core::{FieldRule, PathPat, Term};
+        use flower_data::schema::{Constraint, Schema};
+        use flower_data::{FieldRule, PathPat, Term};
 
         let backend =
             FigBackend::open(b"status = \"draft\"\n", fig_toml::format().unwrap()).expect("open");

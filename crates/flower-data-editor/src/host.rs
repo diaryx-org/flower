@@ -6,15 +6,15 @@
 //! Host for Mine {}` is a host: Save, Save As and the zoom ignored, and no
 //! clipboard to paste from.
 //!
-//! flower-core is filesystem-free and so is this crate: the editor never reads
+//! flower-data is filesystem-free and so is this crate: the editor never reads
 //! or writes a document. Save is a [`Request`], and the host writes
-//! [`Model::source_snapshot`](flower_core::Model::source_snapshot) wherever the
+//! [`Model::source_snapshot`](flower_data::Model::source_snapshot) wherever the
 //! document came from — a file, or the frontmatter of another document — then
 //! tells the model how it went with
-//! [`Model::mark_saved`](flower_core::Model::mark_saved) and
-//! [`Model::set_status`](flower_core::Model::set_status).
+//! [`Model::mark_saved`](flower_data::Model::mark_saved) and
+//! [`Model::set_status`](flower_data::Model::set_status).
 
-use flower_core::{Backend, FigBackend, Model};
+use flower_data::{Backend, FigBackend, Model};
 
 use crate::editor::Editor;
 use crate::input::ZoomCommand;

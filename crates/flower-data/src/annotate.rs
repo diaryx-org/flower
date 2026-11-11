@@ -1,10 +1,10 @@
 //! Per-row findings: what the *host* has to say about a node, drawn beside it.
 //!
-//! flower-core validates a value against a [`Schema`](crate::Schema) at the
+//! flower-data validates a value against a [`Schema`](crate::Schema) at the
 //! commit funnel, which answers "may this be written?" one edit at a time. An
 //! [`Annotation`] answers the other question — "what is wrong with the document
 //! as it stands?" — and flower cannot answer it: a broken link, a duplicate id,
-//! a containment cycle are facts about a *workspace*, and flower-core is
+//! a containment cycle are facts about a *workspace*, and flower-data is
 //! single-document and has no filesystem. So the host computes them and hands
 //! them over, the way it hands over hidden keys, demoted keys, and a schema.
 //!

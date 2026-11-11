@@ -1,18 +1,18 @@
 //! The input half of the widget: the key table and the mouse gestures that
-//! drive a [`flower_core::Model`], and the [`Outcome`] naming what the *host*
+//! drive a [`flower_data::Model`], and the [`Outcome`] naming what the *host*
 //! must do about an event the widget deliberately does not act on itself.
 //!
 //! Everything that only moves the cursor or edits the document happens here, in
 //! the crate that draws it — so an app embedding flower as a pane gets flower's
-//! keys by forwarding an event, not by copying a match arm out of `flower-tui`,
+//! keys by forwarding an event, not by copying a match arm out of `flower-data-tui`,
 //! and its clicks by forwarding the event with the `Rect` it drew into, not by
 //! restating where the rows went. Quitting and saving are the host's: this
-//! crate has no terminal to leave and no file to write (flower-core is
+//! crate has no terminal to leave and no file to write (flower-data is
 //! filesystem-free by design), so they come back as [`Outcome::Quit`] and
 //! [`Outcome::Save`] for the host to answer with its own unsaved-changes
 //! handling, its own path, and its own error reporting.
 
-use flower_core::{Backend, Mode, Model};
+use flower_data::{Backend, Mode, Model};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::{Position, Rect};
 
@@ -73,7 +73,7 @@ fn normal<B: Backend>(model: &mut Model<B>, code: KeyCode) -> Outcome {
         KeyCode::Char('s') => return Outcome::Save,
         // The picker where the field has one, the text field where it does not
         // — one key, because `begin_choose` falls back
-        // ([`Model::begin_choose`](flower_core::Model::begin_choose)). `E` is
+        // ([`Model::begin_choose`](flower_data::Model::begin_choose)). `E` is
         // the way past it: a value typed by hand goes through the same
         // validation a chosen one would, and an open vocabulary is a list of
         // suggestions rather than the whole of what is legal.
@@ -90,8 +90,8 @@ fn normal<B: Backend>(model: &mut Model<B>, code: KeyCode) -> Outcome {
         KeyCode::Char('c') => model.begin_edit_trailing_comment(),
         KeyCode::Char('C') => model.begin_edit_leading_comment(),
         KeyCode::Char('x') => model.delete_selected(),
-        // vi's `u`, and `U` for the way back — the pair flower-core journals
-        // ([`Model::undo`](flower_core::Model::undo)). A save is not a
+        // vi's `u`, and `U` for the way back — the pair flower-data journals
+        // ([`Model::undo`](flower_data::Model::undo)). A save is not a
         // boundary: `u` runs back through one.
         KeyCode::Char('u') => {
             model.undo();
@@ -202,7 +202,7 @@ fn editing<B: Backend>(model: &mut Model<B>, code: KeyCode) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use flower_core::{FigBackend, Seg, ViewMode};
+    use flower_data::{FigBackend, Seg, ViewMode};
     use ratatui::crossterm::event::{KeyEvent, KeyModifiers};
 
     const SAMPLE: &str = "\
@@ -246,7 +246,7 @@ max_connections = 100
         assert!(matches!(
             m.mode,
             Mode::Editing {
-                slot: flower_core::EditSlot::TrailingComment,
+                slot: flower_data::EditSlot::TrailingComment,
                 ..
             }
         ));
@@ -260,7 +260,7 @@ max_connections = 100
         assert!(matches!(
             m.mode,
             Mode::Editing {
-                slot: flower_core::EditSlot::LeadingComment,
+                slot: flower_data::EditSlot::LeadingComment,
                 ..
             }
         ));
@@ -285,7 +285,7 @@ max_connections = 100
         // own, so it drills, and there is a page to push and pop rather than a
         // group already on screen. Fitted to a room it would inline — a third
         // of any room is at least six rows, and two ranks are admitted.
-        m.set_inline_budget(flower_core::InlineBudget::default());
+        m.set_inline_budget(flower_data::InlineBudget::default());
         m.focus_on(&[Seg::Key("server".into())]);
         assert!(m.focus().is_empty());
         press(&mut m, KeyCode::Char('l'));
@@ -338,8 +338,8 @@ max_connections = 100
 
     #[test]
     fn e_opens_the_picker_where_there_is_one_and_shift_e_types_anyway() {
-        use flower_core::schema::{Constraint, Schema};
-        use flower_core::{FieldRule, PathPat, Term};
+        use flower_data::schema::{Constraint, Schema};
+        use flower_data::{FieldRule, PathPat, Term};
 
         let backend =
             FigBackend::open(b"status = \"draft\"\n", fig_toml::format().unwrap()).expect("open");
@@ -381,8 +381,8 @@ max_connections = 100
 
     #[test]
     fn a_adds_to_a_list_from_the_picker_and_shift_a_types_one() {
-        use flower_core::schema::{Constraint, Schema};
-        use flower_core::{ChoiceTarget, EditSlot, FieldRule, PathPat, Term};
+        use flower_data::schema::{Constraint, Schema};
+        use flower_data::{ChoiceTarget, EditSlot, FieldRule, PathPat, Term};
 
         let backend = FigBackend::open(
             b"title = \"t\"\ntags = [\"a\"]\n",
@@ -466,7 +466,7 @@ max_connections = 100
     #[test]
     fn a_click_stands_on_the_row_and_a_second_click_opens_it() {
         let mut m = model();
-        m.set_inline_budget(flower_core::InlineBudget::default());
+        m.set_inline_budget(flower_data::InlineBudget::default());
         // Row 2 of the frame is item 0; `server` is item 2, on row 4.
         assert_eq!(click(&mut m, 5, 4), Outcome::Continue);
         assert_eq!(m.page_selected(), 2);
@@ -497,7 +497,7 @@ max_connections = 100
     #[test]
     fn a_click_in_the_parent_pane_backs_out_onto_the_row_clicked() {
         let mut m = model();
-        m.set_inline_budget(flower_core::InlineBudget::default());
+        m.set_inline_budget(flower_data::InlineBudget::default());
         m.focus_on(&[Seg::Key("server".into())]);
         m.page_enter();
         assert!(!m.page_leads_the_split());
@@ -510,7 +510,7 @@ max_connections = 100
     #[test]
     fn a_click_in_the_preview_pane_opens_it_onto_the_row_clicked() {
         let mut m = model();
-        m.set_inline_budget(flower_core::InlineBudget::default());
+        m.set_inline_budget(flower_data::InlineBudget::default());
         m.focus_on(&[Seg::Key("server".into())]);
         assert!(m.page_leads_the_split());
         // The right pane previews `server`'s page; `port` is its row 1.

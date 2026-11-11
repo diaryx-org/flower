@@ -26,7 +26,7 @@ use std::collections::HashMap;
 use std::str::FromStr;
 
 use dioxus::html::{Code, Key, Modifiers, NamedKey};
-use flower_core::{Backend, Mode, Model};
+use flower_data::{Backend, Mode, Model};
 use muda::accelerator::Accelerator;
 use muda::{Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu};
 
@@ -368,8 +368,8 @@ fn accelerator(mods: Modifiers, code: Code) -> Option<Accelerator> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use flower_core::{FigBackend, Seg, ViewMode};
-    use flower_dioxus::input::{Action, apply_key};
+    use flower_data::{FigBackend, Seg, ViewMode};
+    use flower_data_editor::input::{Action, apply_key};
 
     fn model() -> Model<FigBackend> {
         let (mut m, _) = crate::file::open_or_sample(None);

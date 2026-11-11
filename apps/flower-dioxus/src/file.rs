@@ -10,7 +10,7 @@ use std::sync::Arc;
 
 use anyhow_free::Result;
 use dioxus_native::winit::window::Window;
-use flower_core::{FigBackend, Model};
+use flower_data::{FigBackend, Model};
 use rfd::{AsyncFileDialog, AsyncMessageDialog, MessageButtons, MessageDialogResult, MessageLevel};
 
 /// A tiny `Result` with a message, so the app needs no error crate.
@@ -18,7 +18,7 @@ mod anyhow_free {
     pub type Result<T> = std::result::Result<T, String>;
 }
 
-/// The extensions flower opens: the fig language crates flower-core depends on.
+/// The extensions flower opens: the fig language crates flower-data depends on.
 const EXTENSIONS: &[&str] = &[
     "toml", "yaml", "yml", "json", "jsonc", "json5", "zon", "figl", "fig",
 ];
@@ -29,7 +29,7 @@ const SAMPLE: &str = include_str!("../../../sample.toml");
 
 /// The document as a model, read from `path`.
 pub fn read(path: &Path) -> Result<Model<FigBackend>> {
-    let format = flower_core::detect(path).ok_or_else(|| {
+    let format = flower_data::detect(path).ok_or_else(|| {
         format!(
             "{}: not a format flower opens (want {})",
             path.display(),
@@ -55,7 +55,7 @@ pub fn open_or_sample(path: Option<PathBuf>) -> (Model<FigBackend>, Option<PathB
             }
         }
     }
-    let format = flower_core::format::from_extension("toml").expect("toml");
+    let format = flower_data::format::from_extension("toml").expect("toml");
     let backend = FigBackend::open(SAMPLE.as_bytes(), format).expect("the sample parses");
     let mut model = Model::new(backend).expect("the sample models");
     if let Some(e) = failed {
@@ -182,12 +182,12 @@ mod tests {
 
     #[test]
     fn a_save_writes_the_edited_bytes_and_marks_the_model_clean() {
-        let dir = std::env::temp_dir().join(format!("flower-dioxus-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("flower-data-editor-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("c.toml");
         std::fs::write(&path, "# kept\nport = 1\n").unwrap();
         let mut m = read(&path).unwrap();
-        m.set_scalar_text(&[flower_core::Seg::Key("port".into())], "2");
+        m.set_scalar_text(&[flower_data::Seg::Key("port".into())], "2");
         assert!(m.dirty);
         assert!(write(&mut m, &path));
         assert!(!m.dirty);

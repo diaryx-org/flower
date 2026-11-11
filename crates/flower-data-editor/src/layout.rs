@@ -27,7 +27,7 @@
 use std::borrow::Cow;
 use std::collections::HashSet;
 
-use flower_core::{Backend, ItemKind, Model, Page, PageItem, Seg, VKind};
+use flower_data::{Backend, ItemKind, Model, Page, PageItem, Seg, VKind};
 
 /// What a pane stands for, relative to the cursor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -578,7 +578,7 @@ pub fn crumbs(page: &Page) -> Vec<(Vec<Seg>, String)> {
     let mut out = Vec::new();
     for n in 1..=page.focus.len() {
         let path = page.focus[..n].to_vec();
-        let label = flower_core::page::seg_label(&page.focus[n - 1]);
+        let label = flower_data::page::seg_label(&page.focus[n - 1]);
         let named = match &page.focus[n - 1] {
             Seg::Key(_) => prettify(&label),
             Seg::Index(_) if n == page.focus.len() => page.title.clone().unwrap_or(label),
@@ -689,7 +689,7 @@ pub fn place(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use flower_core::{FigBackend, InlineBudget, ViewMode};
+    use flower_data::{FigBackend, InlineBudget, ViewMode};
 
     const SAMPLE: &str = "\
 title = \"flower\"

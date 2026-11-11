@@ -1,5 +1,5 @@
-# flower-dioxus — the embeddable page editor for Dioxus's native renderer
-# (Blitz): flower-core's page projection drawn by an HTML/CSS engine on wgpu,
+# flower-data-editor — the embeddable page editor for Dioxus's native renderer
+# (Blitz): flower-data's page projection drawn by an HTML/CSS engine on wgpu,
 # with no webview. `apps/flower-dioxus` is one host for it; leaf's Dioxus
 # editor, showing a document's frontmatter, is meant to be another.
 #
@@ -8,16 +8,16 @@
 # tree that nothing in the root workspace should resolve. The same split, for
 # the same reason, as leaf's `crates/leaf-dioxus`.
 #
-#     cargo test --manifest-path crates/flower-dioxus/Cargo.toml
+#     cargo test --manifest-path crates/flower-data-editor/Cargo.toml
 [workspace]
 
 [package]
-name = "flower-dioxus"
+name = "flower-data-editor"
 version = "0.0.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/diaryx-org/flower"
-description = "Embeddable Dioxus-native structural config editor widget for flower: the page view, its keys and its edit line, over flower-core."
+description = "Embeddable Dioxus-native structural config editor widget for flower: the page view, its keys and its edit line, over flower-data."
 publish = false
 
 [dependencies]
@@ -37,10 +37,10 @@ dioxus = { version = "0.8.0-alpha.3", default-features = false, features = [
 dioxus-native = { version = "0.8.0-alpha.3", default-features = false, features = [
     "system-fonts", "vello",
 ] }
-flower-core = { path = "../flower-core" }
-# fig's `Value`, which flower-core's model hands out: whether a container is
+flower-data = { path = "../flower-data" }
+# fig's `Value`, which flower-data's model hands out: whether a container is
 # a mapping, which takes a field, or a list, which takes an item. Already in
-# the tree through flower-core, at its version.
+# the tree through flower-data, at its version.
 fig = "7"
 # diaryx-org's components for Dioxus, which work on Blitz and are read by
 # assistive tech: every control on a page (its rows and sections, switches,

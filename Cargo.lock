@@ -378,7 +378,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "flower-core"
+name = "flower-data"
 version = "0.6.4"
 dependencies = [
  "anyhow",
@@ -392,11 +392,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "flower-data-tui"
+version = "0.6.4"
+dependencies = [
+ "anyhow",
+ "fig",
+ "flower-data",
+ "flower-ratatui",
+ "ratatui",
+]
+
+[[package]]
 name = "flower-ffi"
 version = "0.6.4"
 dependencies = [
  "fig",
- "flower-core",
+ "flower-data",
  "thiserror 1.0.69",
  "uniffi",
 ]
@@ -408,18 +419,7 @@ dependencies = [
  "fig",
  "fig-json",
  "fig-toml",
- "flower-core",
- "ratatui",
-]
-
-[[package]]
-name = "flower-tui"
-version = "0.6.4"
-dependencies = [
- "anyhow",
- "fig",
- "flower-core",
- "flower-ratatui",
+ "flower-data",
  "ratatui",
 ]
 

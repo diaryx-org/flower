@@ -7,7 +7,7 @@
 //  document — it says "the user tapped this row" and the conforming model
 //  decides what that means, commits it through whatever editor it owns, and
 //  publishes a new frame. That is the same contract `FlowerModel` already had
-//  with flower-core; naming it as a protocol only makes it something a second
+//  with flower-data; naming it as a protocol only makes it something a second
 //  host can satisfy.
 
 import Foundation

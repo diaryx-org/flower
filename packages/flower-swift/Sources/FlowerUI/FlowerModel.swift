@@ -2,7 +2,7 @@
 //
 //  The observable owner of a document, shared across macOS and iOS.
 //  `FlowerModel` is a platform-neutral `ObservableObject` that owns the
-//  `FlowerDoc` and exposes flower-core's page projection: `FlowerPages`
+//  `FlowerDoc` and exposes flower-data's page projection: `FlowerPages`
 //  (FlowerPagesUI) renders its frames and drives it back through `PageDriving`.
 //
 //  One projection, on purpose. Core still offers the tree; the Swift surface

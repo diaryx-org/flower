@@ -33,11 +33,11 @@
 
             cargoLock.lockFile = ./Cargo.lock;
 
-            # Build/test only the CLI crate; flower-core and flower-ratatui come
+            # Build/test only the CLI crate; flower-data and flower-ratatui come
             # in as path dependencies. flower-ffi (UniFFI) is not in this graph
             # at all, which is the point — it needs no packaging here.
-            cargoBuildFlags = [ "-p" "flower-tui" ];
-            cargoTestFlags = [ "-p" "flower-tui" ];
+            cargoBuildFlags = [ "-p" "flower-data-tui" ];
+            cargoTestFlags = [ "-p" "flower-data-tui" ];
 
             meta = {
               description = "Structural terminal editor for JSON, YAML, TOML, ZON, and fig config";

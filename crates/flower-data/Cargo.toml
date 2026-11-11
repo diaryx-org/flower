@@ -1,5 +1,5 @@
 [package]
-name = "flower-core"
+name = "flower-data"
 publish = false
 edition.workspace = true
 version.workspace = true

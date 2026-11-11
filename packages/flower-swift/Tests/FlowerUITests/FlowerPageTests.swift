@@ -3,7 +3,7 @@ import XCTest
 import FlowerFFI
 
 /// Exercises the page projection through `FlowerModel` — the surface `FlowerPages`
-/// renders — against the real flower-core over the FFI.
+/// renders — against the real flower-data over the FFI.
 final class FlowerPageTests: XCTestCase {
     /// Deep enough to have somewhere to drill: a nested mapping, a small group
     /// that inlines, and a sequence of mappings the titles have to name.

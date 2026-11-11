@@ -2,7 +2,7 @@ import XCTest
 @testable import FlowerUI
 import FlowerFFI
 
-/// Exercises the FlowerUI model against the real flower-core over the FFI (the
+/// Exercises the FlowerUI model against the real flower-data over the FFI (the
 /// staticlib is force-loaded by scripts/test-swift.sh) plus the pure-Swift theme.
 final class FlowerModelTests: XCTestCase {
     let sample = """

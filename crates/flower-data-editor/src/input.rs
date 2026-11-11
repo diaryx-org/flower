@@ -14,7 +14,7 @@
 //! host's menu shortcut never types a letter into a value or deletes a row.
 
 use dioxus::html::{Key, Modifiers, NamedKey};
-use flower_core::{Backend, Mode, Model};
+use flower_data::{Backend, Mode, Model};
 
 use crate::host::Request;
 
@@ -183,7 +183,7 @@ pub fn insert_text<B: Backend>(model: &mut Model<B>, text: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use flower_core::{FigBackend, Seg, ViewMode};
+    use flower_data::{FigBackend, Seg, ViewMode};
 
     const SAMPLE: &str = "title = \"flower\"\nversion = 1\ntags = [\"a\"]\n";
 

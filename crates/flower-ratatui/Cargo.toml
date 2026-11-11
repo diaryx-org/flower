@@ -7,10 +7,10 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 readme = "README.md"
-description = "A ratatui widget that renders and drives flower-core's config tree."
+description = "A ratatui widget that renders and drives flower-data's config tree."
 
 [dependencies]
-flower-core.workspace = true
+flower-data.workspace = true
 ratatui.workspace = true
 
 [dev-dependencies]

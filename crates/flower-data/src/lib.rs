@@ -1,4 +1,4 @@
-//! flower-core — the frontend-neutral structural editing model for config files.
+//! flower-data — the frontend-neutral structural editing model for config files.
 //!
 //! Given a config document's bytes and format, it exposes the document as a
 //! navigable projection of fig's `Value` — plus structural navigation and
@@ -35,7 +35,7 @@ pub use tree::{Row, VKind};
 
 // The generic, prov-agnostic pieces (path matching, field type, controlled
 // vocabulary, presentation hints) live in fig-schema now; re-exported here so
-// existing callers importing them from flower_core keep working.
+// existing callers importing them from flower_data keep working.
 //
 // **This list is the reachability boundary.** An embedder that depends on
 // flower and not on fig-schema — which is the arrangement flower's facade

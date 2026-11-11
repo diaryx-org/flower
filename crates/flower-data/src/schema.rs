@@ -1,11 +1,11 @@
-//! flower-core's own constraint vocabulary, plugged into fig-schema's generic
+//! flower-data's own constraint vocabulary, plugged into fig-schema's generic
 //! rule engine.
 //!
 //! fig-schema's [`fig_schema::FieldRule`]/[`fig_schema::Schema`] are generic
 //! over the constraint type; this module supplies flower's: a controlled
 //! vocabulary ([`Constraint::Enum`]) or a link field
 //! ([`Constraint::Reference`], where *spanning* lives — the discovery
-//! backbone). flower-core never learns the word "prov": an embedder (a prov
+//! backbone). flower-data never learns the word "prov": an embedder (a prov
 //! adapter, a `$schema` detector, …) builds a [`Schema`] and supplies it —
 //! either through [`Backend::schema`](crate::Backend::schema) or by injecting
 //! it into the [`Model`](crate::Model), the same way managed keys arrive today.
@@ -56,7 +56,7 @@ impl Validate for Constraint {
 /// What a picker is a list of. Two very different things produce them and a
 /// frontend renders both the same way: a controlled vocabulary's terms, which
 /// the schema carries, and a reference field's candidates, which it cannot —
-/// a link points at *other documents*, and flower-core is one document with no
+/// a link points at *other documents*, and flower-data is one document with no
 /// filesystem, so the host answers ([`Backend::candidates`](crate::Backend::candidates)).
 /// That is the injection point `design/schema.md` filed as the open question.
 #[derive(Clone, Debug, PartialEq)]

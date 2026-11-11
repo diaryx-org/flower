@@ -1,0 +1,1358 @@
+//! The terminal end of the styling seam: map leaf-core's toolkit-neutral
+//! [`leaf_core::Style`] onto a `ratatui::Style`, and turn a WYSIWYG
+//! [`VisualMap`] into styled ratatui lines.
+//!
+//! This is the code that used to live on `VisualMap::to_lines` in the old
+//! single-crate leaf. It moved here because a `Line`/`Span` is a ratatui type;
+//! the geometry it reads (glyphs, source offsets) stays in leaf-core so a GUI
+//! frontend reuses it unchanged.
+//!
+//! The palette itself is a *value* — a [`Theme`] — not a set of constants. A
+//! terminal's own background is whatever the user themed it, so a fixed dark
+//! grey behind code is a bug on a light terminal, not a style choice: the
+//! colors have to be picked against the surface they land on. [`Theme::dark`]
+//! and [`Theme::light`] are the two curated palettes, [`detect_color_scheme`]
+//! (plus [`crate::EditorState::query_color_scheme`]) works out which one the
+//! terminal wants, and a host that disagrees can hand over its own.
+//!
+//! This mirrors `leaf-gpui`'s `RunStyle`, which is likewise a palette passed in
+//! per paint rather than baked into the mapping function.
+
+use leaf_core::style::{Role, Style as LStyle, Token};
+use leaf_core::{Highlight, HighlightCursor, VisualMap};
+use ratatui::{
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
+};
+
+pub use leaf_core::ColorScheme;
+
+/// How far a fenced code block's text is inset from the left edge of its box —
+/// one column, the room the box's left border sits in. The caret and mouse math
+/// in `ui` shift a code row's columns by this same amount.
+pub const CODE_INSET: usize = 1;
+
+/// The environment variable that pins the color scheme, skipping detection
+/// entirely: `light` or `dark` (case-insensitive), anything else ignored. The
+/// escape hatch for a terminal that answers neither the `OSC 11` query nor
+/// `COLORFGBG` — over a bare SSH session, say — and gets guessed wrong.
+pub const THEME_ENV: &str = "LEAF_THEME";
+
+/// The seven highlighter washes, indexed by
+/// [`MarkColor::index`](leaf_core::MarkColor::index): pale red, orange, yellow,
+/// green, blue, purple, brown, each from the light end of the 256-colour cube
+/// so black ink reads on it.
+///
+/// 256-indexed rather than ANSI-named, unlike most of the dark palette: the
+/// author asked for *red*, not for "whatever the terminal theme calls red",
+/// and a user whose red is a dark maroon would get unreadable ink over it.
+/// A named colour is right where the terminal's own taste should win (a
+/// heading's hue); it is wrong where the document named the colour itself.
+const MARK_WASHES: [Color; 7] = [
+    Color::Indexed(217), // red     — (255, 175, 175)
+    Color::Indexed(223), // orange  — (255, 215, 175)
+    Color::Indexed(228), // yellow  — (255, 255, 135)
+    Color::Indexed(157), // green   — (175, 255, 175)
+    Color::Indexed(153), // blue    — (175, 215, 255)
+    Color::Indexed(183), // purple  — (215, 175, 255)
+    Color::Indexed(180), // brown   — (215, 175, 135)
+];
+
+/// The seven **inks** for a run the author coloured — `data-color` on a span,
+/// the run-level half of the vocabulary — indexed the same way
+/// [`MARK_WASHES`] is, so `[0]` is red in both.
+///
+/// The dark scheme's, in the ANSI names the rest of this palette prefers: the
+/// author asked for red *text*, and text is exactly where the terminal's own
+/// tuning of "red" is the one that will read on the user's background. That is
+/// the opposite of the wash rule above it, and for a reason — a wash is a
+/// ground that somebody else's ink has to sit on, so it cannot be left to the
+/// terminal's taste, while an ink sits on the terminal's own page.
+///
+/// A separate row rather than a reuse of [`MARK_WASHES`], which is the same
+/// seven names: those are chosen pale so black reads *on* them, and pale ink
+/// on a light terminal is ink that isn't there. Same vocabulary, same seven
+/// names, different job.
+const DARK_INKS: [Color; 7] = [
+    Color::Red,
+    Color::Indexed(208), // orange — no ANSI name for it
+    Color::Yellow,
+    Color::Green,
+    Color::Blue,
+    Color::Magenta,      // purple
+    Color::Indexed(180), // brown — no ANSI name either
+];
+
+/// The light scheme's inks, from the dark half of the colour cube for the
+/// reason [`Theme::light`]'s whole ramp is: ANSI yellow and green are chosen
+/// to sit on a *dark* page and wash out to nothing on white. Amber stands in
+/// for yellow here exactly as it does for the headings.
+const LIGHT_INKS: [Color; 7] = [
+    Color::Indexed(124), // red
+    Color::Indexed(130), // orange
+    Color::Indexed(94),  // yellow — amber
+    Color::Indexed(22),  // green
+    Color::Indexed(26),  // blue
+    Color::Indexed(90),  // purple
+    Color::Indexed(95),  // brown
+];
+
+/// The terminal's palette, keyed on a glyph's semantic [`Role`]. This is the
+/// presentation the core used to bake in and no longer does: a terminal can
+/// usually only tell a heading from body text by *color*, so the choice of
+/// which color lives here, in the frontend that has the constraint — not in the
+/// shared model. A GUI, which can vary size and font, maps the same roles to
+/// entirely different looks. ("Usually" because a terminal with a graphics
+/// protocol can vary size too, for the H1/H2 rasters; a host that has found one
+/// takes [`Theme::with_plain_headings`] and lets size carry the level.)
+///
+/// Two curated variants ship: [`Theme::dark`] and [`Theme::light`]. They differ
+/// in more than the backgrounds — a hue that reads on black often doesn't read
+/// on white (ANSI yellow on a light terminal is the worst offender), so the
+/// light palette darkens the whole ramp rather than only re-tinting the panels.
+/// Every field is public, so a host that wants a third look can start from one
+/// of these and override what it likes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct Theme {
+    /// Which curated palette this is — carried so [`crate::EditorState`] can
+    /// answer "light or dark?" for `<picture>` resolution without a second
+    /// source of truth.
+    pub scheme: ColorScheme,
+    /// Heading colors by level, `[0]` = level 1. Levels past 6 reuse the last.
+    /// All are drawn bold, and level 1 additionally underlined.
+    pub heading: [Color; 6],
+    /// Code text — inline `` `code` `` and the contents of a fenced block.
+    pub code_fg: Color,
+    /// The tint behind code: the pill behind an inline run and the fill of a
+    /// fenced block's box. Close to the terminal's own background so the panel
+    /// reads as a subtle raise rather than a slab.
+    pub code_bg: Color,
+    /// A fenced block box's border.
+    pub code_border: Color,
+    /// The language label riding a fenced block's top border.
+    pub code_label: Color,
+    /// The syntax-highlighting palette inside a fenced block, indexed by
+    /// [`Token::index`]: punctuation, keyword, entity, support, constant,
+    /// string, comment, invalid. A code glyph carrying a token takes its entry
+    /// in place of [`code_fg`](Self::code_fg); one carrying none — an
+    /// identifier the grammar left plain, and every glyph of a block in a
+    /// language no grammar covers — keeps `code_fg`. Comments are drawn italic
+    /// as well, where the terminal can.
+    pub syntax: [Color; 8],
+    /// A hyperlink's visible text (drawn underlined).
+    pub link: Color,
+    /// Marked (`==mark==`) text: dark ink on a highlighter wash.
+    pub mark_fg: Color,
+    /// The highlighter wash behind marked text.
+    pub mark_bg: Color,
+    /// The washes behind a *coloured* highlight — `==🔴 text==` and its six
+    /// siblings — indexed by [`MarkColor::index`](leaf_core::MarkColor::index),
+    /// so `[0]` is red.
+    ///
+    /// The same row in both schemes, and deliberately: a highlighter pen is a
+    /// pale wash under dark ink whatever colour the page is, so these are the
+    /// pale end of the cube and [`mark_fg`](Self::mark_fg) — black in either
+    /// scheme — reads on every one of them. The alternative was a fg/bg pair
+    /// per colour, fourteen fields to say what one row of washes says.
+    pub mark_colors: [Color; 7],
+    /// The inks for a run the author *coloured* — `data-color` on an attributed
+    /// span, the run-level half of the presentation vocabulary — indexed by
+    /// [`MarkColor::index`](leaf_core::MarkColor::index) like
+    /// [`mark_colors`](Self::mark_colors), so `[0]` is red in both.
+    ///
+    /// The same seven names as the washes and a different row of colours,
+    /// because the two have different jobs: a wash is a ground somebody else's
+    /// ink sits on and is therefore pale, and pale ink on a light terminal is
+    /// no ink at all. Unlike the washes these *do* differ by scheme — see
+    /// [`DARK_INKS`] and [`LIGHT_INKS`].
+    ///
+    /// A coloured run keeps everything else its role gave it: a coloured word
+    /// inside a `==highlight==` keeps the highlighter's ground and only its
+    /// letters change hue, which is what the author of a coloured word in a
+    /// highlighted sentence meant.
+    pub text_colors: [Color; 7],
+    /// A list item's bullet or number.
+    pub list_marker: Color,
+    /// A block quote's `│` gutter.
+    pub quote_gutter: Color,
+    /// Thematic breaks and table rules.
+    pub rule: Color,
+    /// Raw markup revealed on the caret's line (`MarkupMode::Full`).
+    pub delimiter: Color,
+    /// A block image's `🖼 alt` placeholder text.
+    pub image: Color,
+    /// The wash behind a host-painted range — [`leaf_core::Highlight`] — that
+    /// names no color of its own. Search hits are the obvious one; an
+    /// annotation layer is the other.
+    ///
+    /// Its own pair rather than a reuse of [`mark_bg`](Self::mark_bg), because
+    /// a `==mark==` is *in* the document and a highlight is painted over it,
+    /// and a reader has to be able to tell "the author emphasised this" from
+    /// "your search found this". A wash rather than a reverse, so the selection
+    /// — which does reverse — still reads as distinct on top of it, which is
+    /// what makes the current search hit stand out from the rest.
+    pub highlight_bg: Color,
+    /// The ink on [`highlight_bg`](Self::highlight_bg).
+    pub highlight_fg: Color,
+    /// The fill behind a floating host overlay — the context menu, the command
+    /// palette, the key reference, the dialogs, the status toast.
+    ///
+    /// The chrome colors below exist for the same reason the rest of this
+    /// palette does, and were the last place in leaf still ignoring it: a
+    /// hardcoded dark-grey panel with white text is a dark-mode assumption, and
+    /// on a light terminal it renders a menu as a black hole with grey text in
+    /// it. A panel has to be a legible step off *the user's* page in whichever
+    /// direction their page runs.
+    pub panel_bg: Color,
+    /// An overlay's ordinary text.
+    pub panel_fg: Color,
+    /// An overlay's quiet text: section headers, key hints in the footer, and
+    /// the rows a document's format can't run. Muted enough to recede, not so
+    /// muted it stops being readable — a disabled row still has to be legible,
+    /// because saying what a format *can't* do is the whole reason it's drawn.
+    pub panel_dim: Color,
+    /// The accent on an overlay: a key chord, a checked row, the palette's
+    /// prompt. Kin to [`link`](Self::link), which is the same "this is
+    /// actionable" signal in the body.
+    pub panel_accent: Color,
+    /// The highlighted row's fill. An explicit color rather than `REVERSED`,
+    /// which inverts against the *panel* and so lands somewhere different in
+    /// each scheme — and, on a checked row, throws away the accent it was
+    /// carrying.
+    pub panel_selected_bg: Color,
+    /// The highlighted row's text.
+    pub panel_selected_fg: Color,
+    /// What's at stake in a dialog, and the status toast. ANSI yellow on a light
+    /// terminal is the worst offender in the whole palette, so the light scheme
+    /// takes amber here exactly as it does for headings.
+    pub panel_warning: Color,
+    /// The frame drawn around a block image's reserved area — the picture sits
+    /// inside it, and it stands alone as the "picture goes here" placeholder
+    /// when the raster can't be painted (a remote/unresolved image, or one
+    /// scrolled so it doesn't fully fit — a graphics-protocol image can't be
+    /// clipped, but this cell-drawn border can). A muted magenta, kin to the
+    /// `🖼` [`Role::Image`] label.
+    pub image_border: Color,
+}
+
+impl Default for Theme {
+    /// The dark palette — the safe guess for a terminal that hasn't been asked
+    /// yet, since the large majority of terminals ship dark.
+    fn default() -> Self {
+        Theme::dark()
+    }
+}
+
+impl Theme {
+    /// The palette for a dark terminal: saturated ANSI hues, which the user's
+    /// own terminal theme has already tuned to read on their background, and
+    /// quiet 256-color greys for the code panel.
+    pub const fn dark() -> Self {
+        Theme {
+            scheme: ColorScheme::Dark,
+            heading: [
+                Color::Cyan,
+                Color::Green,
+                Color::Yellow,
+                Color::Blue,
+                Color::Magenta,
+                Color::Gray,
+            ],
+            code_fg: Color::Green,
+            code_bg: Color::Indexed(235),
+            code_border: Color::Indexed(240),
+            code_label: Color::Gray,
+            // ANSI names where the terminal's own theme has a say, as the
+            // headings do; indexed where no ANSI name fits. Punctuation and
+            // comments share the quiet grey, as they do on a published page.
+            // Strings are yellow rather than the green plain code reads in,
+            // or a literal would vanish into the identifiers around it.
+            syntax: [
+                Color::Indexed(245), // punctuation — quiet
+                Color::Magenta,      // keyword
+                Color::Blue,         // entity
+                Color::Cyan,         // support
+                Color::Indexed(215), // constant — orange; no ANSI name for it
+                Color::Yellow,       // string
+                Color::Indexed(245), // comment — quiet, and italic
+                Color::Red,          // invalid
+            ],
+            link: Color::Cyan,
+            mark_fg: Color::Black,
+            mark_bg: Color::Yellow,
+            mark_colors: MARK_WASHES,
+            text_colors: DARK_INKS,
+            list_marker: Color::Yellow,
+            quote_gutter: Color::Green,
+            rule: Color::DarkGray,
+            delimiter: Color::DarkGray,
+            image: Color::Magenta,
+            image_border: Color::Indexed(96),
+            // A blue wash, a step off the page rather than a slab, and well
+            // clear of the yellow `mark_bg` above it.
+            highlight_bg: Color::Indexed(24),
+            highlight_fg: Color::Indexed(255),
+            // A shade above `code_bg` (235), so an overlay floating over a code
+            // block still reads as being *over* it rather than part of it.
+            panel_bg: Color::Indexed(238),
+            panel_fg: Color::Indexed(253),
+            // 249, not the 247 that looks right in isolation: dim text on a
+            // *panel* has a lighter ground under it than dim text on the page,
+            // so it has to be lighter still to keep the same ~4.5:1 separation.
+            panel_dim: Color::Indexed(249),
+            panel_accent: Color::Cyan,
+            panel_selected_bg: Color::Indexed(24),
+            panel_selected_fg: Color::Indexed(255),
+            panel_warning: Color::Yellow,
+        }
+    }
+
+    /// The palette for a light terminal. The panels invert — a near-white grey
+    /// behind code instead of a near-black one — and the hues are named as
+    /// explicit dark 256-color indices rather than ANSI names. That last part
+    /// is the whole point: ANSI yellow, green, and cyan are chosen by terminal
+    /// themes to sit on a *dark* background, and on white they wash out to
+    /// unreadable. Amber stands in for yellow, and every hue is taken from the
+    /// dark half of the color cube.
+    ///
+    /// The indices aren't eyeballed. Each is the one whose contrast against a
+    /// white page comes nearest its dark-palette counterpart's contrast against
+    /// a black one, so the two themes carry the same *weight* — the code fill is
+    /// as slight a lift off the page (1.40 vs the dark's 1.39), the box border
+    /// as faint against that fill (2.17 vs 2.13), the rules as quiet. Where the
+    /// cube can't reach that far the light side lands short rather than
+    /// overshooting into a color that shouts: there is no cyan as strong on
+    /// white as ANSI cyan is on black.
+    pub const fn light() -> Self {
+        Theme {
+            scheme: ColorScheme::Light,
+            heading: [
+                Color::Indexed(23),  // dark cyan
+                Color::Indexed(22),  // dark green
+                Color::Indexed(94),  // amber — ANSI yellow is invisible on white
+                Color::Indexed(26),  // blue
+                Color::Indexed(90),  // dark magenta
+                Color::Indexed(240), // grey
+            ],
+            code_fg: Color::Indexed(22),
+            code_bg: Color::Indexed(253),
+            code_border: Color::Indexed(246),
+            code_label: Color::Indexed(240),
+            // The dark half of the cube, for the reason the headings are:
+            // ANSI magenta and yellow are tuned for a dark page. Amber stands
+            // in for the string's yellow, as it does everywhere in this theme.
+            syntax: [
+                Color::Indexed(243), // punctuation
+                Color::Indexed(90),  // keyword — dark magenta
+                Color::Indexed(26),  // entity — blue
+                Color::Indexed(23),  // support — dark cyan
+                Color::Indexed(130), // constant — dark orange
+                Color::Indexed(94),  // string — amber
+                Color::Indexed(243), // comment
+                Color::Indexed(124), // invalid — dark red
+            ],
+            link: Color::Indexed(26),
+            mark_fg: Color::Black,
+            mark_bg: Color::Indexed(220),
+            mark_colors: MARK_WASHES,
+            text_colors: LIGHT_INKS,
+            list_marker: Color::Indexed(94),
+            quote_gutter: Color::Indexed(22),
+            rule: Color::Indexed(243),
+            delimiter: Color::Indexed(243),
+            image: Color::Indexed(96),
+            image_border: Color::Indexed(96),
+            // The light half of the same idea: a pale blue tint the page can
+            // carry, with the page's own dark ink left on top of it.
+            highlight_bg: Color::Indexed(153),
+            highlight_fg: Color::Indexed(234),
+            // A shade *below* `code_bg` (253) for the same reason the dark panel
+            // is a shade above its own: the overlay floats over the page, so it
+            // steps away from it, and the step runs downward on a light one.
+            panel_bg: Color::Indexed(251),
+            panel_fg: Color::Indexed(234),
+            panel_dim: Color::Indexed(239),
+            // A shade darker than `link`'s 26: a key chord sits on the panel's
+            // grey rather than on the page's white, and loses contrast to it.
+            panel_accent: Color::Indexed(25),
+            panel_selected_bg: Color::Indexed(24),
+            panel_selected_fg: Color::Indexed(255),
+            // The same amber the light palette gives headings and list markers,
+            // rather than a red that would read better and belong to nothing:
+            // ANSI yellow is invisible here, and this is where the light theme
+            // already decided what stands in for it.
+            panel_warning: Color::Indexed(94),
+        }
+    }
+
+    /// The curated palette for a scheme.
+    pub const fn for_scheme(scheme: ColorScheme) -> Self {
+        match scheme {
+            ColorScheme::Dark => Theme::dark(),
+            ColorScheme::Light => Theme::light(),
+        }
+    }
+
+    /// The same palette with headings in the terminal's own foreground instead
+    /// of the level ramp — still bold, still underlined at level 1, just not
+    /// tinted.
+    ///
+    /// The ramp exists because a terminal that can only draw one size of text
+    /// has nothing else to tell a heading from a paragraph with. Where it *can*
+    /// draw another size — a graphics protocol, which is what makes the
+    /// oversized H1/H2 rasters possible — the size says it, and the color is a
+    /// second answer to a question already answered. The surface makes that
+    /// call itself: [`crate::render`] paints with this variant whenever
+    /// [`EditorState::supports_graphics`](crate::EditorState::supports_graphics)
+    /// is true, whatever palette the host installed. A host only needs it to
+    /// ask for plain headings on a terminal that *cannot* draw big ones.
+    ///
+    /// [`Color::Reset`] rather than a chosen grey: the point is the terminal's
+    /// default ink, whatever the user themed it to. The heading rasters read it
+    /// too and come out in the matching near-black or near-white.
+    pub const fn with_plain_headings(mut self) -> Self {
+        self.heading = [Color::Reset; 6];
+        self
+    }
+
+    /// The base style for a glyph's role; the caller layers the author's own
+    /// emphasis (bold/italic/…) on top. Headings cycle a color by level and are
+    /// bold, exactly as before the palette became a value.
+    fn role_style(&self, role: Role) -> Style {
+        let s = Style::default();
+        match role {
+            Role::Body => s,
+            Role::Heading(level) => {
+                let idx = (level.max(1) as usize - 1).min(self.heading.len() - 1);
+                let base = s.fg(self.heading[idx]).add_modifier(Modifier::BOLD);
+                if level <= 1 {
+                    base.add_modifier(Modifier::UNDERLINED)
+                } else {
+                    base
+                }
+            }
+            // Code reads in its own hue on the code tint — inline it's the whole
+            // pill, in a fenced block the box's fill matches so the two blend.
+            Role::Code => s.fg(self.code_fg).bg(self.code_bg),
+            Role::Link => s.fg(self.link).add_modifier(Modifier::UNDERLINED),
+            // A highlight the author gave no colour takes the theme's own
+            // highlighter; one that names a colour takes that wash instead. The
+            // ink is the same dark either way — the colour is the pen, not the
+            // writing.
+            Role::Mark(color) => s.fg(self.mark_fg).bg(match color {
+                Some(c) => self.mark_colors[c.index()],
+                None => self.mark_bg,
+            }),
+            Role::ListMarker => s.fg(self.list_marker),
+            // Drawn as blanks (`Glyph::drawn`), so only a background would show.
+            Role::ListIndent => s,
+            Role::QuoteGutter => s.fg(self.quote_gutter),
+            // Thematic breaks and table rules are quiet grey.
+            Role::Rule => s.fg(self.rule),
+            // Raw markup on the revealed line (`MarkupMode::Full`). Dim grey, the
+            // same quiet the rules get: the delimiters are scaffolding around the
+            // prose, and the line should still read as a line of text rather than
+            // as a line of source. It sits *under* the author's own emphasis, which
+            // the caller layers on after — so the `*` around a bold run comes out
+            // dim and bold, which is what marks it as that run's delimiter.
+            Role::Delimiter => s.fg(self.delimiter),
+            // A block image's `🖼 alt` placeholder: the terminal has no raster
+            // primitive, so it paints the label — dim magenta to read as a
+            // stand-in for content it can't draw, not as prose.
+            Role::Image => s.fg(self.image).add_modifier(Modifier::DIM),
+            // A formula's stand-in — the `∑ tex` row a display formula falls
+            // back to where no picture is painted — reads as a placeholder the
+            // way an image's label does. An inline formula is never this on a
+            // terminal: it draws as code.
+            Role::Math => s.fg(self.image).add_modifier(Modifier::DIM),
+        }
+    }
+
+    /// Map a neutral core style onto a ratatui style: the role picks the
+    /// palette, then the author's own emphasis flags layer on top.
+    pub fn to_ratatui(&self, s: LStyle) -> Style {
+        let mut out = self.role_style(s.role);
+        // A highlighted code glyph takes its token's ink over the code tint;
+        // the tint stays, so the block's box is still one panel. Only beside
+        // `Role::Code` — a token on any other role is a contradiction core
+        // doesn't produce, and is ignored rather than trusted.
+        if let (Role::Code, Some(token)) = (s.role, s.token) {
+            out = out.fg(self.syntax[token.index()]);
+            if token == Token::Comment {
+                out = out.add_modifier(Modifier::ITALIC);
+            }
+        }
+        // The run's own colour, last of the three inks so it wins over the
+        // role's and the token's: `data-color` is the author saying this word
+        // is red, and a red word inside a code span is still red. Only the
+        // foreground moves — a coloured word inside a `==highlight==` keeps the
+        // highlighter's ground, which is what colouring a word in a highlighted
+        // sentence means.
+        //
+        // The other two run-level properties, `size` and `font`, are read and
+        // ignored: a terminal cell has one size and one face, so there is
+        // nothing here to honour them with. See `wysiwyg_lines` for the row-level
+        // property in the same position. Both halves of each are ignored alike —
+        // an exact `24pt` no more reaches a cell than the `xx-large` that names
+        // it, and `line_height`, row-level and open in the same way, likewise.
+        //
+        // Colour is the one property a cell *can* be exact about, so both halves
+        // of it draw. A name is the theme's to pick: `red` resolves through
+        // `text_colors`, which is one ink on a dark terminal and another on a
+        // light one. A triple is painted as written under either scheme — that
+        // is what "exact" means, and the theme gets no say in it.
+        //
+        // No capability gate on the second branch, because there is nothing here
+        // to gate it with and nothing to gain by it: `Color::Rgb` leaves as the
+        // truecolour SGR escape, and a terminal that cannot show one quantises it
+        // to the nearest it has, which is a better answer than any nearest-of-256
+        // this crate could compute blind. It is the bargain `highlight_wash`
+        // already makes for a host-coloured range, in this same file.
+        if let Some(color) = s.color {
+            out = out.fg(match color {
+                leaf_core::TextColor::Named(named) => self.text_colors[named.index()],
+                leaf_core::TextColor::Rgb { r, g, b } => Color::Rgb(r, g, b),
+            });
+        }
+        if s.bold {
+            out = out.add_modifier(Modifier::BOLD);
+        }
+        if s.italic {
+            out = out.add_modifier(Modifier::ITALIC);
+        }
+        if s.underline {
+            out = out.add_modifier(Modifier::UNDERLINED);
+        }
+        if s.strikethrough {
+            out = out.add_modifier(Modifier::CROSSED_OUT);
+        }
+        out
+    }
+}
+
+/// The color scheme worked out from the environment alone — no terminal I/O, so
+/// this is safe to call before the terminal is in raw mode (and it's what
+/// [`Theme::default`] stands in for until a real query runs).
+///
+/// [`THEME_ENV`] wins outright; failing that, `COLORFGBG` (set by rxvt, konsole,
+/// and a handful of others) names the background's ANSI index. Neither present,
+/// the answer is [`ColorScheme::Dark`] — the majority default, and the one this
+/// editor looked like before it could ask at all.
+///
+/// For the accurate answer — an `OSC 11` query to the terminal itself — see
+/// [`crate::EditorState::query_color_scheme`].
+pub fn detect_color_scheme() -> ColorScheme {
+    scheme_from_env().unwrap_or(ColorScheme::Dark)
+}
+
+/// [`detect_color_scheme`] without the fallback: `None` means the environment
+/// said nothing, which is the cue to ask the terminal directly.
+pub(crate) fn scheme_from_env() -> Option<ColorScheme> {
+    scheme_from_name(&std::env::var(THEME_ENV).ok()?)
+        .or_else(|| scheme_from_colorfgbg(&std::env::var("COLORFGBG").ok()?))
+}
+
+/// Parse a [`THEME_ENV`] value: `light` or `dark`, case- and space-insensitive.
+/// `None` for anything else — including `auto`, which is how you ask for
+/// detection back.
+fn scheme_from_name(value: &str) -> Option<ColorScheme> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "light" => Some(ColorScheme::Light),
+        "dark" => Some(ColorScheme::Dark),
+        _ => None,
+    }
+}
+
+/// Parse a `COLORFGBG` value (`"fg;bg"` or `"fg;;bg"`) into a scheme: the
+/// trailing background ANSI index is dark for 0–6 and 8, light otherwise.
+/// `None` when there's no parseable trailing index.
+fn scheme_from_colorfgbg(value: &str) -> Option<ColorScheme> {
+    let bg: u8 = value.rsplit(';').next()?.trim().parse().ok()?;
+    Some(if bg <= 6 || bg == 8 {
+        ColorScheme::Dark
+    } else {
+        ColorScheme::Light
+    })
+}
+
+/// The terminal's foreground as RGB, from `COLORFGBG`'s *leading* field — the
+/// environment's half-answer to "what color is the text?", for use when the
+/// `OSC 10` query didn't run or didn't answer.
+///
+/// It is a half-answer because `COLORFGBG` names an ANSI palette *index*, not a
+/// color, and a terminal is free to have re-tinted that slot. So this resolves
+/// through [`ansi_base16_rgb`]'s xterm defaults, which is a good guess for the
+/// common values (7 and 15 for light-on-dark, 0 for dark-on-light) and never
+/// worse than the scheme-derived near-white/near-black it replaces. The exact
+/// answer is the query; this is what's left when there wasn't one.
+pub(crate) fn foreground_from_env() -> Option<(u8, u8, u8)> {
+    foreground_from_colorfgbg(&std::env::var("COLORFGBG").ok()?)
+}
+
+/// The parsing half of [`foreground_from_env`], split out so it can be tested
+/// without mutating the process environment.
+fn foreground_from_colorfgbg(value: &str) -> Option<(u8, u8, u8)> {
+    ansi_base16_rgb(value.split(';').next()?.trim().parse().ok()?)
+}
+
+/// xterm's default RGB for the sixteen base ANSI slots. Only the base 16 — an
+/// index above 15 lands in the 6×6×6 cube or the greyscale ramp, which a
+/// foreground is never set to in practice, and which this returns `None` for
+/// rather than guessing at.
+fn ansi_base16_rgb(index: u8) -> Option<(u8, u8, u8)> {
+    Some(match index {
+        0 => (0, 0, 0),
+        1 => (205, 0, 0),
+        2 => (0, 205, 0),
+        3 => (205, 205, 0),
+        4 => (0, 0, 238),
+        5 => (205, 0, 205),
+        6 => (0, 205, 205),
+        7 => (229, 229, 229),
+        8 => (127, 127, 127),
+        9 => (255, 0, 0),
+        10 => (0, 255, 0),
+        11 => (255, 255, 0),
+        12 => (92, 92, 255),
+        13 => (255, 0, 255),
+        14 => (0, 255, 255),
+        15 => (255, 255, 255),
+        _ => return None,
+    })
+}
+
+/// Styled ratatui lines for the WYSIWYG map, drawing any glyph whose source
+/// offset is within the `[start, end)` selection reversed. Adjacent glyphs of
+/// equal style are merged into one span.
+///
+/// `code_shift(row)` returns `Some(scroll)` for a fenced code-block row — the
+/// display columns to scroll it left inside its box — and `None` for ordinary
+/// text. A code row is drawn inset by [`CODE_INSET`] (room for the box's left
+/// border) and scrolled: the leading `scroll` columns are dropped so a long line
+/// slides under the box rather than wrapping or running off the right edge. The
+/// caret and mouse in `ui` mirror this exact shift, so a code column still round-
+/// trips to its source byte.
+///
+/// `width` is the measure the rows are laid into — the same content width
+/// [`crate::render`] built the map at. A row whose block carries an
+/// [`Align`](leaf_core::Align) is padded into it with leading blanks
+/// ([`align_pad`]); the caret and the mouse shift by the same amount, so a
+/// centred line still round-trips to its source byte.
+pub fn wysiwyg_lines(
+    vmap: &VisualMap,
+    sel: Option<(usize, usize)>,
+    highlights: &[Highlight],
+    theme: &Theme,
+    width: usize,
+    code_shift: impl Fn(usize) -> Option<usize>,
+) -> Vec<Line<'static>> {
+    // One cursor for the whole view: the rows are walked in order and so are
+    // their glyphs, which is exactly what it is for.
+    let mut covering = HighlightCursor::new(highlights);
+    vmap.rows
+        .iter()
+        .enumerate()
+        .map(|(r, row)| {
+            let shift = code_shift(r);
+            let mut spans: Vec<Span<'static>> = Vec::new();
+            // A code row opens with its inset: the columns the box's left border
+            // lands on, tinted so the fill runs edge to edge under the border.
+            if shift.is_some() {
+                spans.push(Span::styled(
+                    " ".repeat(CODE_INSET),
+                    Style::default().bg(theme.code_bg),
+                ));
+            }
+            // …and an aligned row opens with its pad: the blank columns that put
+            // a centred or right-aligned line where the author asked for it.
+            // Never on a code row, which owns its own box and its own left edge.
+            let pad = if shift.is_some() {
+                0
+            } else {
+                align_pad(row.align, vmap.row_width(r), width)
+            };
+            if pad > 0 {
+                spans.push(Span::raw(" ".repeat(pad)));
+            }
+            let mut buf = String::new();
+            let mut cur: Option<Style> = None;
+            // Column of the current glyph within the row, to drop the ones a code
+            // row has scrolled off its left edge.
+            let mut col = 0usize;
+            for g in &row.glyphs {
+                let w = char_cols(g.ch);
+                let hidden = shift.is_some_and(|scroll| col < scroll);
+                col += w;
+                if hidden {
+                    continue;
+                }
+                let style = composed(theme.to_ratatui(g.style), g.src, sel, &mut covering, theme);
+                if cur == Some(style) {
+                    buf.push(g.drawn());
+                } else {
+                    if let Some(s) = cur.take() {
+                        spans.push(Span::styled(std::mem::take(&mut buf), s));
+                    }
+                    cur = Some(style);
+                    buf.push(g.drawn());
+                }
+            }
+            if let Some(s) = cur {
+                spans.push(Span::styled(buf, s));
+            }
+            if spans.is_empty() {
+                spans.push(Span::raw(""));
+            }
+            Line::from(spans)
+        })
+        .collect()
+}
+
+/// The blank columns a row is pushed right by to sit where its block's
+/// alignment says: half the slack for [`Align::Center`], all of it for
+/// [`Align::Right`], none for an unaligned row or one that already fills (or
+/// overruns) the measure.
+///
+/// Padding is the whole of what a terminal can do here. A cell grid has no
+/// sub-column positions, so "centred" is "as centred as the odd column allows"
+/// — the extra column goes to the right, which is where every terminal centring
+/// puts it.
+///
+/// [`Align::Justify`] pads like an unaligned row, i.e. draws left. Justifying
+/// means stretching the spaces *between* words until the line fills the
+/// measure, and a terminal can only stretch them a whole cell at a time: on a
+/// forty-column line that is the difference between one space and two, which
+/// reads as a typo rather than as typesetting. The document keeps the token —
+/// leaf-swift and the stylesheet justify properly — and this surface renders
+/// what it honestly can, the way it renders a heading's `data-size` as
+/// ordinary-sized text.
+///
+/// One function because the painter, the caret, and the mouse all need the
+/// same number and must not disagree about it: [`wysiwyg_lines`] pads by it,
+/// [`crate::render`] shifts the terminal cursor by it, and
+/// [`crate::handle_mouse`] takes it back off a clicked column.
+pub fn align_pad(align: Option<leaf_core::Align>, row_width: usize, width: usize) -> usize {
+    use leaf_core::Align;
+    let slack = width.saturating_sub(row_width);
+    match align {
+        Some(Align::Center) => slack / 2,
+        Some(Align::Right) => slack,
+        Some(Align::Justify) | None => 0,
+    }
+}
+
+/// A glyph's or a run's final style at source byte `at`: its own style, the
+/// host's wash under it, the selection reversed over that.
+///
+/// One function because both painters compose the same three layers and had
+/// better not disagree about the order. A host paints a range to say "this is
+/// one of the things you asked for"; the selection says "and this is the one
+/// you are on", so the two compose rather than one replacing the other —
+/// reversing the wash is what makes the current search hit legible among the
+/// rest of them.
+pub(crate) fn composed(
+    base: Style,
+    at: usize,
+    sel: Option<(usize, usize)>,
+    highlights: &mut HighlightCursor<'_>,
+    theme: &Theme,
+) -> Style {
+    let mut style = base;
+    if let Some(h) = highlights.at(at) {
+        style = highlight_wash(style, h, theme);
+    }
+    if sel.is_some_and(|(s, e)| at >= s && at < e) {
+        style = style.add_modifier(Modifier::REVERSED);
+    }
+    style
+}
+
+/// Lay a highlight's wash under a glyph's own style, keeping whatever the
+/// author's markup put there (bold, italic, underline) and replacing only the
+/// ink and the ground.
+///
+/// A `#RRGGBB` on the highlight overrides the theme's ground, since the point of
+/// the field is a host that colors its own annotations — and then the ink has to
+/// be picked against *that* ground rather than left as the theme's. The theme's
+/// `highlight_fg` is chosen to read on the theme's own wash; forcing it onto a
+/// color the host named puts the dark palette's near-white ink on `#ffe066`,
+/// which is the failure this branch exists for. The two curated inks are the
+/// candidates, and [`contrast_ink`] picks whichever the host's color can carry.
+pub(crate) fn highlight_wash(style: Style, highlight: &Highlight, theme: &Theme) -> Style {
+    match highlight.color.as_deref().and_then(parse_rgb) {
+        Some((r, g, b)) => style.fg(contrast_ink(r, g, b)).bg(Color::Rgb(r, g, b)),
+        None => style.fg(theme.highlight_fg).bg(theme.highlight_bg),
+    }
+}
+
+/// The ink that reads on a host-supplied `#RRGGBB` wash: the light palette's
+/// near-black on a light color, the dark palette's near-white on a dark one.
+///
+/// The two curated `highlight_fg`s rather than a computed shade, so a
+/// host-colored range still looks like it belongs to this editor. The split is
+/// by relative luminance, which is coarse next to a real contrast ratio and
+/// exactly right for the one decision being made — the two candidates sit at
+/// opposite ends of the scale, so anything nearer one than the other is a
+/// comfortable choice rather than a marginal one.
+fn contrast_ink(r: u8, g: u8, b: u8) -> Color {
+    let luminance = 0.2126 * r as f32 + 0.7152 * g as f32 + 0.0722 * b as f32;
+    if luminance > 0.5 * 255.0 {
+        Theme::light().highlight_fg
+    } else {
+        Theme::dark().highlight_fg
+    }
+}
+
+/// `#RRGGBB` (or `RRGGBB`) as its three components; `None` for anything else,
+/// which falls back to the theme rather than erroring — a malformed hint from a
+/// host is not worth refusing to draw the document over.
+///
+/// The components rather than a `Color`, because the caller has to weigh them
+/// to pick an ink that reads on them ([`contrast_ink`]).
+fn parse_rgb(hex: &str) -> Option<(u8, u8, u8)> {
+    let hex = hex.strip_prefix('#').unwrap_or(hex);
+    if hex.len() != 6 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let byte = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).ok();
+    Some((byte(0)?, byte(2)?, byte(4)?))
+}
+
+/// The display-column width of one glyph — the terminal's own measure, matched
+/// to how `leaf-core` lays a row out into columns so a scrolled code column and
+/// its caret can't drift apart.
+fn char_cols(ch: char) -> usize {
+    leaf_core::wysiwyg::text_width(ch.encode_utf8(&mut [0u8; 4]))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use leaf_core::MarkColor;
+
+    #[test]
+    fn colorfgbg_reads_the_trailing_background_index() {
+        // "light text on dark bg" (bg 0) → dark; "dark on light" (bg 15) → light.
+        assert_eq!(scheme_from_colorfgbg("15;0"), Some(ColorScheme::Dark));
+        assert_eq!(scheme_from_colorfgbg("0;15"), Some(ColorScheme::Light));
+        // The three-field forms some terminals emit.
+        assert_eq!(scheme_from_colorfgbg("15;;0"), Some(ColorScheme::Dark));
+        assert_eq!(
+            scheme_from_colorfgbg("15;default;0"),
+            Some(ColorScheme::Dark)
+        );
+        // 8 is a dark grey background, not a light one.
+        assert_eq!(scheme_from_colorfgbg("7;8"), Some(ColorScheme::Dark));
+        assert_eq!(scheme_from_colorfgbg("7;7"), Some(ColorScheme::Light));
+        assert_eq!(scheme_from_colorfgbg("7"), Some(ColorScheme::Light));
+        assert_eq!(scheme_from_colorfgbg(""), None);
+        assert_eq!(scheme_from_colorfgbg("nonsense"), None);
+        assert_eq!(scheme_from_colorfgbg("default;default"), None);
+    }
+
+    /// `COLORFGBG`'s leading field is the text color, and it is an index, so it
+    /// resolves through the xterm defaults. The three values that actually turn
+    /// up in the wild are 15, 7 and 0.
+    #[test]
+    fn colorfgbg_yields_the_foreground_as_rgb() {
+        assert_eq!(foreground_from_colorfgbg("15;0"), Some((255, 255, 255)));
+        assert_eq!(foreground_from_colorfgbg("7;0"), Some((229, 229, 229)));
+        assert_eq!(foreground_from_colorfgbg("0;15"), Some((0, 0, 0)));
+        // The `fg;;bg` shape rxvt emits: the leading field is still the fg.
+        assert_eq!(foreground_from_colorfgbg("15;;0"), Some((255, 255, 255)));
+        // Past the base 16 there is no defensible guess, so there isn't one.
+        assert_eq!(foreground_from_colorfgbg("123;0"), None);
+        assert_eq!(foreground_from_colorfgbg("default;0"), None);
+        assert_eq!(foreground_from_colorfgbg(""), None);
+    }
+
+    #[test]
+    fn theme_env_names_a_scheme_and_nothing_else() {
+        assert_eq!(scheme_from_name("light"), Some(ColorScheme::Light));
+        assert_eq!(scheme_from_name(" DARK "), Some(ColorScheme::Dark));
+        // `auto` is how you ask for detection, so it must not resolve.
+        assert_eq!(scheme_from_name("auto"), None);
+        assert_eq!(scheme_from_name(""), None);
+    }
+
+    /// The `#RRGGBB` a host may put on a highlight, and the shapes that aren't
+    /// one — a malformed hint falls back to the theme rather than refusing to
+    /// draw the document.
+    #[test]
+    fn a_highlight_colour_is_read_as_hex_or_ignored() {
+        assert_eq!(parse_rgb("#ffe066"), Some((0xff, 0xe0, 0x66)));
+        assert_eq!(parse_rgb("ffe066"), Some((0xff, 0xe0, 0x66)));
+        assert_eq!(parse_rgb("#fff"), None);
+        assert_eq!(parse_rgb("rebeccapurple"), None);
+        assert_eq!(parse_rgb("#gggggg"), None);
+        assert_eq!(parse_rgb(""), None);
+    }
+
+    /// A host that colours its own range has to be given an ink that reads on
+    /// it. The dark theme's near-white on `#ffe066` is the bug this is for, and
+    /// the answer must not depend on which theme is in force: the wash is the
+    /// host's colour in both, so the ink is too.
+    #[test]
+    fn a_host_coloured_highlight_gets_an_ink_that_reads_on_it() {
+        let painted = |hex: &str| Highlight {
+            start: 0,
+            end: 1,
+            id: String::new(),
+            color: Some(hex.into()),
+            marker: None,
+        };
+        let dark_ink = Theme::dark().highlight_fg;
+        let light_ink = Theme::light().highlight_fg;
+        for theme in [Theme::dark(), Theme::light()] {
+            let wash = |hex: &str| highlight_wash(Style::default(), &painted(hex), &theme);
+            // A pale wash takes the dark ink, whichever theme is running.
+            assert_eq!(wash("#ffe066").fg, Some(light_ink), "pale yellow");
+            assert_eq!(wash("#ffffff").fg, Some(light_ink), "white");
+            // A dark one takes the light ink.
+            assert_eq!(wash("#1a1a2e").fg, Some(dark_ink), "near-black navy");
+            assert_eq!(wash("#000000").fg, Some(dark_ink), "black");
+            // Either way the ground is what the host asked for.
+            assert_eq!(wash("#ffe066").bg, Some(Color::Rgb(0xff, 0xe0, 0x66)));
+            // And a highlight with no colour is still the theme's own pair.
+            let plain = Highlight {
+                color: None,
+                ..painted("")
+            };
+            let style = highlight_wash(Style::default(), &plain, &theme);
+            assert_eq!(style.bg, Some(theme.highlight_bg));
+            assert_eq!(style.fg, Some(theme.highlight_fg));
+        }
+    }
+
+    /// The rendering half of `Doc::set_highlights`, which no frontend painted
+    /// before: a host-painted range gets the theme's wash, and only the glyphs
+    /// inside it do.
+    #[test]
+    fn a_highlight_washes_only_the_glyphs_it_covers() {
+        let mut doc =
+            leaf_core::Doc::from_source("one two three\n".into(), leaf_core::Format::Markdown)
+                .unwrap();
+        doc.build_visual(40);
+        let theme = Theme::dark();
+        let painted = vec![Highlight {
+            start: 4,
+            end: 7,
+            id: "hit".into(),
+            color: None,
+            marker: None,
+        }];
+
+        let lines = wysiwyg_lines(&doc.vmap, None, &painted, &theme, 40, |_| None);
+        let washed: String = lines[0]
+            .spans
+            .iter()
+            .filter(|s| s.style.bg == Some(theme.highlight_bg))
+            .map(|s| s.content.as_ref())
+            .collect();
+        assert_eq!(washed, "two");
+    }
+
+    /// The current search hit is told apart from the rest by being the
+    /// *selection*, so the two have to compose rather than one winning.
+    #[test]
+    fn the_selection_reverses_on_top_of_a_highlight_rather_than_replacing_it() {
+        let mut doc =
+            leaf_core::Doc::from_source("one two three\n".into(), leaf_core::Format::Markdown)
+                .unwrap();
+        doc.build_visual(40);
+        let theme = Theme::dark();
+        let painted = vec![Highlight {
+            start: 4,
+            end: 7,
+            id: "hit".into(),
+            color: None,
+            marker: None,
+        }];
+
+        let lines = wysiwyg_lines(&doc.vmap, Some((4, 7)), &painted, &theme, 40, |_| None);
+        let span = lines[0]
+            .spans
+            .iter()
+            .find(|s| s.content.as_ref() == "two")
+            .expect("the selected match should still be one span");
+        assert_eq!(span.style.bg, Some(theme.highlight_bg), "the wash survives");
+        assert!(
+            span.style.add_modifier.contains(Modifier::REVERSED),
+            "and the selection reverses it"
+        );
+    }
+
+    /// A host colour overrides the theme's ground; the ink stays the theme's,
+    /// which is the only one leaf knows reads on anything.
+    #[test]
+    fn a_hosts_own_colour_replaces_the_wash_but_not_the_ink() {
+        let theme = Theme::dark();
+        let highlight = Highlight {
+            start: 0,
+            end: 1,
+            id: "a".into(),
+            color: Some("#102030".into()),
+            marker: None,
+        };
+        let style = highlight_wash(Style::default(), &highlight, &theme);
+        assert_eq!(style.bg, Some(Color::Rgb(0x10, 0x20, 0x30)));
+        assert_eq!(style.fg, Some(theme.highlight_fg));
+    }
+
+    /// The bug this palette exists to fix: on a light terminal nothing may be
+    /// painted with a near-black fill, and vice versa.
+    #[test]
+    fn each_palette_tints_code_toward_its_own_background() {
+        let dark = match Theme::dark().code_bg {
+            Color::Indexed(i) => i,
+            other => panic!("expected an indexed grey, got {other:?}"),
+        };
+        let light = match Theme::light().code_bg {
+            Color::Indexed(i) => i,
+            other => panic!("expected an indexed grey, got {other:?}"),
+        };
+        // The 256-color greyscale ramp runs 232 (near-black) to 255 (near-white).
+        assert!(
+            (232..=243).contains(&dark),
+            "dark code_bg {dark} isn't dark"
+        );
+        assert!(
+            (244..=255).contains(&light),
+            "light code_bg {light} isn't light"
+        );
+    }
+
+    /// A light terminal must not be handed ANSI yellow/green/cyan, which
+    /// terminal themes pick to read on black.
+    #[test]
+    fn the_light_palette_avoids_the_ansi_names() {
+        let t = Theme::light();
+        let named = [
+            t.code_fg,
+            t.link,
+            t.list_marker,
+            t.quote_gutter,
+            t.rule,
+            t.delimiter,
+            t.image,
+        ]
+        .into_iter()
+        .chain(t.heading)
+        .filter(|c| !matches!(c, Color::Indexed(_)))
+        .collect::<Vec<_>>();
+        assert!(
+            named.is_empty(),
+            "light palette leans on ANSI names: {named:?}"
+        );
+    }
+
+    #[test]
+    fn a_scheme_picks_its_palette() {
+        assert_eq!(Theme::for_scheme(ColorScheme::Light), Theme::light());
+        assert_eq!(Theme::for_scheme(ColorScheme::Dark), Theme::dark());
+        assert_eq!(Theme::default(), Theme::dark());
+    }
+
+    /// Headings past the ramp clamp to its last entry rather than panicking on
+    /// an out-of-range index.
+    #[test]
+    fn heading_levels_clamp_to_the_ramp() {
+        let t = Theme::dark();
+        let color = |level| t.role_style(Role::Heading(level)).fg.unwrap();
+        assert_eq!(color(1), t.heading[0]);
+        assert_eq!(color(6), t.heading[5]);
+        assert_eq!(color(9), t.heading[5]);
+        // Level 0 is not a thing, but a malformed AST must not index out of range.
+        assert_eq!(color(0), t.heading[0]);
+    }
+
+    /// A highlight the author coloured takes its own wash and keeps the ink —
+    /// so the seven of them are seven distinct backgrounds over one foreground,
+    /// which is what a highlighter pen is.
+    #[test]
+    fn each_named_highlight_colour_gets_its_own_wash() {
+        for scheme in [ColorScheme::Dark, ColorScheme::Light] {
+            let t = Theme::for_scheme(scheme);
+            let mut seen = Vec::new();
+            for c in MarkColor::ALL {
+                let s = t.role_style(Role::Mark(Some(c)));
+                assert_eq!(s.fg, Some(t.mark_fg), "{} keeps the ink", c.name());
+                let bg = s.bg.expect("a wash");
+                assert!(
+                    !seen.contains(&bg),
+                    "{} repeats a wash already used in {scheme:?}",
+                    c.name()
+                );
+                seen.push(bg);
+            }
+            // And a highlight that named nothing still gets the theme's own
+            // highlighter, which is what every `==mark==` had before colours.
+            let plain = t.role_style(Role::Mark(None));
+            assert_eq!(plain.bg, Some(t.mark_bg));
+            assert_eq!(plain.fg, Some(t.mark_fg));
+        }
+    }
+
+    /// A token picks the ink and leaves the tint: the block is still one
+    /// panel with differently coloured words in it. A comment is italic on
+    /// top. And a token on a glyph that is not code is ignored — core never
+    /// produces one, and a palette that trusted it would colour prose.
+    #[test]
+    fn a_token_recolours_code_over_the_same_tint() {
+        for scheme in [ColorScheme::Dark, ColorScheme::Light] {
+            let t = Theme::for_scheme(scheme);
+            let plain = t.to_ratatui(LStyle::default().role(Role::Code));
+            for token in Token::ALL {
+                let s = t.to_ratatui(LStyle::default().role(Role::Code).token(Some(token)));
+                assert_eq!(s.fg, Some(t.syntax[token.index()]), "{}", token.name());
+                assert_eq!(s.bg, plain.bg, "{} moved off the code tint", token.name());
+                assert_eq!(
+                    s.add_modifier.contains(Modifier::ITALIC),
+                    token == Token::Comment,
+                    "{} italic",
+                    token.name()
+                );
+            }
+            let prose = t.to_ratatui(LStyle::default().token(Some(Token::Keyword)));
+            assert_eq!(prose, t.to_ratatui(LStyle::default()));
+        }
+    }
+
+    /// The plain-heading variant drops the ramp and nothing else: every level
+    /// comes back in the terminal's own ink, still bold, and level 1 still
+    /// underlined. A host installs this once it knows the terminal can draw the
+    /// oversized rasters that make the hue redundant.
+    #[test]
+    fn plain_headings_keep_the_weight_and_lose_the_hue() {
+        for scheme in [ColorScheme::Dark, ColorScheme::Light] {
+            let ramped = Theme::for_scheme(scheme);
+            let plain = ramped.with_plain_headings();
+            for level in 1..=6u8 {
+                let s = plain.role_style(Role::Heading(level));
+                assert_eq!(s.fg, Some(Color::Reset), "level {level} in {scheme:?}");
+                assert!(s.add_modifier.contains(Modifier::BOLD));
+                assert_eq!(
+                    s.add_modifier.contains(Modifier::UNDERLINED),
+                    level == 1,
+                    "level {level} underline"
+                );
+            }
+            // Only the headings move; the rest of the palette is untouched, so a
+            // host can install this without losing the scheme it detected.
+            assert_eq!(plain.scheme, ramped.scheme);
+            assert_eq!(plain.code_bg, ramped.code_bg);
+            assert_eq!(plain.role_style(Role::Code), ramped.role_style(Role::Code));
+        }
+    }
+
+    /// Only level 1 is underlined — the rest are told apart by hue and weight.
+    #[test]
+    fn only_the_top_heading_is_underlined() {
+        let t = Theme::dark();
+        assert!(
+            t.role_style(Role::Heading(1))
+                .add_modifier
+                .contains(Modifier::UNDERLINED)
+        );
+        assert!(
+            !t.role_style(Role::Heading(2))
+                .add_modifier
+                .contains(Modifier::UNDERLINED)
+        );
+    }
+
+    // ── the presentation vocabulary ─────────────────────────────────────────
+
+    /// The map for `src`, laid out at `width` — how the presentation tests get
+    /// the rows `render` would hand the painter.
+    fn map(src: &str, format: leaf_core::Format, width: usize) -> leaf_core::VisualMap {
+        let mut doc = leaf_core::Doc::from_source(src.into(), format).unwrap();
+        doc.build_visual(width);
+        doc.vmap.clone()
+    }
+
+    /// What a row draws, blanks and all — the string a reader would see on that
+    /// terminal line.
+    fn painted(line: &Line<'_>) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    /// Alignment is padding, and padding is the whole of it: half the slack
+    /// centres, all of it right-aligns, and a line with no slack stays put.
+    #[test]
+    fn a_centred_row_is_padded_into_the_measure() {
+        let m = map("{.center}\nhi\n", leaf_core::Format::Djot, 20);
+        let lines = wysiwyg_lines(&m, None, &[], &Theme::dark(), 20, |_| None);
+        // 20 columns, two of them glyphs: nine blanks, "hi", nine columns of
+        // nothing. The odd column goes right, which is where a terminal puts it.
+        assert_eq!(painted(&lines[0]), "         hi");
+    }
+
+    /// The other half of the same rule, and the one that has to land on the
+    /// measure's last column exactly — an off-by-one here draws a right-aligned
+    /// line one short of the edge, which reads as neither aligned nor centred.
+    #[test]
+    fn a_right_aligned_row_ends_at_the_measure() {
+        let m = map("{.right}\nhi\n", leaf_core::Format::Djot, 20);
+        let lines = wysiwyg_lines(&m, None, &[], &Theme::dark(), 20, |_| None);
+        assert_eq!(painted(&lines[0]).chars().count(), 20);
+        assert!(painted(&lines[0]).ends_with("hi"));
+    }
+
+    /// The arithmetic on its own, including the two cases that must *not* pad:
+    /// a justified block (a terminal cannot stretch spaces, so it draws left)
+    /// and a line that already fills or overruns the measure.
+    #[test]
+    fn justify_draws_left_and_a_full_line_is_never_padded() {
+        use leaf_core::Align;
+        assert_eq!(align_pad(Some(Align::Center), 4, 10), 3);
+        assert_eq!(align_pad(Some(Align::Right), 4, 10), 6);
+        assert_eq!(align_pad(Some(Align::Justify), 4, 10), 0);
+        assert_eq!(align_pad(None, 4, 10), 0);
+        // No slack, and a row wider than the measure, which must not underflow.
+        assert_eq!(align_pad(Some(Align::Center), 10, 10), 0);
+        assert_eq!(align_pad(Some(Align::Right), 14, 10), 0);
+    }
+
+    /// The run-level colour: a `data-color` span is the text's *foreground*, in
+    /// the theme's own ink for that name — and a highlight inside it keeps its
+    /// wash, because the two properties spell one key and mean two things.
+    #[test]
+    fn a_coloured_run_takes_the_ink_and_a_mark_keeps_its_wash() {
+        let theme = Theme::dark();
+        let m = map(
+            "<span data-color=\"blue\">plain ==\u{1f534} red== end</span>\n",
+            leaf_core::Format::Markdown,
+            40,
+        );
+        let lines = wysiwyg_lines(&m, None, &[], &theme, 40, |_| None);
+        let blue = theme.text_colors[MarkColor::Blue.index()];
+
+        // Ordinary text in the span: the ink, and nothing behind it.
+        let plain = lines[0]
+            .spans
+            .iter()
+            .find(|s| s.content.contains("plain"))
+            .expect("the coloured run draws");
+        assert_eq!(plain.style.fg, Some(blue));
+        assert_eq!(plain.style.bg, None);
+
+        // The highlight inside it: the same ink on the red highlighter's wash.
+        let marked = lines[0]
+            .spans
+            .iter()
+            .find(|s| s.content.contains("red"))
+            .expect("the highlight draws");
+        assert_eq!(marked.style.fg, Some(blue), "the letters are the span's");
+        assert_eq!(
+            marked.style.bg,
+            Some(theme.mark_colors[MarkColor::Red.index()]),
+            "the ground is the highlight's"
+        );
+    }
+
+    /// The inks are not the washes. A wash is pale so black reads on it; ink
+    /// that pale on a light terminal is ink that isn't there, which is why the
+    /// two rows differ and why this one differs by scheme.
+    #[test]
+    fn the_text_inks_are_their_own_row_and_differ_by_scheme() {
+        assert_ne!(Theme::dark().text_colors, MARK_WASHES);
+        assert_ne!(Theme::light().text_colors, MARK_WASHES);
+        assert_ne!(Theme::dark().text_colors, Theme::light().text_colors);
+        // The washes, being a ground under one fixed ink, are the same row in
+        // both — the contrast this one is measured against.
+        assert_eq!(Theme::dark().mark_colors, Theme::light().mark_colors);
+    }
+
+    /// An exact colour is a truecolour cell, painted as the author wrote it —
+    /// the one place the vocabulary's open half reaches a terminal at all.
+    /// Through a document, because the walk is what a reader sees: a
+    /// `data-color="#c03030"` span draws in that colour and not in the theme's.
+    #[test]
+    fn an_exact_colour_is_the_triple_the_author_wrote() {
+        let theme = Theme::dark();
+        let m = map(
+            "<span data-color=\"#c03030\">brand</span>\n",
+            leaf_core::Format::Markdown,
+            40,
+        );
+        let lines = wysiwyg_lines(&m, None, &[], &theme, 40, |_| None);
+        let run = lines[0]
+            .spans
+            .iter()
+            .find(|s| s.content.contains("brand"))
+            .expect("the coloured run draws");
+        assert_eq!(run.style.fg, Some(Color::Rgb(0xc0, 0x30, 0x30)));
+        assert!(
+            !theme.text_colors.contains(&Color::Rgb(0xc0, 0x30, 0x30)),
+            "and not by landing on a palette entry by accident"
+        );
+    }
+
+    /// And the theme gets no say in it: the same triple under both curated
+    /// palettes, where a *name* deliberately differs between them. That pair of
+    /// assertions is the whole of what "exact" means here, and the reason the
+    /// branch is not routed through [`Theme::text_colors`].
+    #[test]
+    fn an_exact_colour_ignores_the_scheme_and_a_name_does_not() {
+        let exact = LStyle {
+            color: Some(leaf_core::TextColor::Rgb {
+                r: 0x1a,
+                g: 0x9f,
+                b: 0x4b,
+            }),
+            ..LStyle::default()
+        };
+        assert_eq!(
+            Theme::dark().to_ratatui(exact).fg,
+            Theme::light().to_ratatui(exact).fg,
+            "an exact colour is the same ink under either appearance"
+        );
+        assert_eq!(
+            Theme::dark().to_ratatui(exact).fg,
+            Some(Color::Rgb(0x1a, 0x9f, 0x4b))
+        );
+
+        let named = LStyle {
+            color: Some(leaf_core::TextColor::Named(MarkColor::Green)),
+            ..LStyle::default()
+        };
+        assert_eq!(
+            Theme::dark().to_ratatui(named).fg,
+            Some(Theme::dark().text_colors[MarkColor::Green.index()]),
+            "a name still resolves through the palette"
+        );
+        assert_ne!(
+            Theme::dark().to_ratatui(named).fg,
+            Theme::light().to_ratatui(named).fg,
+            "and the palette is the theme's, so the two schemes differ"
+        );
+    }
+
+    /// Size and face are ignored, silently: a cell has one size and one face,
+    /// so a run that names either draws exactly as the text around it. Stated
+    /// as a test because "nothing happens" is the kind of behaviour that gets
+    /// implemented by accident later.
+    #[test]
+    fn a_runs_size_and_face_change_nothing() {
+        let theme = Theme::dark();
+        // Both halves of the open type, because both reach a cell: a name from
+        // the menu's seven, and the exact size an *Other…* field writes.
+        let stepped = LStyle {
+            size: Some(leaf_core::FontSize::Step(leaf_core::SizeStep::XxLarge)),
+            font: Some(leaf_core::FaceRef::Generic(leaf_core::FontFamily::Cursive)),
+            ..LStyle::default()
+        };
+        let exact = LStyle {
+            size: leaf_core::FontSize::points(24.0),
+            font: Some(leaf_core::FaceRef::Named(leaf_core::FaceId::of("Garamond"))),
+            ..LStyle::default()
+        };
+        assert_eq!(
+            theme.to_ratatui(stepped),
+            theme.to_ratatui(LStyle::default())
+        );
+        assert_eq!(theme.to_ratatui(exact), theme.to_ratatui(LStyle::default()));
+    }
+}

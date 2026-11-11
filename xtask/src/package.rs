@@ -1,13 +1,11 @@
-//! `cargo xtask package` — Flower for Macs other than the one that built it,
-//! outside the App Store: a Developer ID–signed, notarised and stapled
-//! `Flower.app` inside a signed, notarised and stapled `.dmg`, written to
-//! `target/package/`. Thorn's and Leaf's, ported to this crate's no-dependency
-//! idiom.
+//! `cargo xtask package` — Leaf for Macs other than the one that built it: a
+//! Developer ID–signed, notarised and stapled `Leaf.app` inside a signed,
+//! notarised and stapled `.dmg`, written to `target/package/`.
 //!
-//! The bundle is `cargo xtask mac`'s release build ([`crate::app::bundle`]),
-//! signed again here with the Developer ID identity, the hardened runtime
-//! notarisation asks for, and `apps/flower-dioxus/Flower.entitlements` — the
-//! sandbox, and the files the user picks.
+//! The bundle is `cargo xtask mac`'s, built in release and signed ad hoc,
+//! so that a build works on a machine with no Apple team. Signing for other
+//! Macs happens here and nowhere else: the Developer ID identity, the
+//! hardened runtime notarisation requires, and a secure timestamp.
 //!
 //! Two notarisations, not one. A ticket is looked up by the hash of what it
 //! covers, so the app is notarised and stapled before it goes into the image —
@@ -17,7 +15,7 @@
 //! What this needs from the machine:
 //!
 //! - a `Developer ID Application` identity for the team in the keychain. The
-//!   team is [`TEAM`] unless `DEVELOPMENT_TEAM` names another.
+//!   team is the project's own unless `DEVELOPMENT_TEAM` names another.
 //! - notary credentials, either `NOTARY_KEYCHAIN_PROFILE` (a profile stored
 //!   with `xcrun notarytool store-credentials`) or an App Store Connect API
 //!   key as `APPLE_API_KEY_PATH`, `APPLE_API_KEY_ID` and `APPLE_API_ISSUER_ID`
@@ -26,126 +24,88 @@
 //!
 //! `.github/workflows/mac-app.yml` runs this on a release tag, from secrets.
 //!
-//! Apple Silicon only, for now: the bundle is built for
-//! `aarch64-apple-darwin` alone, and the file name says so.
+//! Apple Silicon only, for now: cargo builds the host's `aarch64-apple-darwin`
+//! alone, and the file name says so.
 
-use crate::app::{APP, APP_DIR, path_str};
-use crate::{Result, Sh};
+use crate::mac::APP as SCHEME;
+use crate::util::{cmd, require_tool, root, run, stdout};
+use anyhow::{Context, Result, bail};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
-/// diaryx-org's Apple team, leaf's and thorn's.
+/// The project's own Apple team, which signs the Mac app.
 const TEAM: &str = "V4322HH5HU";
 
-/// The entitlements `apps/flower-dioxus/Flower.entitlements` grants, which the
-/// signed app must carry.
-const SANDBOX: [&str; 2] = [
-    "com.apple.security.app-sandbox",
-    "com.apple.security.files.user-selected.read-write",
-];
+#[derive(clap::Args)]
+pub struct Args {
+    /// Sign, but do not notarise: an image for checking the build, which
+    /// Gatekeeper on another Mac will still refuse.
+    #[arg(long)]
+    no_notarize: bool,
+}
 
-const USAGE: &str = "usage: cargo xtask package [--no-notarize]";
-
-/// `cargo xtask package …`.
-pub fn package(sh: &Sh, args: &[&str]) -> Result<()> {
-    // Sign, but do not notarise: an image for checking the build, which
-    // Gatekeeper on another Mac will still refuse.
-    let mut no_notarize = false;
-    for &arg in args {
-        match arg {
-            "--no-notarize" => no_notarize = true,
-            "-h" | "--help" => {
-                println!("{USAGE}");
-                return Ok(());
-            }
-            other => return Err(format!("unknown argument `{other}`\n\n{USAGE}")),
-        }
-    }
-
+pub fn run_task(args: Args) -> Result<()> {
     let team = std::env::var("DEVELOPMENT_TEAM").unwrap_or_else(|_| TEAM.to_string());
     let identity = identity(&team)?;
     // Asked before a build that takes minutes, not after it.
-    let notary = if no_notarize {
+    let notary = if args.no_notarize {
         None
     } else {
+        require_tool("xcrun", "install Xcode and its command-line tools")?;
         Some(Notary::from_env()?)
     };
 
-    let built = crate::app::bundle(sh, true)?;
-
-    let out = sh.root.join("target/package");
+    let built = crate::mac::bundle(true)?;
+    let root = root();
+    let out = root.join("target/package");
     if out.exists() {
-        std::fs::remove_dir_all(&out)
-            .map_err(|e| format!("could not clear {}: {e}", out.display()))?;
+        std::fs::remove_dir_all(&out)?;
     }
-    std::fs::create_dir_all(&out)
-        .map_err(|e| format!("could not create {}: {e}", out.display()))?;
-    let app = out.join(format!("{APP}.app"));
+    std::fs::create_dir_all(&out)?;
+    let app = out.join(format!("{SCHEME}.app"));
     // `ditto`, not a plain copy: it keeps the bundle's symlinks, extended
     // attributes and signature intact.
-    sh.run("ditto", &[path_str(&built)?, path_str(&app)?])?;
-    let entitlements = sh.root.join(APP_DIR).join("Flower.entitlements");
-    sh.run(
-        "codesign",
-        &[
-            "--force",
-            "--sign",
-            &identity,
-            // Notarisation refuses code without the hardened runtime.
-            "--options",
-            "runtime",
-            "--timestamp",
-            "--entitlements",
-            path_str(&entitlements)?,
-            path_str(&app)?,
-        ],
-    )?;
-    verify_signature(sh, &app)?;
+    run(cmd("ditto").arg(&built).arg(&app))?;
+    // Notarisation refuses code without the hardened runtime, and wants a
+    // secure timestamp on every signature.
+    run(cmd("codesign")
+        .args(["--force", "--options", "runtime", "--timestamp"])
+        .args(["--sign", &identity.hash])
+        .arg(&app))?;
+    verify_signature(&app)?;
 
     if let Some(notary) = &notary {
-        let zip = out.join(format!("{APP}.zip"));
-        sh.run(
-            "ditto",
-            &["-c", "-k", "--keepParent", path_str(&app)?, path_str(&zip)?],
-        )?;
+        let zip = out.join(format!("{SCHEME}.zip"));
+        run(cmd("ditto")
+            .args(["-c", "-k", "--keepParent"])
+            .arg(&app)
+            .arg(&zip))?;
         notary.submit(&zip)?;
-        remove(&zip)?;
-        sh.run("xcrun", &["stapler", "staple", path_str(&app)?])?;
-        sh.run(
-            "spctl",
-            &["--assess", "--type", "execute", "-vv", path_str(&app)?],
-        )?;
+        std::fs::remove_file(&zip)?;
+        run(cmd("xcrun").args(["stapler", "staple"]).arg(&app))?;
+        run(cmd("spctl")
+            .args(["--assess", "--type", "execute", "-vv"])
+            .arg(&app))?;
     }
 
-    let plist = app.join("Contents/Info.plist");
     let version = stdout(
-        Command::new("/usr/libexec/PlistBuddy")
+        cmd("/usr/libexec/PlistBuddy")
             .args(["-c", "Print :CFBundleShortVersionString"])
-            .arg(&plist),
+            .arg(app.join("Contents/Info.plist")),
     )?;
-    let dmg = out.join(format!("{APP}-{}-aarch64.dmg", version.trim()));
-    image(sh, &app, &dmg)?;
-    sh.run(
-        "codesign",
-        &["--sign", &identity, "--timestamp", path_str(&dmg)?],
-    )?;
+    let dmg = out.join(format!("{SCHEME}-{}-aarch64.dmg", version.trim()));
+    image(&app, &dmg)?;
+    run(cmd("codesign")
+        .args(["--sign", &identity.hash, "--timestamp"])
+        .arg(&dmg))?;
 
     match &notary {
         Some(notary) => {
             notary.submit(&dmg)?;
-            sh.run("xcrun", &["stapler", "staple", path_str(&dmg)?])?;
-            sh.run(
-                "spctl",
-                &[
-                    "--assess",
-                    "--type",
-                    "open",
-                    "--context",
-                    "context:primary-signature",
-                    "-vv",
-                    path_str(&dmg)?,
-                ],
-            )?;
+            run(cmd("xcrun").args(["stapler", "staple"]).arg(&dmg))?;
+            run(cmd("spctl")
+                .args(["--assess", "--type", "open"])
+                .args(["--context", "context:primary-signature", "-vv"])
+                .arg(&dmg))?;
             println!("✓ Signed, notarised and stapled {}", dmg.display());
         }
         None => println!(
@@ -156,101 +116,75 @@ pub fn package(sh: &Sh, args: &[&str]) -> Result<()> {
     Ok(())
 }
 
-/// The SHA-1 of the team's `Developer ID Application` identity. The hash is
-/// what gets passed on, not the name: a certificate imported into more than
-/// one keychain lists once per keychain, and codesign calls a name that
-/// matches twice ambiguous.
-fn identity(team: &str) -> Result<String> {
-    let listing =
-        stdout(Command::new("security").args(["find-identity", "-v", "-p", "codesigning"]))?;
-    // `  1) <SHA-1> "Developer ID Application: <name> (<team>)"`
-    let wanted = format!("({team})\"");
-    listing
-        .lines()
-        .find_map(|line| {
-            let (_, rest) = line.trim().split_once(") ")?;
-            let (hash, name) = rest.split_once(' ')?;
-            (name.starts_with("\"Developer ID Application:") && name.ends_with(&wanted))
-                .then(|| hash.to_string())
-        })
-        .ok_or_else(|| {
-            format!(
-                "no `Developer ID Application` identity for team {team} in the keychain — \
-                 create one at developer.apple.com (Certificates, Identifiers & Profiles) \
-                 or set DEVELOPMENT_TEAM to the team that has one"
-            )
-        })
+/// A signing identity as the keychain lists it. The SHA-1 is what gets passed
+/// on, not the name: a certificate imported into more than one keychain lists
+/// once per keychain, and codesign calls a name that matches twice ambiguous.
+struct Identity {
+    hash: String,
 }
 
-/// A strict check of the signature, and of what notarisation and the
-/// sandbox would otherwise lose without a word: the hardened runtime, no
-/// `get-task-allow`, and the sandbox's entitlements.
-fn verify_signature(sh: &Sh, app: &Path) -> Result<()> {
-    let shown = app.display();
-    let app = path_str(app)?;
-    sh.run(
-        "codesign",
-        &["--verify", "--deep", "--strict", "--verbose=2", app],
-    )?;
+fn identity(team: &str) -> Result<Identity> {
+    let listing = stdout(cmd("security").args(["find-identity", "-v", "-p", "codesigning"]))?;
+    // `  1) <SHA-1> "Developer ID Application: <name> (<team>)"`
+    let wanted = format!("({team})\"");
+    let hash = listing.lines().find_map(|line| {
+        let (_, rest) = line.trim().split_once(") ")?;
+        let (hash, name) = rest.split_once(' ')?;
+        (name.starts_with("\"Developer ID Application:") && name.ends_with(&wanted))
+            .then(|| hash.to_string())
+    });
+    match hash {
+        Some(hash) => Ok(Identity { hash }),
+        None => bail!(
+            "no `Developer ID Application` identity for team {team} in the keychain — \
+             create one at developer.apple.com (Certificates, Identifiers & Profiles) \
+             or set DEVELOPMENT_TEAM to the team that has one"
+        ),
+    }
+}
+
+/// A strict check of the signature, and of the one flag notarisation will
+/// otherwise reject after a round trip of minutes: the hardened runtime.
+fn verify_signature(app: &Path) -> Result<()> {
+    run(cmd("codesign")
+        .args(["--verify", "--deep", "--strict", "--verbose=2"])
+        .arg(app))?;
     // `codesign --display` writes its report to stderr.
-    let report = Command::new("codesign")
-        .args(["--display", "--verbose=2", app])
+    let report = cmd("codesign")
+        .args(["--display", "--verbose=2"])
+        .arg(app)
         .output()
-        .map_err(|e| format!("could not run `codesign`: {e}"))?;
+        .context("could not spawn `codesign`")?;
     let report = String::from_utf8_lossy(&report.stderr);
     if !report
         .lines()
         .any(|l| l.contains("flags=") && l.contains("runtime"))
     {
-        return Err(format!(
-            "{shown} is signed without the hardened runtime, which notarisation refuses:\n{report}"
-        ));
-    }
-    let entitlements =
-        stdout(Command::new("codesign").args(["--display", "--xml", "--entitlements", "-", app]))?;
-    if entitlements.contains("com.apple.security.get-task-allow") {
-        return Err(format!(
-            "{shown} is signed with get-task-allow, which notarisation refuses"
-        ));
-    }
-    for wanted in SANDBOX {
-        if !entitlements.contains(wanted) {
-            return Err(format!(
-                "{shown} is signed without {wanted}, which Flower.entitlements \
-                 grants; the app would ship unsandboxed:\n{entitlements}"
-            ));
-        }
+        bail!(
+            "{} is signed without the hardened runtime, which notarisation refuses:\n{report}",
+            app.display()
+        );
     }
     Ok(())
 }
 
 /// The disk image: the app and a link to `/Applications` to drag it onto.
-fn image(sh: &Sh, app: &Path, dmg: &Path) -> Result<()> {
+fn image(app: &Path, dmg: &Path) -> Result<()> {
     let staging = dmg.with_extension("staging");
-    std::fs::create_dir_all(&staging)
-        .map_err(|e| format!("could not create {}: {e}", staging.display()))?;
-    let staged = staging.join(format!("{APP}.app"));
-    sh.run("ditto", &[path_str(app)?, path_str(&staged)?])?;
-    std::os::unix::fs::symlink("/Applications", staging.join("Applications"))
-        .map_err(|e| format!("could not link /Applications into the image: {e}"))?;
-    sh.run(
-        "hdiutil",
-        &[
-            "create",
-            "-volname",
-            APP,
-            "-fs",
-            "HFS+",
-            "-format",
-            "UDZO",
-            "-ov",
-            "-srcfolder",
-            path_str(&staging)?,
-            path_str(dmg)?,
-        ],
-    )?;
-    std::fs::remove_dir_all(&staging)
-        .map_err(|e| format!("could not remove {}: {e}", staging.display()))
+    std::fs::create_dir_all(&staging)?;
+    run(cmd("ditto")
+        .arg(app)
+        .arg(staging.join(app.file_name().unwrap())))?;
+    std::os::unix::fs::symlink("/Applications", staging.join("Applications"))?;
+    run(cmd("hdiutil")
+        .args([
+            "create", "-volname", SCHEME, "-fs", "HFS+", "-format", "UDZO", "-ov",
+        ])
+        .arg("-srcfolder")
+        .arg(&staging)
+        .arg(dmg))?;
+    std::fs::remove_dir_all(&staging)?;
+    Ok(())
 }
 
 /// How `notarytool` is to authenticate.
@@ -279,17 +213,16 @@ impl Notary {
                 id,
                 issuer,
             }),
-            _ => Err(
-                "no notary credentials: set NOTARY_KEYCHAIN_PROFILE to a profile made \
-                 with `xcrun notarytool store-credentials`, or APPLE_API_KEY_PATH, \
+            _ => bail!(
+                "no notary credentials: set NOTARY_KEYCHAIN_PROFILE to a profile made with \
+                 `xcrun notarytool store-credentials`, or APPLE_API_KEY_PATH, \
                  APPLE_API_KEY_ID and APPLE_API_ISSUER_ID to an App Store Connect API key \
                  — or pass --no-notarize for a signed image only"
-                    .into(),
             ),
         }
     }
 
-    fn auth(&self, command: &mut Command) {
+    fn auth(&self, command: &mut std::process::Command) {
         match self {
             Notary::Profile(profile) => {
                 command.args(["--keychain-profile", profile]);
@@ -307,11 +240,7 @@ impl Notary {
     /// submission settles whatever the verdict, so the status is read from the
     /// output, and a rejection fetches the log that says why.
     fn submit(&self, file: &Path) -> Result<()> {
-        println!(
-            "\x1b[2m$ xcrun notarytool submit {} --wait\x1b[0m",
-            file.display()
-        );
-        let mut submit = Command::new("xcrun");
+        let mut submit = cmd("xcrun");
         submit.args(["notarytool", "submit"]).arg(file);
         self.auth(&mut submit);
         submit.args(["--wait", "--output-format", "json"]);
@@ -321,43 +250,23 @@ impl Notary {
             return Ok(());
         }
         if let Some(id) = json_field(&json, "id") {
-            let mut log = Command::new("xcrun");
+            let mut log = cmd("xcrun");
             log.args(["notarytool", "log", &id]);
             self.auth(&mut log);
             if let Ok(log) = stdout(&mut log) {
                 eprintln!("{log}");
             }
         }
-        Err(format!(
+        bail!(
             "notarisation of {} was not accepted: {json}",
             file.display()
-        ))
+        )
     }
-}
-
-/// Run `command` and return what it printed, failing if it failed.
-fn stdout(command: &mut Command) -> Result<String> {
-    let program = command.get_program().to_string_lossy().into_owned();
-    let output = command
-        .output()
-        .map_err(|e| format!("could not run `{program}`: {e}"))?;
-    if !output.status.success() {
-        return Err(format!(
-            "`{program}` failed ({}):\n{}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr)
-        ));
-    }
-    String::from_utf8(output.stdout).map_err(|_| format!("`{program}` printed non-UTF-8"))
-}
-
-fn remove(file: &Path) -> Result<()> {
-    std::fs::remove_file(file).map_err(|e| format!("could not remove {}: {e}", file.display()))
 }
 
 /// A top-level string field of notarytool's one-line JSON. Enough for the
 /// three keys it prints — `id`, `message`, `status` — without a JSON crate
-/// for a task runner that otherwise has no dependencies at all.
+/// for a task runner that otherwise has no use for one.
 fn json_field(json: &str, key: &str) -> Option<String> {
     let start = json.find(&format!("\"{key}\""))? + key.len() + 2;
     let rest = json[start..].trim_start().strip_prefix(':')?.trim_start();

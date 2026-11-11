@@ -1,0 +1,625 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>leaf · web</title>
+<style>
+  :root {
+    --bg: #1c1f26; --panel: #232730; --text: #d7dce5; --muted: #7a8394;
+    --accent: #7fd1c1; --border: #3a4150; --h3: #d8c56a;
+  }
+  @media (prefers-color-scheme: light) {
+    :root {
+      --bg: #fbfbf9; --panel: #ffffff; --text: #23262c; --muted: #6a7280;
+      --accent: #1e8f7e; --border: #dfe2e8; --h3: #9a7b12;
+    }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; }
+  #app { display: flex; flex-direction: column; height: 100%; max-width: 900px; margin: 0 auto; }
+  header { display: flex; align-items: center; gap: 10px; padding: 10px 16px; color: var(--muted);
+    border-bottom: 1px solid var(--border); font-size: 13px; }
+  header .brand { color: var(--accent); font-weight: 700; }
+  header .dot { color: var(--h3); }
+  header input { font: inherit; font-size: 13px; padding: 3px 8px; border-radius: 6px;
+    border: 1px solid var(--border); background: var(--panel); color: var(--text); width: 160px; }
+  header button { font: inherit; font-size: 12px; padding: 3px 8px; border-radius: 6px;
+    border: 1px solid var(--border); background: var(--panel); color: var(--text); cursor: pointer; }
+  header button.on { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+  #toolbar { display: flex; flex-wrap: wrap; gap: 4px; padding: 8px 12px;
+    border-bottom: 1px solid var(--border); }
+  #toolbar button { font: inherit; font-size: 13px; padding: 4px 9px; border-radius: 6px;
+    border: 1px solid var(--border); background: var(--panel); color: var(--text); cursor: pointer; }
+  #toolbar button:hover { border-color: var(--accent); }
+  #toolbar button.on { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+  /* A control this format cannot spell, or that needs a caret it hasn't got.
+     Dimmed rather than hidden, so the toolbar doesn't reflow as the caret moves
+     in and out of a table. */
+  #toolbar button:disabled { opacity: 0.32; cursor: default; border-color: var(--border); }
+  #toolbar button:disabled:hover { border-color: var(--border); }
+  #toolbar select { font: inherit; font-size: 13px; padding: 3px 6px; border-radius: 6px;
+    border: 1px solid var(--border); background: var(--panel); color: var(--text); cursor: pointer; }
+  #toolbar select:disabled { opacity: 0.32; cursor: default; }
+  #toolbar .sep { width: 1px; background: var(--border); margin: 2px 4px; }
+
+  /* The demo host's renderer for `::embed{src=…}`: a card naming what is
+     embedded rather than the embed itself, so it shows the renderer and stays
+     a demonstration. leaf wraps it as an atom the caret steps over. */
+  .embed-card { border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px;
+    background: var(--panel); font-size: 14px; max-width: 480px; }
+  .embed-card .title { font-weight: 600; color: var(--text); }
+  .embed-card .url { color: var(--muted); font-family: ui-monospace, Menlo, monospace;
+    font-size: 12px; overflow-wrap: anywhere; }
+
+  /* The demo host's Mermaid editor (mermaid-editor.js): a fence is drawn by
+     leaf as its diagram's picture, and opened as its source beside a live
+     preview. A note stands in for an empty diagram or one that will not draw. */
+  .mermaid-drawing { margin: 4px 0; padding: 8px; border: 1px solid var(--border);
+    border-radius: 8px; background: var(--panel); cursor: pointer; text-align: center; }
+  .mermaid-drawing img { max-width: 100%; height: auto; }
+  .mermaid-drawing.fault { color: #c0392b; font: 12px ui-monospace, Menlo, monospace;
+    text-align: left; white-space: pre-wrap; }
+  .mermaid-editor { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 4px 0; }
+  .mermaid-editor textarea { font: 13px/1.5 ui-monospace, Menlo, monospace; min-height: 160px;
+    resize: vertical; padding: 8px; border-radius: 8px; border: 1px solid var(--accent);
+    background: var(--panel); color: var(--text); }
+  .mermaid-editor .mermaid-drawing { margin: 0; cursor: default; }
+
+  /* The demo host's date chip (date-chip.js): leaf draws the chip as a
+     picture in the line, and the chip's calendar opens under its caret while
+     it is open. */
+  .date-popover { position: fixed; z-index: 10; padding: 8px; border-radius: 10px;
+    background: var(--panel); color: var(--text); border: 1px solid var(--border);
+    box-shadow: 0 6px 24px rgba(0,0,0,.25); font: 12px/1.2 -apple-system, system-ui, sans-serif; }
+  .date-popover-head { display: flex; align-items: center; justify-content: space-between;
+    gap: 8px; margin-bottom: 6px; font-weight: 600; }
+  .date-popover-grid { display: grid; grid-template-columns: repeat(7, 26px); gap: 2px; text-align: center; }
+  .date-popover .dow { color: var(--muted); font-size: 11px; padding: 2px 0; }
+  .date-popover button { font: inherit; color: inherit; background: none; border: 0;
+    border-radius: 6px; padding: 4px 0; cursor: pointer; }
+  .date-popover button:hover { background: var(--border); }
+  .date-popover button.on { background: var(--accent); color: var(--bg); }
+
+  /* The editor mounts here; LeafEditor injects its own surface styles. */
+  #editor { flex: 1; min-height: 0; }
+
+  footer { padding: 6px 16px; color: var(--muted); font-size: 12px; border-top: 1px solid var(--border);
+    display: flex; gap: 16px; flex-wrap: wrap; }
+  footer .k { color: var(--accent); }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <span class="brand">🍃 leaf</span>
+    <span class="dot">▸</span>
+    <span>web frontend</span>
+    <span id="fmt">[markdown]</span>
+    <span id="dirty"></span>
+    <span style="flex:1"></span>
+    <input id="find" type="search" placeholder="find — highlights as you type" />
+    <span id="found"></span>
+    <button id="readonly" title="a reading surface: the same rendering, selection and navigation, refusing every edit">read-only</button>
+    <span id="viewname">wysiwyg</span>
+  </header>
+  <div id="toolbar">
+    <button data-cmd="toggleBold" data-cap="bold" id="b-bold"><b>B</b></button>
+    <button data-cmd="toggleItalic" data-cap="italic" id="b-italic"><i>I</i></button>
+    <button data-cmd="toggleCode" data-cap="code" id="b-code">&lt;/&gt;</button>
+    <button data-cmd="toggleMark" data-cap="mark" id="b-mark">▨</button>
+    <!-- The colours of a highlight. A picker rather than seven more buttons,
+         and it is populated from `MARK_COLORS` so the demo cannot offer a
+         colour the editor would refuse. Choosing one over a plain selection
+         highlights it *and* colours it, in one undo step. -->
+    <select id="mark-color" data-cap="mark_color" title="the colour of the highlight at the caret">
+      <option value="">no colour</option>
+    </select>
+    <!-- The text's own colour, beside the highlight's and from the same seven
+         names: a frontend with a red for a highlight has a red for text. This
+         one paints the letters (`data-color` on a span), that one the wash
+         behind them (`data-color` on a mark) — the same key, and they never
+         collide because a mark is a mark and a span is a span. -->
+    <select id="text-color" data-cap="text_color" title="the colour of the text at the caret">
+      <option value="">text colour</option>
+    </select>
+    <div class="sep"></div>
+    <button data-cmd="setParagraph" data-cap="heading">¶</button>
+    <button data-cmd="setHeading" data-arg="1" data-cap="heading" id="b-h1">H1</button>
+    <button data-cmd="setHeading" data-arg="2" data-cap="heading" id="b-h2">H2</button>
+    <button data-cmd="setHeading" data-arg="3" data-cap="heading" id="b-h3">H3</button>
+    <button data-cmd="toggleBlockquote" data-cap="blockquote">❝</button>
+    <button data-cmd="toggleCodeBlock" data-cap="code_block" id="b-codeblock" title="code block (⌘⌥C)">{ }</button>
+    <button data-cmd="toggleList" data-arg="false" data-cap="bullet_list">• List</button>
+    <button data-cmd="toggleList" data-arg="true" data-cap="ordered_list">1. List</button>
+    <div class="sep"></div>
+    <!-- The presentation vocabulary. Alignment and spacing are the caret's
+         block; size, face and colour are the selection, or the block when
+         there is none. Every control is built from the editor's own token
+         lists, so the demo cannot offer a name the document could not carry,
+         and each reflects its `…AtCaret()` query as the caret moves. There is
+         no `left` token — absence is left — so the first button clears. Each
+         menu ends in *Other…*, which asks for the exact value the names
+         cannot spell (`14pt`, `Garamond`, `#c03030`, `1.3`) and is the one
+         place this demo's chrome is more than a list of tokens. -->
+    <button data-align="" data-cap="alignment" id="b-align-">⇤ left</button>
+    <button data-align="center" data-cap="alignment" id="b-align-center">↔ centre</button>
+    <button data-align="right" data-cap="alignment" id="b-align-right">⇥ right</button>
+    <button data-align="justify" data-cap="alignment" id="b-align-justify">≣ justify</button>
+    <select id="line-spacing" data-cap="line_spacing" title="how far apart this block sets its lines">
+      <option value="">spacing</option>
+    </select>
+    <select id="font-size" data-cap="font_size" title="a step larger or smaller than the text around it">
+      <option value="">size</option>
+    </select>
+    <select id="font-family" data-cap="font_family" title="the face this run is set in">
+      <option value="">face</option>
+    </select>
+    <button data-cmd="insertPageBreak" data-cap="page_break">⇟ break</button>
+    <!-- The host's own directives, one button per catalogue item, built from
+         `editor.directiveItems()` — see DIRECTIVES below. leaf offers none of
+         its own: the vocabulary is the host's. -->
+    <span id="directives" style="display:contents"></span>
+    <div class="sep"></div>
+    <button data-cmd="insertFootnote" data-cap="footnote">[^]</button>
+    <button data-cmd="insertThematicBreak" data-cap="thematic_break">──</button>
+    <div class="sep"></div>
+    <button data-cmd="insertTable" data-cap="table">▦ table</button>
+    <button data-cmd="tableInsertRow" data-arg="true" data-cap="table" data-in-table>+ row</button>
+    <button data-cmd="tableInsertColumn" data-arg="true" data-cap="table" data-in-table>+ col</button>
+    <button data-cmd="tableDeleteRow" data-cap="table" data-in-table>− row</button>
+    <div class="sep"></div>
+    <button data-cmd="undo" id="b-undo">↶</button>
+    <button data-cmd="redo" id="b-redo">↷</button>
+    <div style="flex:1"></div>
+    <button data-cmd="toggleView">⌥ source</button>
+  </div>
+  <div id="editor"></div>
+  <footer>
+    <span><span class="k">type</span> to edit</span>
+    <span><span class="k">⌘B/I</span> bold·italic</span>
+    <span><span class="k">⌘⇧C</span> code</span>
+    <span><span class="k">⌘⌥1–6</span> heading</span>
+    <span><span class="k">⌘⇧7/8</span> list</span>
+    <span><span class="k">⌘E</span> toggle view</span>
+    <span><span class="k">⌘Z</span> undo</span>
+    <span><span class="k">⌘-click</span> follow a link or footnote</span>
+    <span><span class="k">drop</span> a picture on the page</span>
+    <span id="marks"></span>
+    <span id="link" class="k"></span>
+  </footer>
+</div>
+
+<script type="module">
+import {
+  LeafEditor,
+  MARK_COLORS,
+  LINE_SPACINGS,
+  SIZE_STEPS,
+  FONT_FAMILIES,
+} from "../../packages/leaf-web/src/index.js";
+import { mermaidEditor, renderMermaid } from "./mermaid-editor.js";
+import { dateEditor, renderDate } from "./date-chip.js";
+
+const SAMPLE = `# leaf on the web 🍃
+
+The **twig**-backed rich-text editor, now compiled to *WebAssembly* and rendered
+by the browser from \`leaf-core\`'s glyph map.
+
+## What this proves
+- The same document model as the TUI and native apps, unchanged
+- The AST→glyph \`VisualMap\` shipped across the wasm boundary as **style runs**
+- Markup resolves live: the \`**\`/\`*\` delimiters are hidden here and revealed
+  in the source view (⌥ source / ⌘E)
+
+## Proportional typography
+Headings step down in **size**, not colour — the same ramp \`leaf-gpui\` uses.
+Body text is a real proportional font, \`code\` is monospace, ==marked== text and
+[links](https://example.com) render inline. Lists too:
+
+1. First ordered item
+2. Second ordered item
+3. Third ordered item
+
+> A blockquote, to show block-level styling in the browser.
+
+## Tables are a grid, not a picture
+Core draws a table twice: as box glyphs for a terminal, and structurally for a
+surface that lays out its own. The browser reads the second and builds a real
+table — so the columns line up in a proportional font, which the box-glyph
+picture cannot do.
+
+| Frontend | Draws a table as | Alignment |
+|---|---|:-:|
+| leaf-tui | the box-glyph picture | ─ |
+| leaf-swift | its own grid | ✓ |
+| leaf-web | its own grid | ✓ |
+
+Put the caret in a cell and the grid controls light up; Tab walks the cells.
+Type in the find box up top and every hit is a highlight the host painted[^1].
+
+[^1]: ⌘-click the reference to come here, and the note's label to go back.
+
+- [ ] click a checkbox to tick it
+- [x] this one is already done
+
+\`\`\`rust
+fn main() {
+    println!("hello from a code block");
+}
+\`\`\`
+
+## Presentation is a vocabulary, not a measurement
+The toolbar's second group writes what a word processor's does — but as *names*
+a stylesheet can select on, never as points or hex. Put the caret in these and
+watch the controls follow it.
+
+<div class="center">
+
+A centred paragraph. The class is what the document carries and what
+\`presentation.css\` selects on, so a page built from this file centres it with
+no leaf present.
+
+</div>
+
+<div data-line-height="1.5">
+
+This block sets its lines one and a half times the theme's own leading — the
+ratio a spacing menu offers, and a multiple rather than a measurement so that
+it still means "open" under a theme with different metrics.
+
+</div>
+
+A run can be <span data-size="large" data-font="serif" data-color="red">larger,
+serif, and red</span> without the document saying how large, which serif, or
+which red: the theme answers all three, and the seven colour names are the ones
+a highlight already uses.
+
+::page-break
+
+Past the break. On this surface it is a dashed rule the caret steps over; in
+print it is \`break-after: page\`, and in leaf-swift's paginated view it opens a
+new page.
+
+## Directives are the host's
+leaf reads every \`::name{…}\` and draws none of them itself: the host says which
+it has and how each one looks. This page draws an embed as a card, and the
+⧉ Embed button up top writes one. The caret steps over it like a picture.
+
+::embed{src="https://diaryx.org"}
+
+An inline directive can be the host's to edit, too: this page draws :date[2026-10-12]
+as a chip. → onto it, or a click, opens it — ← and → walk the year, month and
+day, ↑ and ↓ change one, digits type it, and a calendar opens under it. A label
+that is no date, :date[next week], is drawn red.
+
+## Diagrams are the host's too
+A fence can be drawn and edited by the host. This page hands every
+\`mermaid\` fence to a Mermaid renderer, whose picture leaf lays out like a
+formula's, and to an editor: → in front of it or a click opens its source
+beside a live preview. leaf writes what the editor sends back, one undo step
+at a time, and knows nothing of Mermaid.
+
+\`\`\`mermaid
+graph LR
+  Source --> Doc --> Frame
+  Frame --> Editor
+  Editor -- splices --> Doc
+\`\`\`
+
+## Attachments
+Images, video, and audio are block media — core reserves the row, the browser
+paints the real element over it.
+
+![a leaf](leaf.svg)
+
+<video src="clip.mp4" poster="leaf.svg" controls></video>
+
+<audio src="take.mp3" controls></audio>
+
+*Everything you type is a real \`leaf_core::Doc\` edit — try it.*
+`;
+
+// Dim the controls this document's format has no syntax for. The answer depends
+// only on the format, so it is asked once — but the grid controls also need a
+// caret inside a table, which changes as you move, so those are asked per frame;
+// and a read-only document dims everything that would edit it.
+function applyCapabilities(editor, state) {
+  const caps = editor.capabilities();
+  const inTable = editor.caretInTable();
+  const readOnly = state?.readOnly ?? editor.isReadOnly();
+  for (const btn of document.querySelectorAll("#toolbar button")) {
+    const cap = btn.dataset.cap;
+    const cmd = btn.dataset.cmd;
+    const needsTable = btn.hasAttribute("data-in-table");
+    const spellable = cap == null ? true : !!caps[cap];
+    const edits = cmd !== "toggleView";
+    btn.disabled = !spellable || (needsTable && !inTable) || (readOnly && edits);
+    btn.title = !spellable
+      ? "this format has no syntax for that"
+      : needsTable && !inTable
+        ? "put the caret in a table first"
+        : "";
+  }
+  // The menus dim by their own capability flag the way the buttons do — a
+  // format that cannot spell a size has a size menu that says so rather than
+  // one that refuses on use.
+  for (const sel of document.querySelectorAll("#toolbar select[data-cap]")) {
+    sel.disabled = readOnly || !caps[sel.dataset.cap];
+  }
+  // The colour picker takes both gates: a format that spells a colour on a
+  // highlight (Markdown does, djot doesn't), and something for the colour to
+  // belong to — a highlight the caret is in, or a selection the press would
+  // make one out of.
+  const colors = document.getElementById("mark-color");
+  colors.disabled = readOnly || !caps.mark_color
+    || !(editor.caretInMark() || (state?.hasSelection ?? false));
+  // Follows the caret: the picker shows the colour of the highlight it is
+  // standing in, and falls back to "no colour" outside one.
+  if (state) colors.value = state.markColor ?? "";
+  // The presentation controls follow the caret the same way, but by asking:
+  // the frame carries the highlight's colour and not these, so each is a query
+  // at the caret. Alignment is four buttons of which exactly one is lit, and
+  // the first — clear — is the lit one wherever the document says nothing.
+  const align = editor.alignmentAtCaret();
+  for (const btn of document.querySelectorAll("#toolbar button[data-align]")) {
+    btn.classList.toggle("on", btn.dataset.align === (align ?? ""));
+  }
+  present("line-spacing", editor.lineSpacingAtCaret());
+  present("font-size", editor.fontSizeAtCaret());
+  present("font-family", editor.fontFamilyAtCaret());
+  present("text-color", editor.textColorAtCaret());
+  // History buttons enable by what the frame says there is to undo or redo.
+  if (state) {
+    document.getElementById("b-undo").disabled = !state.canUndo;
+    document.getElementById("b-redo").disabled = !state.canRedo;
+  }
+  document.getElementById("readonly").classList.toggle("on", readOnly);
+}
+
+/** The value of the *Other…* row — a string no token can be, so picking it is
+ *  never mistaken for a value the document could carry. */
+const OTHER = " other";
+
+/**
+ * Show a presentation menu what is in force at the caret. A name is one of the
+ * menu's own rows and just gets selected; an exact value — `14pt`, `Garamond`,
+ * `#c03030`, `1.3` — is not, so it is given a row of its own, kept just above
+ * *Other…* and rewritten as the caret moves, and taken away again when the
+ * caret stands on a name or on nothing. A menu that could not show a value
+ * would say the property was the theme's while the document said otherwise.
+ */
+function present(id, token) {
+  const menu = document.getElementById(id);
+  const exact = menu.querySelector("option.exact");
+  const named = [...menu.options].some((o) => !o.classList.contains("exact") && o.value === token);
+  if (token != null && !named) {
+    const opt = exact ?? menu.insertBefore(document.createElement("option"), menu.lastElementChild);
+    opt.className = "exact";
+    opt.value = opt.textContent = token;
+  } else if (exact) {
+    exact.remove();
+  }
+  menu.value = token ?? "";
+}
+
+// Every hit of the find box as a host-painted highlight. The editor speaks
+// source *byte* offsets, and a JS string is counted in UTF-16 units, so each
+// hit is located in the encoded bytes rather than in the string.
+function findAll(editor, query) {
+  if (!query) { editor.setHighlights([]); return 0; }
+  const bytes = new TextEncoder().encode(editor.source());
+  const needle = new TextEncoder().encode(query);
+  const hits = [];
+  outer: for (let i = 0; i + needle.length <= bytes.length; i++) {
+    for (let j = 0; j < needle.length; j++) if (bytes[i + j] !== needle[j]) continue outer;
+    hits.push({ start: i, end: i + needle.length, id: "hit-" + hits.length });
+    i += needle.length - 1;
+  }
+  editor.setHighlights(hits);
+  return hits.length;
+}
+
+// Reflect editor state onto the app chrome (toolbar lights, dirty flag, footer).
+function syncChrome(state) {
+  document.getElementById("viewname").textContent = state.view;
+  const dirtyEl = document.getElementById("dirty");
+  dirtyEl.textContent = state.dirty ? "● modified" : "";
+  dirtyEl.style.color = "var(--h3)";
+
+  const on = new Set(state.active);
+
+  for (const [id, name] of [["b-bold","bold"],["b-italic","italic"],["b-code","code"],["b-mark","mark"]]) {
+    document.getElementById(id).classList.toggle("on", on.has(name));
+  }
+  for (const lvl of [1,2,3]) {
+    document.getElementById("b-h"+lvl).classList.toggle("on", state.heading === lvl);
+  }
+  document.getElementById("b-codeblock").classList.toggle("on", state.codeBlock);
+  document.getElementById("marks").textContent =
+    (state.heading ? "H"+state.heading+"  " : "") + [...on].join("  ");
+
+  // The link under the caret rides the frame, so the footer can name it without
+  // asking — and without keeping a stale answer when the caret walks out of one.
+  document.getElementById("link").textContent = state.link ? "→ " + state.link : "";
+  if (window.leafEditor) applyCapabilities(window.leafEditor, state);
+}
+
+// The host's directives. The catalogue says which it has — here one, an embed
+// that asks for its URL — and a renderer per name says how each looks: an
+// `::embed{src=…}` is a titled card showing the URL, and any other name, with
+// no renderer, is left to leaf's placeholder.
+const DIRECTIVES = [
+  {
+    id: "directive.embed",
+    name: "embed",
+    title: "Embed",
+    icon: "⧉",
+    ask: async () => {
+      const url = prompt("Embed — the URL to embed", "https://")?.trim();
+      return url && url !== "https://" ? { attrs: [{ key: "src", value: url }] } : null;
+    },
+  },
+];
+
+function renderEmbed(d) {
+  const card = document.createElement("div");
+  card.className = "embed-card";
+  const title = document.createElement("div");
+  title.className = "title";
+  title.textContent = "Embed";
+  const url = document.createElement("div");
+  url.className = "url";
+  url.textContent = d.attrs.find((a) => a.key === "src")?.value || "(no src)";
+  card.append(title, url);
+  return { element: card };
+}
+
+async function main() {
+  await LeafEditor.init();
+  const editor = new LeafEditor(document.getElementById("editor"), {
+    source: SAMPLE,
+    format: "markdown",
+    onChange: syncChrome,
+    directives: DIRECTIVES,
+    regionRenderers: {
+      "directive:embed": renderEmbed,
+      "fence:mermaid": renderMermaid,
+      "directive:date": renderDate,
+    },
+    regionEditors: { "fence:mermaid": mermaidEditor, "directive:date": dateEditor },
+  });
+  // Exposed for poking at from the console (and for driving the demo in tests).
+  window.leafEditor = editor;
+
+  // One button per catalogue item, dimmed by `capabilities().directives` in
+  // `applyCapabilities` as the page break is by `page_break`.
+  for (const item of editor.directiveItems()) {
+    const btn = document.createElement("button");
+    btn.dataset.cap = "directives";
+    btn.dataset.directive = item.id;
+    btn.textContent = `${item.icon ?? ""} ${item.title ?? item.name}`.trim();
+    btn.addEventListener("click", async () => {
+      await editor.insertDirectiveItem(item.id);
+      editor.focus();
+    });
+    document.getElementById("directives").append(btn);
+  }
+  applyCapabilities(editor);
+
+  // Wire the app's toolbar to the editor's command API.
+  for (const btn of document.querySelectorAll("#toolbar button:not([data-directive])")) {
+    btn.addEventListener("click", () => {
+      const cmd = btn.dataset.cmd, arg = btn.dataset.arg;
+      // The alignment group is one command with four arguments, the first of
+      // which is `null` — there is no `left` token, so "left" is clearing it.
+      if (btn.dataset.align != null) editor.setAlignment(btn.dataset.align || null);
+      else if (cmd === "setHeading") editor.setHeading(parseInt(arg, 10));
+      else if (arg != null) editor[cmd](arg === "true");
+      else editor[cmd]();
+      editor.focus();
+    });
+  }
+
+  // The colours, from the editor's own list — one press both highlights and
+  // colours a selection, and `""` (the first option) clears the colour.
+  const colors = document.getElementById("mark-color");
+  for (const name of MARK_COLORS) {
+    const opt = document.createElement("option");
+    opt.value = name;
+    opt.textContent = name;
+    colors.append(opt);
+  }
+  colors.addEventListener("change", () => {
+    editor.highlight(colors.value || null);
+    editor.focus();
+  });
+
+  // The presentation menus, each built from the editor's own token list for the
+  // reason the colours are: a demo that spelled its own would eventually offer
+  // one the document cannot carry. The empty first option is the vocabulary's
+  // absent value — `null`, which clears the key and hands the property back to
+  // the theme.
+  //
+  // Under the names, one more row: *Other…*, which asks for the exact value
+  // the names cannot spell — a point size, a family, a hex triple, a ratio.
+  // A value is exact and not portable, which is the trade the row makes
+  // visible; a demo asks for it with `prompt()`, where the real toolbars open
+  // a field, a font picker or the system colour panel. A refusal is the
+  // grammar's (`14px` is not a size leaf reads), so it is shown rather than
+  // swallowed.
+  for (const [id, tokens, method, ask] of [
+    ["line-spacing", LINE_SPACINGS, "setLineSpacing", "Line spacing, as a ratio — e.g. 1.3"],
+    ["font-size", SIZE_STEPS, "setFontSize", "Size in points — e.g. 14pt"],
+    ["font-family", FONT_FAMILIES, "setFontFamily", "Family name — e.g. Garamond"],
+    ["text-color", MARK_COLORS, "setTextColor", "Colour, as a hex triple — e.g. #c03030"],
+  ]) {
+    const menu = document.getElementById(id);
+    for (const token of tokens) {
+      const opt = document.createElement("option");
+      opt.value = token;
+      opt.textContent = token;
+      menu.append(opt);
+    }
+    const other = document.createElement("option");
+    other.value = OTHER;
+    other.textContent = "Other…";
+    menu.append(other);
+    menu.addEventListener("change", () => {
+      if (menu.value !== OTHER) {
+        editor[method](menu.value || null);
+        editor.focus();
+        return;
+      }
+      // The row is a door, not a selection: it is never what the menu shows
+      // afterwards. What the caret carries is.
+      const typed = prompt(ask);
+      menu.value = "";
+      if (typed && typed.trim()) {
+        try {
+          editor[method](typed.trim());
+        } catch (e) {
+          alert(`leaf will not carry that: ${e.message || e}`);
+        }
+      }
+      editor.focus();
+      // A prompt cancelled, or a value leaf refused, changes nothing — and no
+      // frame arrives to put the menu back where it was.
+      applyCapabilities(editor);
+    });
+  }
+
+  // The find box paints every hit as a highlight; a click on one lands there.
+  const find = document.getElementById("find");
+  find.addEventListener("input", () => {
+    const n = findAll(editor, find.value);
+    document.getElementById("found").textContent = find.value ? `${n} hit${n === 1 ? "" : "s"}` : "";
+  });
+  editor.onActivateHighlight((id) => {
+    const hit = editor.highlights().find((h) => h.id === id);
+    if (hit) editor.reveal(hit.start, hit.end);
+  });
+
+  // A reading surface over the same document.
+  document.getElementById("readonly").addEventListener("click", () => {
+    editor.setReadOnly(!editor.isReadOnly());
+    editor.focus();
+  });
+
+  // A dropped picture, movie, or recording becomes block media where it fell;
+  // a real host would upload the file and insert the URL it came back with.
+  editor.onDropFiles((files, offset) => {
+    for (const file of files) {
+      const kind = file.type.startsWith("video/") ? "video" : file.type.startsWith("audio/") ? "audio" : "image";
+      editor.reveal(offset);
+      editor.insertMedia(kind, URL.createObjectURL(file), file.name);
+    }
+  });
+
+  window._leaf = editor; // handy for console poking / automated checks
+}
+main();
+</script>
+</body>
+</html>

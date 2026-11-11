@@ -1,0 +1,2335 @@
+//  EditorLayout.swift
+//
+//  The platform-neutral geometry of a rendered frame. In the proportional GUI,
+//  core hands back an *unwrapped* `DocView` — one `Row` per block (hard breaks
+//  still split; soft wrapping is ours) — and this wraps each row to the view's
+//  pixel width with Core Text, into a stack of visual lines. It answers the
+//  geometry both the AppKit and UIKit views need: where the caret sits, which
+//  `(row, ch)` a point hits, and how tall the content is. All Core Text +
+//  Foundation, so it compiles once for both toolkits.
+
+import CoreGraphics
+import CoreText
+import Foundation
+import LeafFFI
+
+/// Toolbar/chrome state pushed to the host after every repaint — the subset of a
+/// `DocView` a surrounding UI reflects. Platform-neutral so both views share it.
+public struct EditorState: Equatable {
+    public var view: String          // "wysiwyg" | "source"
+    public var dirty: Bool
+    public var heading: UInt32?      // heading level at the caret, or nil
+    public var active: [String]      // inline marks active at the caret
+    /// The destination of the link the caret stands in, or nil — what lights the
+    /// toolbar's Link button and seeds an edit of that link.
+    ///
+    /// A chrome fact rather than a question a toolbar asks for itself, and for a
+    /// reason `Equatable` below makes plain: the state is only republished when
+    /// it *changes*, so a Link button reading the doc directly would never be
+    /// told the caret had stepped out of a link — no mark, heading, or dirty flag
+    /// moves with it. Nil for a wikilink, which has no node to repoint.
+    public var link: String?
+    /// Whether there is a step to undo, and one to redo — for a toolbar's
+    /// history buttons to enable by, as the Edit menu's items already do
+    /// through the view's `undoManager`. Both false on a read-only document.
+    public var canUndo: Bool
+    public var canRedo: Bool
+    /// The colour of the highlight the caret stands in — which swatch a colour
+    /// menu ticks — and nil both outside a highlight and inside an uncoloured
+    /// one.
+    ///
+    /// Here for `link`'s reason, and more sharply: walking from a red highlight
+    /// into a blue one moves no mark, no heading and no dirty flag, so a palette
+    /// that asked core for itself would never be republished, and would keep the
+    /// first colour ticked.
+    public var markColor: MarkColor?
+    /// Whether a (non-empty) selection is live. What tells "colour the highlight
+    /// I'm in" from "highlight what I've chosen, in this colour" — one press
+    /// that means both, in `LeafEditorModel.highlight(_:)`.
+    public var hasSelection: Bool
+    /// How the block the caret stands in is aligned, and nil for the theme's
+    /// default (left) — which segment of an alignment control is lit.
+    ///
+    /// Here for `link` and `markColor`'s reason, and it is the sharpest case of
+    /// it: walking the caret from a centred paragraph into an ordinary one moves
+    /// no mark, no heading and no dirty flag, so a control asking core for itself
+    /// would never be told, and would keep the centre lit over left-aligned text.
+    ///
+    /// Alignment alone, of the vocabulary's six properties: the other five are
+    /// offered in menus, which are built when they open and can ask the document
+    /// then (`LeafEditorModel.fontSize` and its siblings). A segmented control is
+    /// on screen the whole time and has nothing to ask.
+    public var align: Align?
+    /// Whether the caret stands in a code block — what lights the toolbar's
+    /// Code Block button. Here for `heading`'s reason: walking the caret into
+    /// a fence moves no mark and no heading, so a button asking core for itself
+    /// would never be republished.
+    public var codeBlock: Bool
+    /// Whether the caret stands in a verse — what ticks Format's Verse item and
+    /// lights its Style row. Here for `codeBlock`'s reason.
+    public var verse: Bool
+    /// Whether the caret stands inside a block quote, at any depth — what
+    /// ticks Style's Block Quote row and marks the Style key. A quote wraps
+    /// blocks rather than being one, so this is true alongside `heading` or
+    /// `codeBlock`. Here for `codeBlock`'s reason.
+    public var blockquote: Bool
+    /// Whether the list item at the caret carries a checkbox, and which way it
+    /// faces — `true` ticked, `false` empty, nil for a plain item or no item at
+    /// all. What lights the toolbar's Checklist button and ticks the Format
+    /// menu's Checked item. Here for `codeBlock`'s reason: stepping the caret
+    /// from a bullet into a task item moves no mark and no heading.
+    public var task: Bool?
+
+    /// `link`, `markColor`, `hasSelection`, `align`, `codeBlock`, `blockquote`
+    /// and `task` default so a host that built a state by hand before any of them existed
+    /// still compiles; the frame-projecting initializer below is the real path.
+    public init(view: String, dirty: Bool, heading: UInt32?, active: [String], link: String? = nil,
+                canUndo: Bool = false, canRedo: Bool = false,
+                markColor: MarkColor? = nil, hasSelection: Bool = false,
+                align: Align? = nil, codeBlock: Bool = false, blockquote: Bool = false,
+                task: Bool? = nil, verse: Bool = false) {
+        self.view = view; self.dirty = dirty; self.heading = heading
+        self.active = active; self.link = link
+        self.canUndo = canUndo; self.canRedo = canRedo
+        self.markColor = markColor; self.hasSelection = hasSelection
+        self.align = align; self.codeBlock = codeBlock; self.blockquote = blockquote
+        self.task = task; self.verse = verse
+    }
+
+    /// Project a full `DocView` down to the chrome-facing state.
+    public init(_ v: DocView) {
+        // The caret's own row carries its block's alignment — core puts it on
+        // every row the block emits, so there is no second question to ask.
+        let caretRow = Int(v.caretRow)
+        self.init(view: v.view, dirty: v.dirty, heading: v.heading, active: v.active, link: v.link,
+                  canUndo: v.canUndo, canRedo: v.canRedo,
+                  markColor: v.markColor, hasSelection: v.hasSelection,
+                  align: v.rows.indices.contains(caretRow) ? Align(name: v.rows[caretRow].align) : nil,
+                  codeBlock: v.codeBlock, blockquote: v.blockquote, task: v.task, verse: v.verse)
+    }
+}
+
+extension Row {
+    /// Whether this is the blank row core spells a block boundary with — no caret
+    /// home, and drawn short so a boundary reads as spacing rather than as an
+    /// empty line the user didn't type.
+    ///
+    /// Core's own answer, not a guess read back out of the glyphs. It used to be
+    /// the latter — a decoration row whose runs were all whitespace once the
+    /// quote/list prefix was dropped — which had to know that a boundary *inside*
+    /// a blockquote still carries the quote's gutter, and would have gone on
+    /// growing a clause per block decoration core learned to draw. `boundary`
+    /// says it once, for every frontend.
+    var isBlockGap: Bool { boundary != nil }
+
+    /// Whether a run of `role` is block decoration a row can open with: a
+    /// quote's gutter, a list item's marker, or the blank indent its marker
+    /// becomes on the item's later rows.
+    static func isPrefixRole(_ role: String) -> Bool {
+        role == "quote" || role == "list" || role == "list-indent"
+    }
+
+    /// The row's leading block decoration — a blockquote's `│ ` gutters and a
+    /// list's indent/bullet. Core emits these as synthetic glyphs in front of the
+    /// row's real content, one gutter per nesting level, so the prefix is exactly
+    /// the run of leading `quote`/`list` runs.
+    var prefixRuns: [Run] {
+        Array(runs.prefix { Self.isPrefixRole($0.role) })
+    }
+
+    /// The UTF-16 length of `prefixRuns` — where the row's own text starts in
+    /// its attributed string, which is what a range continuing onto this row
+    /// from the one above begins at.
+    var prefixLength: Int { prefixRuns.reduce(0) { $0 + $1.text.utf16.count } }
+
+    /// The task checkbox this row draws, as core's `☐ `/`☑ ` list marker and
+    /// the UTF-16 offset it starts at — nil on every row that carries no box,
+    /// a plain bullet's included. Core puts the box in the marker's place on a
+    /// task item's first row, so it is one of the prefix runs above, and its
+    /// `src` is the item's own: what `toggleTaskAt` wants.
+    var taskMarker: (run: Run, start: Int)? {
+        var start = 0
+        for run in prefixRuns {
+            if run.role == "list", let first = run.text.first, first == "☐" || first == "☑" {
+                return (run, start)
+            }
+            start += run.text.utf16.count
+        }
+        return nil
+    }
+
+    /// Whether this row is a thematic break — a `---` drawn as a line across the
+    /// text column rather than as core's row of `─` glyphs.
+    ///
+    /// A break is everything after the prefix being rule-role dashes. That tells
+    /// it apart from the other rows carrying `Role::Rule`: a table's box-drawing
+    /// rules are `decoration` rows, and a table's content rows mix their `│`
+    /// separators with real cell text.
+    var isThematicBreak: Bool {
+        guard !decoration, !code else { return false }
+        let body = runs.drop { Self.isPrefixRole($0.role) }
+        guard !body.isEmpty else { return false }
+        return body.allSatisfy { run in
+            run.role == "rule" && !run.text.isEmpty && run.text.allSatisfy { $0 == "─" }
+        }
+    }
+
+    /// Whether this row is `other` but for the selection: the same text in the
+    /// same marks, whether or not any of it is selected. `==` says no to a row
+    /// a drag has just crossed — the selection splits its runs and flags them —
+    /// and a view reading `==` as "the text changed" would re-check the
+    /// spelling of the whole document, and tell its host of an edit, on every
+    /// step of the drag. This is the question those want answered.
+    ///
+    /// Read by merging each row's runs back together with the selection
+    /// forgotten: two runs the selection parted differ from the one they were
+    /// only in `sel` and in the second's `src`, which is the first's plus its
+    /// text. So a run whose every other field matches its predecessor's is
+    /// its predecessor's text continued.
+    func sameText(as other: Row) -> Bool {
+        sameRuns(as: other, placed: true)
+    }
+
+    /// Whether this row shapes as `other` does: `sameText`, and further
+    /// forgetting where each run came from. A keystroke moves the source
+    /// offset of every run after it, and a `Row` carrying its offsets is a
+    /// different value on every row below the edit — so keyed by value, the
+    /// shape cache missed on all of them and half the document was shaped
+    /// again per character typed. Shaping reads a run's text and marks, never
+    /// its offset or its selection, so this is what says a shape still fits.
+    func sameShape(as other: Row) -> Bool {
+        sameRuns(as: other, placed: false)
+    }
+
+    private func sameRuns(as other: Row, placed: Bool) -> Bool {
+        var mine = self, theirs = other
+        mine.runs = []
+        theirs.runs = []
+        guard mine == theirs else { return false }
+        return Row.mergedRuns(runs, placed: placed) == Row.mergedRuns(other.runs, placed: placed)
+    }
+
+    /// The runs with the selection forgotten and, unless `placed`, their
+    /// offsets too — merged back together where the selection parted them.
+    private static func mergedRuns(_ runs: [Run], placed: Bool) -> [Run] {
+        var out: [Run] = []
+        out.reserveCapacity(runs.count)
+        for var run in runs {
+            run.sel = false
+            if !placed { run.src = 0 }
+            if var last = out.last {
+                var next = run
+                next.text = last.text
+                next.src = last.src
+                if next == last {
+                    last.text += run.text
+                    out[out.count - 1] = last
+                    continue
+                }
+            }
+            out.append(run)
+        }
+        return out
+    }
+}
+
+/// Where one frame's rows differ from the frame before's: the range of each
+/// outside their common prefix and suffix — the rows an edit or a selection
+/// touched. `nil` in a caller's hand means they are the same rows. Found by
+/// `changedRange` when two whole frames are in hand, and read straight off a
+/// frame core answered as a change (`DocView.apply`).
+typealias RowChange = (new: Range<Int>, old: Range<Int>)
+
+extension DocView {
+    /// Whether this frame is the change since the frame before rather than
+    /// the whole document — core's `basis` names the frame the change is
+    /// against, and is zero on a whole one. See `LeafDoc.setIncrementalFrames`.
+    var isChange: Bool { basis != 0 }
+
+    /// Apply `change`, a frame core answered as the change since this one —
+    /// which has to be the frame it names as its `basis` — so that this
+    /// becomes the whole frame it stands for: its rows spliced over the ones
+    /// they replace, every run after them moved by `srcShift` (an edit moves
+    /// the source of everything below it, and those rows are otherwise the
+    /// frame before's), and the rest of the frame — the caret, the selection,
+    /// the blocks — taken as it came, since it is complete on every frame.
+    /// O(the span) plus a move of the rows, and no row outside the span is
+    /// lifted, hashed or compared.
+    ///
+    /// Returns where the rows differ, in `changedRange`'s terms, and the rows
+    /// the span replaced — what `Row.sameText` reads to tell an edit from a
+    /// selection — since after this they are gone. A change that replaced no
+    /// row but moved the rows below it — a comment pasted between two
+    /// paragraphs is source with no row to show — is an empty span at
+    /// `rowStart`, not `nil`: the rows from there are different values by
+    /// their offsets, and `nil` says they are the same rows.
+    mutating func apply(_ change: DocView) -> (change: RowChange?, replaced: [Row]) {
+        precondition(change.basis == frame, "a change against frame \(change.basis) applied to frame \(frame)")
+        let start = Int(change.rowStart)
+        let span = start..<(start + Int(change.replaced))
+        // Taken out of this frame first, so the array is ours alone and the
+        // splice and the move happen in place rather than on a copy.
+        var rows = self.rows
+        self.rows = []
+        let replaced = Array(rows[span])
+        rows.replaceSubrange(span, with: change.rows)
+        if change.srcShift != 0 {
+            let shift = Int(change.srcShift)
+            for i in (start + change.rows.count)..<rows.count {
+                for j in rows[i].runs.indices {
+                    rows[i].runs[j].src = UInt32(Int(rows[i].runs[j].src) + shift)
+                }
+            }
+        }
+        var whole = change
+        whole.rows = rows
+        whole.basis = 0
+        whole.rowStart = 0
+        whole.replaced = 0
+        whole.srcShift = 0
+        self = whole
+        let changed: RowChange? = change.rows.isEmpty && span.isEmpty && change.srcShift == 0
+            ? nil : (start..<(start + change.rows.count), span)
+        return (changed, replaced)
+    }
+}
+
+extension Array where Element == Row {
+    /// Where these rows differ from `old`, as the range of each that is
+    /// outside their common prefix and suffix — the rows an edit or a
+    /// selection touched — or `nil` when they are the same rows. What a frame
+    /// reuses of the frame before is everything outside this.
+    ///
+    /// A row inside the range may still be `==` to the one it stands
+    /// opposite: the suffix is matched from the end and the prefix from the
+    /// start, and a change in the middle leaves the rows between as changed.
+    ///
+    /// `same` is what makes two rows the same row — `==` unless a caller has
+    /// a looser question, as the layout does of a shape.
+    func changedRange(from old: [Row],
+                      by same: (Row, Row) -> Bool = { $0 == $1 }) -> RowChange? {
+        var prefix = 0
+        let shortest = Swift.min(count, old.count)
+        while prefix < shortest && same(self[prefix], old[prefix]) { prefix += 1 }
+        if prefix == count && prefix == old.count { return nil }
+        var suffix = 0
+        while suffix < shortest - prefix
+            && same(self[count - 1 - suffix], old[old.count - 1 - suffix]) {
+            suffix += 1
+        }
+        return (prefix..<(count - suffix), prefix..<(old.count - suffix))
+    }
+
+    /// `change`, found by `==`, narrowed by a looser question: the rows at
+    /// either end of the span that are `same` as the ones they stand opposite
+    /// (`old(i)` is the frame before's row `i`) are taken out of it, and `nil`
+    /// is a span with nothing left in it. What `changedRange(from:by:)` with
+    /// the same question finds, without a walk over the rows outside the span.
+    func narrowed(_ change: RowChange, from old: (Int) -> Row,
+                  by same: (Row, Row) -> Bool) -> RowChange? {
+        var (new, was) = change
+        while !new.isEmpty, !was.isEmpty, same(self[new.lowerBound], old(was.lowerBound)) {
+            new = (new.lowerBound + 1)..<new.upperBound
+            was = (was.lowerBound + 1)..<was.upperBound
+        }
+        while !new.isEmpty, !was.isEmpty, same(self[new.upperBound - 1], old(was.upperBound - 1)) {
+            new = new.lowerBound..<(new.upperBound - 1)
+            was = was.lowerBound..<(was.upperBound - 1)
+        }
+        return new.isEmpty && was.isEmpty ? nil : (new, was)
+    }
+
+    /// Whether these rows are `old` but for the selection — `Row.sameText`
+    /// over the rows `changedRange` names, since the rest are `==` already.
+    func sameText(as old: [Row]) -> Bool {
+        sameText(as: old, over: changedRange(from: old))
+    }
+
+    /// `sameText(as:)` for a caller that has `changedRange(from: old)` in hand.
+    func sameText(as old: [Row], over change: RowChange?) -> Bool {
+        guard let (new, was) = change else { return true }
+        guard new.count == was.count else { return false }
+        return zip(self[new], old[was]).allSatisfy { $0.sameText(as: $1) }
+    }
+}
+
+/// One pixel-wrapped visual line within a logical row. Its `CTLine` is built over
+/// the line's *substring*, so its string indices are relative to `start`; callers
+/// convert with `ch - start`. `start`/`length` are UTF-16 offsets into the row.
+struct WrappedLine {
+    let attributed: NSAttributedString   // the substring this visual line draws
+    let line: CTLine                     // geometry over that substring (indices relative to `start`)
+    let start: Int                       // absolute UTF-16 offset of the line within the row
+    let length: Int                      // UTF-16 length of the line
+    let width: CGFloat                   // typographic width, points
+    /// How far right of the text margin this line is drawn. Zero on a row's first
+    /// visual line (its own prefix glyphs already inset it) and the prefix's width
+    /// on every continuation line, so a wrapped quote or list item hangs under its
+    /// own text rather than sliding back under the gutter.
+    var indent: CGFloat = 0
+    /// How far further right the block's alignment pushes this line: half the
+    /// room it leaves in the column when the block is centred, all of it when it
+    /// is right-aligned, and zero for the default (left) and for a justified
+    /// block, which fills the room instead of moving.
+    ///
+    /// Alignment is an *offset* here rather than a paragraph style's
+    /// `NSTextAlignment` because nothing in this layout goes through a paragraph
+    /// style: rows are shaped and drawn line by line with Core Text, and the
+    /// caret, the hit test and the selection fill all read their x off the same
+    /// line the glyphs are drawn from. An offset keeps those four in step by
+    /// construction; an alignment on the drawn string would move the glyphs and
+    /// leave the caret where the text used to be. (A right-to-left default is a
+    /// separate question — see `docs/tasks/right-to-left-text.md`.)
+    var align: CGFloat = 0
+    /// How much taller than its row's line height this line stands: what an
+    /// inline formula on it reaches above the text's ascent and below its
+    /// descent. Zero on every line without one. A fraction or a big operator
+    /// is taller than a line of text, and a line box cut to the text would
+    /// clip the picture and lay the next line over it.
+    var rise: CGFloat = 0
+
+    /// Where this line's glyphs start, relative to the row's own origin — the
+    /// hanging indent plus the alignment. Every x in the layout is measured from
+    /// this, so a caret, a selection rect and a drawn glyph cannot disagree.
+    var offset: CGFloat { indent + align }
+}
+
+/// The expensive, position-independent shaping of one row: its attributed string
+/// and the visual lines it wrapped into at `wrapWidth`. Cached across frames keyed
+/// by the row's *value*, so an edit re-shapes only the row(s) that changed —
+/// everything else, including every row below an insert/delete, is reused. A cache
+/// hit is only valid at the same `wrapWidth`; a resize rebuilds. (A selection-only
+/// edit flips a run's `sel` and re-shapes that row, which is harmless — `sel` isn't
+/// in the attributed string; the selection is filled separately.)
+struct ShapedRow {
+    let attributed: NSAttributedString
+    let wrapped: [WrappedLine]
+    let lineHeight: CGFloat
+    let wrapWidth: CGFloat
+    /// The width of the row's leading block decoration (quote gutters, list
+    /// indent) — the hanging indent its continuation lines carry.
+    var prefixWidth: CGFloat = 0
+    /// Where each blockquote gutter bar sits, relative to the text margin: one x
+    /// per nesting level, measured at the level's `│` glyph. Empty off a quote.
+    var quoteBarXs: [CGFloat] = []
+
+    /// The height of visual line `i`: the row's line height, and whatever an
+    /// inline formula on that line stands beyond it.
+    func lineHeight(_ i: Int) -> CGFloat {
+        lineHeight + (wrapped.indices.contains(i) ? wrapped[i].rise : 0)
+    }
+
+    /// How far below the first line's top line `i` starts — the heights of the
+    /// lines above it.
+    func lineOffset(_ i: Int) -> CGFloat {
+        CGFloat(i) * lineHeight + wrapped.prefix(max(0, i)).reduce(0) { $0 + $1.rise }
+    }
+
+    /// The height of every line together.
+    var linesHeight: CGFloat { lineOffset(max(1, wrapped.count)) }
+}
+
+/// One logical row (block) placed in the document: its shaping plus a top offset.
+///
+/// Table rows are the exception. To keep `rows` 1:1 with the frame's rows (every
+/// caret/click path indexes `rows` by a core row index), a table's box-glyph
+/// picture rows are kept — but each carries the laid-out `table` grid instead of
+/// text, only the FIRST one (`tableFirst`) has any height, and all of them draw
+/// the grid rather than their glyphs. The caret and hit-testing over a table read
+/// the grid, not these rows' shaping.
+struct RowLayout {
+    let row: Row
+    let shaped: ShapedRow
+    let top: CGFloat
+    /// The text column this row was laid out in — its left edge and width in view
+    /// coordinates. Uniform across a frame (every row shares the layout's column),
+    /// but carried here so a row can answer where its own chrome goes without the
+    /// caller threading the column through. See `EditorTheme.column(in:)`.
+    var originX: CGFloat = 0
+    var columnWidth: CGFloat = 0
+    /// The grid, on every picture row of a table; `nil` for an ordinary row.
+    var table: TableLayout? = nil
+    /// The grid's top (all of a table's rows share it — they collapse onto it).
+    var tableTop: CGFloat = 0
+    /// The one picture row that carries the grid's height and paints it.
+    var tableFirst: Bool = false
+    /// The table's bottom border row — the picture row whose end core makes
+    /// the table's trailing caret stop, the one home past the last cell. A
+    /// click under the grid resolves to this row's end, and the caret standing
+    /// there draws at the grid's trailing edge (`caretRect(src:row:ch:)`).
+    var tableLast: Bool = false
+    /// The media box, on every placeholder row of a block image/video/audio;
+    /// `nil` for an ordinary row. Collapsed exactly as a table's rows are — see
+    /// `mediaFirst`.
+    var media: MediaLayout? = nil
+    /// The box's top (all of a media's reserved rows share it).
+    var mediaTop: CGFloat = 0
+    /// The one placeholder row that carries the box's height and paints it.
+    var mediaFirst: Bool = false
+    /// The picture box, on every row of a block region drawn as its picture —
+    /// a display formula, a fence or a directive whose kind has a renderer;
+    /// `nil` for an ordinary row. Collapsed exactly as a media box's rows are.
+    var picture: PictureLayout? = nil
+    /// The box's top (all of a region's reserved rows share it).
+    var pictureTop: CGFloat = 0
+    /// The one placeholder row that carries the box's height and paints it.
+    var pictureFirst: Bool = false
+    /// The box of the host's view standing over the open region, on every row
+    /// of that region; `nil` on every other row. Collapsed exactly as a media
+    /// box's rows are.
+    var hosted: HostedLayout? = nil
+    /// The box's top (all of the region's rows share it).
+    var hostedTop: CGFloat = 0
+    /// The one row that carries the box's height.
+    var hostedFirst: Bool = false
+    /// Header space reserved above this row's own text for a directive's audience
+    /// label (nonzero only on a directive block's first, labeled row) — keeps the
+    /// label from painting over that row's real content. See `EditorTheme.directiveLabelHeight`.
+    var labelInset: CGFloat = 0
+    /// The height of a block-boundary gap row, which depends on the blocks it
+    /// falls *between* (see `EditorTheme.blockGap(between:and:)`) and so can't
+    /// come from the row's own shaping — the same blank row is a wide margin above
+    /// a heading and a tight one inside a list. Nil on every other row, and the
+    /// reason gap height isn't folded into `ShapedRow`, whose cache is keyed by
+    /// row *value* and would hand a heading's margin to a list.
+    var gapHeight: CGFloat? = nil
+    /// The sheet this row starts on, in the paginated flow. Always 0 in the
+    /// continuous one, which is a single unbounded sheet.
+    var page: Int = 0
+    /// Whether this row is a page break — core's `::page-break` leaf directive,
+    /// named in the frame's `directives` rather than readable off the row itself.
+    ///
+    /// Paginated, the break has already been *spent* by the time anything reads
+    /// this: the row opened the next sheet and took no height of its own (see
+    /// `gapHeight`), so there is nothing left to draw. Continuously there is no
+    /// page to turn, so the row keeps a line box and the view draws a dashed
+    /// hairline across it — the reader's only sign of where the paper would end.
+    var pageBreak: Bool = false
+    /// The origin of each visual line, when the row's lines are *not* evenly
+    /// spaced down from `top` at a single x — which is what a break inside a
+    /// paragraph makes of them. A page break moves a line's y; a *column* break
+    /// moves its x as well, and back up the sheet.
+    ///
+    /// Empty in the continuous flow, where `(originX, top + labelInset +
+    /// shaped.lineOffset(i))` is exact and there is nothing to store. `lineOrigin(_:)` is
+    /// the one accessor both cases go through, so every caller reads line
+    /// positions the same way.
+    var lineOrigins: [CGPoint] = []
+
+    var attributed: NSAttributedString { shaped.attributed }
+    var wrapped: [WrappedLine] { shaped.wrapped }
+    /// The height of visual line `i` — see `ShapedRow.lineHeight(_:)`.
+    func lineHeight(_ i: Int) -> CGFloat { shaped.lineHeight(i) }
+    /// The block's total height — the grid's height on a table's first row, zero
+    /// on its other (collapsed) rows, a boundary's contextual gap, else the label
+    /// inset (if any) plus the height of each visual line.
+    ///
+    /// A split row measures from the top of its highest line to the bottom of its
+    /// lowest — the union of its `bands`, not a reach downward from `top`, since a
+    /// column break puts some of its lines *above* where it started. Continuously
+    /// that is exactly the old formula.
+    var height: CGFloat {
+        if let t = table { return tableFirst ? t.height : 0 }
+        if let m = media { return mediaFirst ? m.height : 0 }
+        if let p = picture { return pictureFirst ? p.height : 0 }
+        if let h = hosted { return hostedFirst ? h.height : 0 }
+        if let gapHeight { return gapHeight }
+        guard !lineOrigins.isEmpty else {
+            return labelInset + shaped.lineOffset(shaped.wrapped.count)
+        }
+        let boxes = lineBoxes
+        guard let first = boxes.first else { return 0 }
+        let minY = boxes.reduce(first.minY) { min($0, $1.minY) }
+        let maxY = boxes.reduce(first.maxY) { max($0, $1.maxY) }
+        return maxY - minY
+    }
+
+    /// The origin of visual line `i`. Evenly spaced down from the row's own top at
+    /// the row's own x in the continuous flow; read off `lineOrigins` once
+    /// pagination has placed the lines itself, which it does the moment a page is
+    /// set.
+    func lineOrigin(_ i: Int) -> CGPoint {
+        lineOrigins.indices.contains(i)
+            ? lineOrigins[i]
+            : CGPoint(x: originX, y: top + labelInset + shaped.lineOffset(i))
+    }
+
+    /// The top of visual line `i` — `lineOrigin(_:).y`, for the callers that only
+    /// ever wanted the vertical half.
+    func lineTop(_ i: Int) -> CGFloat { lineOrigin(i).y }
+
+    /// The row's drawn boxes, one per visual line — or the single box a table, a
+    /// media block, or a boundary row occupies, those being placed whole. What a
+    /// hit-test searches, since a point resolves to a *line*.
+    var lineBoxes: [CGRect] {
+        if table != nil || media != nil || picture != nil || hosted != nil || gapHeight != nil {
+            return height > 0
+                ? [CGRect(x: originX, y: top, width: columnWidth, height: height)]
+                : []
+        }
+        return wrapped.indices.map { i in
+            let o = lineOrigin(i)
+            return CGRect(x: o.x, y: o.y, width: columnWidth, height: lineHeight(i))
+        }
+    }
+
+    /// `lineBoxes` merged wherever two lines actually touch — one band covering
+    /// the whole row in the continuous flow, and one per column once a break has
+    /// split it.
+    ///
+    /// This is what anything painted *behind* the text measures itself against: a
+    /// code block's fill, a blockquote's gutter bar, a directive's outline. Using
+    /// `height` for those would stretch them over the gap between two sheets, or
+    /// clean across the gutter between two columns — and the backdrop and the
+    /// gutter are the two places a block's own background must never appear. The
+    /// label strip belongs to the first band, since it sits above the first line
+    /// and travels with it.
+    var bands: [CGRect] {
+        var out: [CGRect] = []
+        for box in lineBoxes {
+            if let last = out.last, abs(last.maxY - box.minY) < 0.5, abs(last.minX - box.minX) < 0.5 {
+                out[out.count - 1].size.height += box.height
+            } else {
+                out.append(box)
+            }
+        }
+        if labelInset > 0, !out.isEmpty {
+            out[0].origin.y -= labelInset
+            out[0].size.height += labelInset
+        }
+        return out
+    }
+
+    /// Where a code row's fill goes: each band, from the end of the row's
+    /// prefix, reaching `codeFillOutset` past the text on either side. The
+    /// prefix — a list item's bullet, a quote's gutter — stands beside the
+    /// block the way it stands beside a paragraph, rather than inside its
+    /// tint; a row with no prefix fills from just before the margin, as it
+    /// always has.
+    var codeFills: [CGRect] {
+        let prefix = shaped.prefixWidth, outset = AttributedRow.codeFillOutset
+        return bands.map { b in
+            CGRect(x: b.minX + prefix - outset, y: b.minY,
+                   width: b.width - prefix + 2 * outset, height: b.height)
+        }
+    }
+
+    /// The blockquote gutter bars this row carries, in view coordinates — one
+    /// rect per nesting level, spanning the row's whole height so consecutive
+    /// quoted rows tile into one unbroken bar. A table's picture rows are skipped:
+    /// the grid they draw isn't inset by the prefix, so a bar there would sit on
+    /// top of the table rather than beside it.
+    func quoteBars(theme: EditorTheme) -> [CGRect] {
+        // A table is skipped (its grid isn't prefix-inset, so a bar would land on
+        // top of it), but a media box *is* drawn inset by the row's prefix — core
+        // emits the same gutter glyphs in front of a block image as any other
+        // block — so a quoted picture keeps its bar beside it.
+        guard table == nil else { return [] }
+        // One bar per level per band, so a quote broken across two sheets — or two
+        // columns — gets a bar down each of them rather than one running over the
+        // gap between. The band carries its own x, which is what a column break
+        // moves.
+        return bands.flatMap { band in
+            shaped.quoteBarXs.map { x in
+                CGRect(x: band.minX + x, y: band.minY,
+                       width: theme.quoteBarWidth, height: band.height)
+            }
+        }
+    }
+
+    /// Whether the row's glyphs are what is drawn for it. A table's grid, a
+    /// picture, a region's picture and the open region's view are each drawn
+    /// *instead* of the placeholder glyphs core puts on their rows.
+    var drawsItsGlyphs: Bool { table == nil && media == nil && picture == nil && hosted == nil }
+
+    /// Whether this row belongs inside a directive's dashed outline — a
+    /// `:::name{.class}` aside, which reads as a bordered panel.
+    ///
+    /// A page break is a directive and gets none: it is drawn as the hairline
+    /// where the paper ends, and a box around that hairline would say a block of
+    /// content stands there. A table inside a directive gets none either — it has
+    /// no drawable rect of its own here, and never has had. Nor does a leaf
+    /// directive drawn as its renderer's picture, or open in a host's view:
+    /// the picture is the drawing, and a dashed box around it would be leaf's
+    /// frame on the host's picture.
+    var isChromedDirective: Bool {
+        row.directive && table == nil && !pageBreak && picture == nil && hosted == nil
+    }
+
+    /// The open region's view's frame, on the row that carries it; `nil` on
+    /// every other row. Inset by the row's own prefix, as a picture is.
+    var hostedRect: CGRect? {
+        guard hostedFirst, let h = hosted else { return nil }
+        return h.rect(top: hostedTop, left: originX + shaped.prefixWidth)
+    }
+
+    /// A page break's drawn line in the continuous flow: the same hairline a
+    /// thematic break gets, in the same place, which the view strokes dashed
+    /// rather than filling — the difference between "a division the author wrote
+    /// into the text" and "where the paper would end". `nil` on every other row,
+    /// and on a break the paginated flow has already spent (it has no height
+    /// left to draw in).
+    func pageBreakLine(theme: EditorTheme) -> CGRect? {
+        guard pageBreak, table == nil, height > 0 else { return nil }
+        return hairline(theme: theme)
+    }
+
+    /// A thematic break's drawn line, in view coordinates: a hairline centred in
+    /// the row's box, running from past the row's own prefix to the right edge of
+    /// the text column. `nil` on every other row.
+    func ruleLine(theme: EditorTheme) -> CGRect? {
+        guard row.isThematicBreak, table == nil else { return nil }
+        return hairline(theme: theme)
+    }
+
+    /// The rect a rule across this row occupies — shared by the two rows that
+    /// draw one, so a page break and a thematic break cannot end up at different
+    /// x's on the same page.
+    private func hairline(theme: EditorTheme) -> CGRect {
+        // Measured off the line's own origin rather than the row's: a break is a
+        // single line, but reading its position off the line keeps it right
+        // wherever pagination put that line — including in the second column.
+        let o = lineOrigin(0)
+        let x = o.x + shaped.prefixWidth
+        let right = o.x + max(columnWidth, shaped.prefixWidth)
+        return CGRect(x: x, y: (o.y + lineHeight(0) * 0.5 - theme.ruleThickness / 2).rounded(),
+                      width: max(0, right - x), height: theme.ruleThickness)
+    }
+}
+
+/// The vertical cursor rows are placed against.
+///
+/// In the continuous flow it is a plain running `y` and every method here is a
+/// no-op — one unbounded sheet, which is what a scrolling document is. With a
+/// `PageSetup` it is the same `y` walked down a stack of sheets, jumping to the
+/// next sheet's top margin when what comes next won't fit under the current
+/// one's bottom. Keeping both cases on one cursor is what lets the layout below
+/// stay a single walk: pagination is a change to *how `y` advances*, and nothing
+/// downstream of `RowLayout.top` needs to know which flow produced it.
+private struct Flow {
+    let page: PageSetup?
+    /// The stack's left edge — what turns a column number into an x.
+    let sheetX: CGFloat
+    var y: CGFloat
+    /// The sheet `y` currently sits on, and the column within it.
+    var index = 0
+    var column = 0
+
+    /// The left edge of the column rows are being placed in.
+    func originX(_ fallback: CGFloat) -> CGFloat {
+        page.map { $0.columnX(column, sheetX: sheetX) } ?? fallback
+    }
+
+    /// The reading-order slot the cursor is in. Zero throughout the continuous
+    /// flow, which is one unbounded column.
+    var slot: Int { page.map { $0.slot(index, column) } ?? 0 }
+
+    /// Whether the cursor is standing at the top margin of a column with nothing
+    /// placed under it yet. False throughout the continuous flow, whose single
+    /// sheet has a top but no page to be at the top *of*.
+    var atColumnTop: Bool { page.map { y <= $0.contentTop(index) } ?? false }
+
+    /// Whether `height` fits in the room left in this column. Always true in the
+    /// continuous flow, which has no bottom to run out of.
+    func fits(_ height: CGFloat) -> Bool {
+        guard let page else { return true }
+        return y + height <= page.contentBottom(index)
+    }
+
+    /// Make room for `height`, opening the next column if it doesn't fit here.
+    ///
+    /// A block too tall for a column is left to overflow rather than bounced
+    /// between columns forever: the `y > contentTop` guard means a block that has
+    /// a whole empty column and still doesn't fit is simply placed, and `open`
+    /// then resumes below wherever it ended — so an oversized figure or table
+    /// takes the space it covers to itself instead of hanging the walk.
+    mutating func fit(_ height: CGFloat) {
+        guard let page, !fits(height), y > page.contentTop(index) else { return }
+        open()
+    }
+
+    /// Turn the page: resume at the top of the next *sheet*, whatever room is
+    /// left on this one. A page break's own move.
+    ///
+    /// The next sheet and not the next column, though `open()` would take the
+    /// column first: the gesture the author pressed is a page break, and a break
+    /// in a two-column layout should turn the leaf rather than hop the gutter.
+    /// (A column break is a different button nobody has asked for yet.)
+    ///
+    /// A no-op at the very top of the first sheet, so a document that opens with
+    /// a break doesn't open with a blank page instead. Nothing is placed there
+    /// yet, so there is nothing for the break to come after.
+    mutating func turnPage() {
+        guard let page, index > 0 || column > 0 || y > page.contentTop(0) else { return }
+        // `while`, not a single step: a block too tall for a sheet leaves `y`
+        // somewhere past it, and the break belongs on the first sheet that
+        // starts below whatever it spilled onto.
+        repeat { index += 1 } while page.contentTop(index) < y
+        column = 0
+        y = page.contentTop(index)
+    }
+
+    /// Move to the next slot in reading order: the next column of this sheet, or
+    /// the first column of the next sheet.
+    private mutating func open() {
+        guard let page else { return }
+        if y > page.contentBottom(index) {
+            // The block just placed ran past this sheet altogether, so every
+            // column on it is already covered. Resume on the first sheet whose
+            // columns start at or below where that block ended.
+            repeat { index += 1 } while page.contentTop(index) < y
+            column = 0
+        } else if column + 1 < page.columns {
+            column += 1
+        } else {
+            column = 0
+            index += 1
+        }
+        y = page.contentTop(index)
+    }
+}
+
+/// The laid-out rows of one `DocView` plus the geometry queries over them.
+struct EditorLayout {
+    /// The leaf directive a page break is, by name — `leaf_core::PAGE_BREAK`,
+    /// and the one directive this package reads rather than leaving to the host's
+    /// own vocabulary. A page is a thing only a frontend that paginates has.
+    static let pageBreakDirective = "page-break"
+
+    let rows: [RowLayout]
+    /// Total content height including top+bottom padding — the view's fitting size.
+    /// With a page set it is the whole stack of sheets plus its backdrop, so the
+    /// last sheet shows full height even when the document stops a line into it.
+    let contentHeight: CGFloat
+    /// The stack's own width with a page set — a sheet plus its backdrop either
+    /// side, which is what makes a window narrower than a sheet scroll sideways
+    /// instead of cropping it. Zero in the continuous flow, which has no width of
+    /// its own: it takes the viewport's.
+    let contentWidth: CGFloat
+    /// The text column's left edge in view coordinates. Every x here is measured
+    /// from this, not from `theme.padding.left`: with a `measure` set the column
+    /// is centred in the view, so the padding is only the floor it can't cross.
+    /// With a page set it is the sheet's own left margin — the *first* column's,
+    /// once there is more than one; a row's own column is `RowLayout.originX` and
+    /// a line's is `RowLayout.lineOrigin(_:)`.
+    let originX: CGFloat
+    /// The sheet this frame was laid onto and where its left edge sits — kept so
+    /// the geometry queries can work out which column a point is in. Nil in the
+    /// continuous flow.
+    let setup: PageSetup?
+    private let sheetX: CGFloat
+    /// The text column's width — what rows wrap to, and how far a thematic break
+    /// or a directive outline runs.
+    let columnWidth: CGFloat
+    /// Whether this is the source view's frame — every row shaped in the mono
+    /// family, coloured by its markup (see `AttributedRow.make(source:)`). Part
+    /// of what makes one layout's rows reusable by the next: a row equal in
+    /// both views is shaped differently in each.
+    let isSource: Bool
+    /// Every sheet's frame, top to bottom, in layout coordinates — what the view
+    /// paints the paper and its shadow onto. Empty in the continuous flow.
+    let pages: [CGRect]
+    /// Whether the document holds no glyphs at all — the state a placeholder cue
+    /// stands in for. Read off the frame core published rather than off the
+    /// source, so it costs a walk over rows already in hand instead of
+    /// serializing the document to ask whether it is empty.
+    let isEmpty: Bool
+    /// The flow's state before the walk's iteration that emitted each row, and
+    /// after the last — one entry more than `rows` — so a later frame that keeps
+    /// this one's rows up to some index resumes the walk from where it stood.
+    /// Nil on a row an iteration emitted after its first (a table's or a media
+    /// box's later rows, collapsed under the block), since an iteration is the
+    /// unit re-run, and on the line box an empty document is given.
+    private let flowBefore: [Flow?]
+    /// The frame's blocks that render as a thing rather than as their rows,
+    /// kept so a later frame can tell whether the rows it would keep were laid
+    /// out under the same ones — a table whose cells changed keeps its picture
+    /// rows, and a formula's row names its `∑` and not its TeX.
+    private let tables: [TableView]
+    private let media: [MediaView]
+    let math: [MathView]
+    private let directives: [DirectiveView]
+    /// The frame's regions, and whether a host's editor's view was asked to
+    /// stand over the open one.
+    let regions: [RegionView]
+    private let hostsRegions: Bool
+    /// What drew the regions' pictures: each kind's renderer, and the open
+    /// region's session.
+    let drawing: RegionDrawing
+    /// The region open for editing.
+    var open: OpenRegionLayout? { drawing.open }
+
+    /// Lay out `docView` in a view `viewWidth` points wide, wrapping each row to
+    /// the text column `theme` puts inside it (see `EditorTheme.column(in:)`).
+    /// Reuses shaped rows from `cache` (same content *and* same column width) and
+    /// replaces it with the exact set this frame used, so deleted rows are evicted
+    /// and the cache stays bounded. The caller must clear `cache` when the theme's
+    /// geometry changes.
+    /// `media` loads the stills a block image or video poster draws. `nil` (the
+    /// default, and what the tests use) still lays every media box out — at its
+    /// no-picture size, as a labelled chip — so geometry can be exercised without
+    /// touching the filesystem.
+    /// `page` switches on the paginated flow: rows are broken across a stack of
+    /// sheets and wrap to the sheet's margins rather than to the theme's
+    /// `measure`, which a page supersedes. `nil` (the default) is the continuous
+    /// scrolling flow.
+    /// `previous` is the frame before, whose laid-out rows this one keeps
+    /// wherever its own rows are the same — see `reusableRows`. The caller
+    /// passes it only when nothing but the frame changed: a theme, a width,
+    /// a page or a picture that changed under the rows means every row is
+    /// laid out again, and the previous frame is no guide.
+    /// `change` is where `docView`'s rows differ from `previous`'s when the
+    /// caller already knows — read off a frame core answered as a change —
+    /// so that no row outside it is compared; `nil` finds it by comparing.
+    init(_ docView: DocView, theme: EditorTheme, viewWidth: CGFloat, page: PageSetup? = nil,
+         cache: inout [Row: ShapedRow], media: MediaStore? = nil, previous: EditorLayout? = nil,
+         change: RowChange? = nil, regions: RegionMeasure? = nil,
+         drawing: RegionDrawing = RegionDrawing()) {
+        if let page = page?.sanitized {
+            let x = page.sheetX(in: viewWidth)
+            self.init(docView, theme: theme, originX: x + page.margins.left,
+                      columnWidth: page.columnWidth, page: page, sheetX: x,
+                      cache: &cache, media: media, previous: previous, change: change,
+                      regions: regions, drawing: drawing)
+        } else {
+            let column = theme.column(in: viewWidth)
+            self.init(docView, theme: theme, originX: column.originX, columnWidth: column.width,
+                      cache: &cache, media: media, previous: previous, change: change,
+                      regions: regions, drawing: drawing)
+        }
+    }
+
+    /// Lay out into an explicit column — the designated initializer the others
+    /// resolve to. `columnWidth <= 0` means "don't wrap" (one visual line per
+    /// row), the state before a view knows its bounds.
+    /// `page`/`sheetX` are the paginated flow's stack: the sheet to break onto and
+    /// where its left edge sits. The `viewWidth` initializer above works both out;
+    /// nothing else passes them.
+    /// `regions` asks how tall the open region's view is, when a host's
+    /// session stands one over it; `drawing` draws every region's picture.
+    init(_ docView: DocView, theme: EditorTheme, originX: CGFloat, columnWidth: CGFloat,
+         page: PageSetup? = nil, sheetX: CGFloat = 0,
+         cache: inout [Row: ShapedRow], media: MediaStore? = nil, previous: EditorLayout? = nil,
+         change known: RowChange? = nil, regions regionMeasure: RegionMeasure? = nil,
+         drawing: RegionDrawing = RegionDrawing()) {
+        // Every setup the flow walks is a sound one — see `PageSetup.sanitized`.
+        let page = page?.sanitized
+        let wrapWidth = columnWidth
+        self.originX = originX
+        self.columnWidth = max(0, columnWidth)
+        self.setup = page
+        self.sheetX = sheetX
+        let isSource = docView.view == "source"
+        self.isSource = isSource
+        self.tables = docView.tables
+        self.media = docView.media
+        self.math = docView.math
+        self.directives = docView.directives
+        self.regions = docView.regions
+        self.hostsRegions = regionMeasure != nil
+        self.drawing = drawing
+        let open = drawing.open
+        // Every glyph the reader can see is a run's text, including the ones a
+        // surface redraws as graphics — a table's box picture, a media row's
+        // `🖼 alt`, a break's `───`. So one pass over the runs answers this for
+        // every kind of block, with no list of exceptions to keep in step.
+        self.isEmpty = docView.rows.allSatisfy { row in row.runs.allSatisfy { $0.text.isEmpty } }
+        var layouts: [RowLayout] = []
+        layouts.reserveCapacity(docView.rows.count)
+        var flowBefore: [Flow?] = []
+        flowBefore.reserveCapacity(docView.rows.count + 1)
+        var next = Dictionary<Row, ShapedRow>(minimumCapacity: docView.rows.count)
+        // The continuous flow opens under the theme's top padding; the paginated
+        // one at the first column's top margin, which is the padding's counterpart.
+        var flow = Flow(page: page, sheetX: sheetX, y: page?.contentTop(0) ?? theme.padding.top)
+
+        // What the frame before laid out that this one can keep. Its rows up to
+        // `kept` are taken as they are — their layout, and their shape into
+        // `next`, one hash each and no shaping. Past the change, a row that
+        // shapes the same (`Row.sameShape`: the text and marks, wherever they
+        // now sit in the source and whether or not they are selected) keeps
+        // its shape and is placed again — which after a keystroke is every row
+        // below it, each of them a different value by its offsets alone.
+        let previous = previous.flatMap { $0.same(column: originX, width: columnWidth,
+                                                   page: page, sheetX: sheetX, source: isSource)
+            && $0.hostsRegions == (regionMeasure != nil)
+            && $0.drawing.sameClosed(as: drawing) ? $0 : nil }
+        // Where the rows differ: as the caller read it off the frame, or by
+        // comparing — and either way, narrowed by shape only over the span,
+        // so a frame that changed one row compares one row.
+        let change = previous.flatMap { p in
+            known ?? docView.rows.changedRange(from: p.rows.map(\.row))
+        }
+        let shapeChange = previous.flatMap { p in
+            change.flatMap { c in
+                docView.rows.narrowed(c, from: { p.rows[$0].row }) { $0 == $1 || $0.sameShape(as: $1) }
+            }
+        }
+        let kept = previous.map { $0.reusableRows(for: docView, change: change, open: open) } ?? 0
+        if let previous, kept > 0 {
+            layouts.append(contentsOf: previous.rows[..<kept])
+            flowBefore.append(contentsOf: previous.flowBefore[..<kept])
+            // The walk resumes where the frame before stood at that row.
+            flow = previous.flowBefore[kept]!
+            for rl in layouts where rl.table == nil && rl.media == nil && rl.picture == nil
+                && rl.hosted == nil && !rl.row.runs.contains(where: { $0.role == "math" }) {
+                next[rl.row] = rl.shaped
+            }
+        }
+        /// The shape the frame before gave the row now at `i`, where that row
+        /// shapes as one it laid out — before the change at the same index,
+        /// after it at the index that stands opposite. Not for a row a block
+        /// renders over: those are laid out from the block.
+        func unchanged(_ i: Int) -> ShapedRow? {
+            guard let previous else { return nil }
+            var j = i
+            if let shapeChange {
+                if i >= shapeChange.new.upperBound {
+                    j = i - shapeChange.new.upperBound + shapeChange.old.upperBound
+                } else if i >= shapeChange.new.lowerBound {
+                    return nil
+                }
+            }
+            guard j < previous.rows.count else { return nil }
+            let rl = previous.rows[j]
+            guard rl.table == nil, rl.media == nil, rl.picture == nil, rl.hosted == nil else { return nil }
+            return rl.shaped
+        }
+
+        // A table's box-glyph picture rows are replaced by one grid element that
+        // stands in for the whole `[startRow, endRow)` span.
+        var tableAt: [Int: TableView] = [:]
+        for t in docView.tables { tableAt[Int(t.startRow)] = t }
+
+        // A block image / video / audio replaces its placeholder rows the same
+        // way, with one box standing in for the whole `[startRow, endRow)` span.
+        var mediaAt: [Int: MediaView] = [:]
+        for m in docView.media { mediaAt[Int(m.startRow)] = m }
+
+        // Regions drawn as their pictures, two ways: a block — a display
+        // formula, or a fence or directive whose kind has a renderer —
+        // replaces its placeholder rows with one box the way a media block
+        // does, and an inline formula is drawn into its row's text by
+        // `AttributedRow`, which finds it by the source offset its `math` run
+        // carries. Every formula is drawn, owned or not; another kind only
+        // once the view owns it, so that core publishes it. The open region a
+        // host's view stands over is the view's, not a picture's.
+        var pictureAt: [Int: RegionView] = [:]
+        var mathInline: [UInt32: RegionView] = [:]
+        if !isSource {
+            for m in docView.math {
+                let r = docView.region(for: m)
+                if m.inline { mathInline[m.src] = r } else { pictureAt[Int(m.startRow)] = r }
+            }
+            // An inline region of another kind — a directive in a line — is
+            // drawn into its row as an inline formula is, from its atom.
+            for r in docView.regions where r.inline && r.kind != MathRenderer.kind && drawing.draws(r.kind) {
+                mathInline[r.src] = r
+            }
+            for r in docView.regions where !r.inline && r.kind != MathRenderer.kind && drawing.draws(r.kind) {
+                if let open, regionMeasure != nil, open.kind == r.kind, open.src == r.src, open.picture == nil {
+                    continue
+                }
+                pictureAt[Int(r.startRow)] = r
+            }
+        }
+        let inlinePictures: InlinePictures? = mathInline.isEmpty ? nil : { src, size in
+            mathInline[src].flatMap { drawing.picture($0, size: size, ink: theme.textColor) }
+        }
+
+        // Which rows are page breaks. A `Row` cannot answer this itself — every
+        // leaf directive draws as the same placeholder row, and only the frame's
+        // `directives` say which directive a row *is* — so the set is built once
+        // here rather than re-derived from the glyphs, which would read a
+        // paragraph that happens to say `⧉ page-break` as one.
+        var pageBreakRows = Set<Int>()
+        for d in docView.directives where d.name == EditorLayout.pageBreakDirective {
+            pageBreakRows.formUnion(Int(d.startRow)..<Int(d.endRow))
+        }
+
+        // The open region a host's session stands its own view over. A leaf
+        // directive is a region like any other: drawn as its renderer's
+        // picture above, or open in its editor's view here.
+        let openHosted: RegionView? = regionMeasure == nil || isSource ? nil : open.flatMap { o in
+            o.picture == nil ? docView.regions.first { $0.kind == o.kind && $0.src == o.src && !$0.inline } : nil
+        }
+
+        // An empty stand-in shape for a table's collapsed picture rows (they draw
+        // the grid, never their own glyphs).
+        let emptyShape = ShapedRow(
+            attributed: NSAttributedString(),
+            wrapped: [WrappedLine(attributed: NSAttributedString(),
+                                  line: CTLineCreateWithAttributedString(NSAttributedString()),
+                                  start: 0, length: 0, width: 0)],
+            lineHeight: theme.lineHeight,
+            wrapWidth: wrapWidth
+        )
+
+        var i = kept
+        while i < docView.rows.count {
+            flowBefore.append(flow)
+            // Fitted to the text column — its columns squeezed and its cells
+            // wrapped until the grid is no wider than the prose around it.
+            if let t = tableAt[i], let grid = TableLayout(t, theme: theme, availableWidth: wrapWidth) {
+                // A grid is atomic: it draws itself in one pass off `tableTop`, so
+                // there is nothing to split it at. It moves whole to the next
+                // sheet, and one too tall for any sheet gets its own.
+                flow.fit(grid.height)
+                let tableTop = flow.y
+                let tableX = flow.originX(originX)
+                // Keep every picture row (rows stay 1:1 with the frame), but
+                // collapse them onto the grid: the first carries its height, the
+                // rest are zero-height, and all defer drawing/caret to the grid.
+                for r in Int(t.startRow)..<Int(t.endRow) where r < docView.rows.count {
+                    if r > i { flowBefore.append(nil) }
+                    layouts.append(RowLayout(
+                        row: docView.rows[r], shaped: emptyShape, top: tableTop,
+                        originX: tableX, columnWidth: wrapWidth,
+                        table: grid, tableTop: tableTop, tableFirst: r == Int(t.startRow),
+                        tableLast: r == Int(t.endRow) - 1,
+                        page: flow.index
+                    ))
+                }
+                flow.y += grid.height
+                i = Int(t.endRow)
+                continue
+            }
+
+            if let mv = mediaAt[i] {
+                // Shaped first, and kept: unlike a table, a media row's own
+                // glyphs (core's `🖼 alt` label) are the fallback drawn when the
+                // box has no picture, and its prefix width is what insets the box
+                // inside a quote or a list.
+                let placeholder = docView.rows[i]
+                let shaped = EditorLayout.shape(placeholder, theme: theme, wrapWidth: wrapWidth)
+                let box = MediaLayout(mv, still: media?.still(for: mv),
+                                      contentWidth: max(0, wrapWidth - shaped.prefixWidth),
+                                      theme: theme)
+                // Atomic for the same reason a grid is: the box is one picture
+                // drawn off `mediaTop`, and half a photograph at the foot of a
+                // sheet is not a thing to draw.
+                flow.fit(box.height)
+                let mediaTop = flow.y
+                let mediaX = flow.originX(originX)
+                for r in Int(mv.startRow)..<Int(mv.endRow) where r < docView.rows.count {
+                    if r > i { flowBefore.append(nil) }
+                    layouts.append(RowLayout(
+                        row: docView.rows[r],
+                        shaped: r == Int(mv.startRow) ? shaped : emptyShape,
+                        top: mediaTop,
+                        originX: mediaX, columnWidth: wrapWidth,
+                        media: box, mediaTop: mediaTop, mediaFirst: r == Int(mv.startRow),
+                        page: flow.index
+                    ))
+                }
+                flow.y += box.height
+                i = Int(mv.endRow)
+                continue
+            }
+
+            if let rv = pictureAt[i],
+               let picture = drawing.picture(rv, size: theme.fontSize, ink: theme.textColor) {
+                // The media box's recipe: the placeholder row shaped and kept
+                // (its glyphs are the fallback, its prefix insets the box), the
+                // box atomic, the fillers collapsed under it.
+                let placeholder = docView.rows[i]
+                let shaped = EditorLayout.shape(placeholder, theme: theme, wrapWidth: wrapWidth)
+                let box = PictureLayout(rv, picture: picture, contentWidth: wrapWidth - shaped.prefixWidth)
+                flow.fit(box.height)
+                let top = flow.y
+                let x = flow.originX(originX)
+                for r in Int(rv.startRow)..<Int(rv.endRow) where r < docView.rows.count {
+                    if r > i { flowBefore.append(nil) }
+                    layouts.append(RowLayout(
+                        row: docView.rows[r],
+                        shaped: r == Int(rv.startRow) ? shaped : emptyShape,
+                        top: top,
+                        originX: x, columnWidth: wrapWidth,
+                        picture: box, pictureTop: top, pictureFirst: r == Int(rv.startRow),
+                        page: flow.index
+                    ))
+                }
+                flow.y += box.height
+                i = max(i + 1, Int(rv.endRow))
+                continue
+            }
+
+            // The open region a host's session edits in a view of its own: the
+            // media box's recipe again, with the session's view for the
+            // picture. The placeholder row is shaped and kept — its prefix
+            // insets the view inside a quote or a list, and its length is where
+            // the caret's stop past it is — and any rows core reserved under it
+            // collapse onto the one box. Atomic, as a picture is.
+            if let rv = openHosted, Int(rv.startRow) == i {
+                let shaped = EditorLayout.shape(docView.rows[i], theme: theme, wrapWidth: wrapWidth)
+                let width = max(0, wrapWidth - shaped.prefixWidth)
+                if let h = regionMeasure?(rv, width) {
+                    let box = HostedLayout(size: CGSize(width: width, height: max(0, h.rounded(.up))))
+                    flow.fit(box.height)
+                    let top = flow.y
+                    let x = flow.originX(originX)
+                    for r in Int(rv.startRow)..<Int(rv.endRow) where r < docView.rows.count {
+                        if r > i { flowBefore.append(nil) }
+                        layouts.append(RowLayout(
+                            row: docView.rows[r],
+                            shaped: r == Int(rv.startRow) ? shaped : emptyShape,
+                            top: top,
+                            originX: x, columnWidth: wrapWidth,
+                            hosted: box, hostedTop: top,
+                            hostedFirst: r == Int(rv.startRow),
+                            page: flow.index
+                        ))
+                    }
+                    flow.y += box.height
+                    i = max(i + 1, Int(rv.endRow))
+                    continue
+                }
+            }
+
+            let row = docView.rows[i]
+            let isPageBreak = pageBreakRows.contains(i)
+            let shaped: ShapedRow
+            // A row holding an inline formula is shaped fresh each frame and
+            // never cached: the cache is keyed by the row's value, which names
+            // the formula's `∑` and not its TeX, so a reused shape could carry
+            // a picture the document no longer has.
+            let hasMath = row.runs.contains { ($0.role == "math" || $0.role == "image") && mathInline[$0.src] != nil }
+            if !hasMath, let hit = unchanged(i) ?? cache[row] ?? next[row], hit.wrapWidth == wrapWidth {
+                shaped = hit
+            } else {
+                shaped = EditorLayout.shape(row, theme: theme, wrapWidth: wrapWidth,
+                                            pageBreak: isPageBreak, pictures: hasMath ? inlinePictures : nil,
+                                            source: isSource)
+            }
+            if !hasMath { next[row] = shaped }
+
+            // A page break: the page turns here, and the row itself is spent —
+            // it keeps its caret home (one empty line, as an empty row does) and
+            // takes no height, so the next block opens at the new sheet's top
+            // margin rather than a line into it. Continuously there is no page
+            // to turn: the row keeps its line box and the view draws the dashed
+            // hairline `pageBreak` asks for.
+            if isPageBreak {
+                if page != nil {
+                    flow.turnPage()
+                    let x = flow.originX(originX)
+                    layouts.append(RowLayout(
+                        row: row, shaped: shaped, top: flow.y, originX: x, columnWidth: wrapWidth,
+                        gapHeight: 0, page: flow.index, pageBreak: true,
+                        lineOrigins: [CGPoint(x: x, y: flow.y)]))
+                } else {
+                    let rl = RowLayout(row: row, shaped: shaped, top: flow.y,
+                                       originX: originX, columnWidth: wrapWidth,
+                                       pageBreak: true)
+                    flow.y += rl.height
+                    layouts.append(rl)
+                }
+                i += 1
+                continue
+            }
+            let hasLabel = row.directive && !(row.directiveLabel ?? "").isEmpty
+            let labelInset = hasLabel ? theme.directiveLabelHeight : 0
+
+            // A boundary is spaced by what it separates, and core says what that
+            // is (`row.boundary`) — so this is a lookup, not a walk over the
+            // neighbouring rows.
+            if row.isBlockGap {
+                // Paragraph spacing exists to hold two blocks apart on the same
+                // sheet. A gap that no longer fits under the current one has
+                // nothing left to separate, and carried over the break it would
+                // push the next block an arbitrary distance down from the top
+                // margin — so it collapses, exactly as space-before does at the
+                // head of a page. The break itself is the separation now.
+                let gap = theme.blockGap(row.boundary)
+                // …and a gap that lands *on* a column's top margin has nothing
+                // above it to be held apart from, so it collapses for the same
+                // reason. That is the gap after a page break: without this the
+                // block the author broke to would start a paragraph's spacing
+                // below the margin instead of at it.
+                let placed = flow.fits(gap) && !flow.atColumnTop ? gap : 0
+                layouts.append(RowLayout(row: row, shaped: shaped, top: flow.y,
+                                         originX: flow.originX(originX), columnWidth: wrapWidth,
+                                         gapHeight: placed, page: flow.index))
+                flow.y += placed
+                i += 1
+                continue
+            }
+
+            let count = max(1, shaped.wrapped.count)
+            // A heading is placed whole. Split, its first line is stranded at the
+            // foot of one column and the rest of it heads the next, which reads as
+            // two headings rather than one — and a heading is short enough that
+            // moving it whole costs a line or two of a column, not a screen.
+            let splittable = page != nil && row.heading == nil && count > 1
+            var lineOrigins: [CGPoint] = []
+            var startPage = flow.index
+            if page != nil {
+                if splittable {
+                    for k in 0..<count {
+                        // The label strip rides the first line: it names the block
+                        // that line opens, so the two travel together.
+                        let h = (k == 0 ? labelInset : 0) + shaped.lineHeight(k)
+                        flow.fit(h)
+                        if k == 0 { startPage = flow.index }
+                        // Each line takes the column it actually landed in — a
+                        // break between two of them moves the x as well as the y
+                        // once a sheet carries more than one.
+                        lineOrigins.append(CGPoint(x: flow.originX(originX),
+                                                   y: flow.y + (k == 0 ? labelInset : 0)))
+                        flow.y += h
+                    }
+                } else {
+                    let h = labelInset + shaped.lineOffset(count)
+                    // Keep a heading with the text it introduces. One left alone at
+                    // the foot of a sheet announces nothing the reader can see —
+                    // they turn the page to find out what it was for — so it asks
+                    // for its gap plus a line of that text beyond itself, and moves
+                    // down when it can't have them.
+                    //
+                    // Only when something actually follows: a heading that ends the
+                    // document has nothing to be kept with, and bumping it onto a
+                    // sheet of its own would be the worse answer. Two rows of
+                    // lookahead, because core puts at most one boundary row between
+                    // two blocks.
+                    let followed = row.heading != nil
+                        && docView.rows[(i + 1)..<min(i + 3, docView.rows.count)]
+                            .contains { !$0.isBlockGap }
+                    flow.fit(h + (followed ? theme.blockGap + theme.lineHeight : 0))
+                    startPage = flow.index
+                    let x = flow.originX(originX)
+                    for k in 0..<count {
+                        lineOrigins.append(CGPoint(
+                            x: x, y: flow.y + labelInset + shaped.lineOffset(k)))
+                    }
+                    flow.y += h
+                }
+            }
+            let rl = RowLayout(
+                row: row, shaped: shaped,
+                top: lineOrigins.first.map { $0.y - labelInset } ?? flow.y,
+                // The row's own column is the one it *starts* in; a split row's
+                // later lines carry their own (see `lineOrigin(_:)`).
+                originX: lineOrigins.first?.x ?? originX, columnWidth: wrapWidth,
+                labelInset: labelInset,
+                page: startPage, lineOrigins: lineOrigins)
+            // Paginated, the lines are already placed and `flow.y` is past them.
+            if page == nil { flow.y += rl.height }
+            layouts.append(rl)
+            i += 1
+        }
+        // An empty document has no rows at all: core describes blocks, and there
+        // is no block to describe. The caret still has a home there (offset 0),
+        // so it needs a line box to stand in — without one there is no row for
+        // `rect` to answer about and the caret is simply never drawn, which is
+        // what a brand-new note looked like until the first keystroke brought a
+        // row into being. The same reason `wrap` gives an empty row one empty
+        // line: a caret needs somewhere to be.
+        if layouts.isEmpty {
+            flowBefore.append(nil)
+            layouts.append(RowLayout(row: Row(runs: [], decoration: false, code: false,
+                                              codeLang: nil, directive: false,
+                                              directiveLabel: nil, heading: nil,
+                                              align: nil, lineHeight: nil,
+                                              hang: nil, boundary: nil),
+                                     shaped: emptyShape, top: flow.y,
+                                     originX: originX, columnWidth: wrapWidth))
+            flow.y += theme.lineHeight
+        }
+        flowBefore.append(flow)
+        rows = layouts
+        self.flowBefore = flowBefore
+        if let page {
+            // Every sheet the walk touched, including any an oversized block spilled
+            // across — `flow.index` is where the cursor ended, `index(at:)` catches
+            // the overflow that ran past it. A hair off `flow.y` so a document that
+            // stops exactly on a sheet's top margin doesn't add an empty one after it.
+            let last = max(flow.index, page.index(at: max(page.sheetTop(0), flow.y - 1)))
+            pages = (0...last).map { page.sheetRect($0, x: sheetX) }
+            contentHeight = (pages.last?.maxY ?? 0) + page.backdrop
+            contentWidth = page.stackWidth
+        } else {
+            pages = []
+            contentHeight = flow.y + theme.padding.bottom
+            contentWidth = 0
+        }
+        cache = next
+    }
+
+    /// Whether this frame was laid into the column described — the one test
+    /// of whether its rows can stand in a frame laid into it. The theme is the
+    /// caller's to compare: it clears the shape cache and passes no previous
+    /// frame when its metrics move.
+    private func same(column originX: CGFloat, width: CGFloat, page: PageSetup?, sheetX: CGFloat,
+                      source: Bool) -> Bool {
+        originX == self.originX && max(0, width) == columnWidth && page == setup && sheetX == self.sheetX
+            && source == isSource
+    }
+
+    /// How many of this frame's leading rows the next one, laying out
+    /// `docView` with `change` between the two (`changedRange`), takes as they
+    /// are.
+    ///
+    /// The rows before the change are `==` the ones they stand opposite, but
+    /// a row is its text and marks, not its picture: the blocks that render
+    /// over rows — tables, media, formulas, directives — have to be the same
+    /// blocks up to there too, since a table whose cells changed keeps its
+    /// picture rows and a formula's row names its `∑` and not its TeX. Two
+    /// fewer than the change, since a heading reads two rows ahead to keep
+    /// itself with what it introduces; and backed off to a row the walk began
+    /// an iteration at, since an iteration is what is re-run.
+    private func reusableRows(for docView: DocView, change: RowChange?, open: OpenRegionLayout?) -> Int {
+        guard !docView.rows.isEmpty else { return 0 }
+        var kept = min(rows.count, change.map { max(0, $0.new.lowerBound - 2) } ?? docView.rows.count)
+        kept = min(kept, firstDiffering(docView.tables, tables, \.startRow))
+        kept = min(kept, firstDiffering(docView.media, media, \.startRow))
+        kept = min(kept, firstDiffering(docView.math, math, \.startRow))
+        kept = min(kept, firstDiffering(docView.directives, directives, \.startRow))
+        kept = min(kept, firstDiffering(docView.regions, regions, \.startRow))
+        // What the open region draws is the session's, which core does not
+        // see: a region opened, closed or redrawn is laid out again from its
+        // row.
+        if !(open?.same(as: self.open) ?? (self.open == nil)) {
+            for o in [open, self.open].compactMap({ $0 }) {
+                if let r = docView.regions.first(where: { $0.kind == o.kind && $0.src == o.src }) {
+                    kept = min(kept, Int(r.startRow))
+                }
+                if let r = regions.first(where: { $0.kind == o.kind && $0.src == o.src }) {
+                    kept = min(kept, Int(r.startRow))
+                }
+            }
+        }
+        while kept > 0 && flowBefore[kept] == nil { kept -= 1 }
+        return kept
+    }
+
+    /// The first row on which the blocks of two frames part company — where
+    /// the first block one has and the other has not opens — or past every row
+    /// when they agree. Both lists are in row order.
+    private func firstDiffering<T: Equatable>(_ a: [T], _ b: [T], _ startRow: (T) -> UInt32) -> Int {
+        var i = 0
+        while i < a.count && i < b.count && a[i] == b[i] { i += 1 }
+        let ra = i < a.count ? Int(startRow(a[i])) : Int.max
+        let rb = i < b.count ? Int(startRow(b[i])) : Int.max
+        return min(ra, rb)
+    }
+
+    /// The media whose box contains `point`, of any kind, or `nil`. `point` is in
+    /// view coordinates.
+    ///
+    /// Whether a hit here is worth *acting on* is not geometry's question —
+    /// video and audio always are, an image only while there is nothing drawn in
+    /// its box and the host might still supply it. The views decide that, since
+    /// only they can see what the media store has loaded.
+    func mediaBox(at point: CGPoint) -> MediaView? {
+        for rl in rows {
+            guard rl.mediaFirst, let box = rl.media else { continue }
+            let r = box.rect(top: rl.mediaTop, left: rl.originX + rl.shaped.prefixWidth)
+            if r.contains(point) { return box.media }
+        }
+        return nil
+    }
+
+    /// The source offset of the task checkbox drawn at `point`, or nil when no
+    /// box is there — the hit-test a click runs before it is treated as a caret
+    /// placement, and the proportional peer of core's `task_box_at`.
+    ///
+    /// Only the box's own glyphs answer, on the item's first line: a click on
+    /// the item's *text* places the caret like any other, so the box is a target
+    /// aimed at rather than something tripped over while editing. The slop is
+    /// what makes a glyph-sized target reachable with a finger.
+    func taskBox(at point: CGPoint) -> UInt32? {
+        for (index, rl) in rows.enumerated() {
+            guard let marker = rl.row.taskMarker,
+                  let a = rect(row: index, ch: marker.start),
+                  let b = rect(row: index, ch: marker.start + marker.run.text.utf16.count)
+            else { continue }
+            let box = a.union(b).insetBy(dx: -2, dy: 0)
+            if box.contains(point) { return marker.run.src }
+        }
+        return nil
+    }
+
+    /// The side of the square a footnote's label answers a finger over — the
+    /// smallest target Apple's guidelines let a control be. A raised label is
+    /// a glyph or two of a smaller face, a few points wide, and a target that
+    /// size is one a thumb lands beside more often than on.
+    static let footnoteTarget: CGFloat = 44
+
+    /// The footnote label a tap at `point` is aimed at, or nil — the hit test a
+    /// touch runs before it is treated as a caret placement, and the footnote
+    /// peer of `taskBox(at:)`.
+    ///
+    /// Two kinds answer, both raised runs (`sup`): a reference up in the prose
+    /// (`link`, which is how core colours one), and a note's marker down in the
+    /// notes (`list`, which is what a marker is). A superscript link that is
+    /// not a footnote looks the same from here; geometry cannot tell them
+    /// apart, so the caller asks the document whether there is a footnote at
+    /// the offset before acting on it.
+    ///
+    /// Each label's box is grown to at least `footnoteTarget` on a side,
+    /// centred on the glyphs, and never shrunk — a long label already wider
+    /// than that answers over its own width. Grown boxes overlap whenever two
+    /// references sit close (`claim¹²`, or two notes on neighbouring lines),
+    /// so the label whose glyphs' centre is nearest the point wins rather than
+    /// whichever came first in the document.
+    ///
+    /// The rect handed back is the glyphs' own, not the grown target: it is
+    /// what a peek is anchored on, so the popover's arrow points at the label
+    /// the reader sees rather than at empty margin around it.
+    func footnote(at point: CGPoint) -> FootnoteTap? {
+        let side = Self.footnoteTarget
+        var best: (tap: FootnoteTap, distance: CGFloat)?
+        for (index, rl) in rows.enumerated() where rl.media == nil && rl.picture == nil && rl.hosted == nil {
+            var ch = 0
+            for run in rl.row.runs {
+                let length = run.text.utf16.count
+                defer { ch += length }
+                guard run.sup, length > 0 else { continue }
+                let kind: FootnoteTap.Kind
+                switch run.role {
+                case "link": kind = .reference
+                case "list": kind = .marker
+                default: continue
+                }
+                for line in rangeRects(from: (index, ch), to: (index, ch + length)) {
+                    let glyphs = line.rect
+                    let target = glyphs.insetBy(dx: min(0, (glyphs.width - side) / 2),
+                                                dy: min(0, (glyphs.height - side) / 2))
+                    guard target.contains(point) else { continue }
+                    let distance = hypot(point.x - glyphs.midX, point.y - glyphs.midY)
+                    if best.map({ distance < $0.distance }) ?? true {
+                        best = (FootnoteTap(kind: kind, src: run.src, rect: glyphs), distance)
+                    }
+                }
+            }
+        }
+        return best?.tap
+    }
+
+    /// The height a link answers a finger over, at the least — `footnoteTarget`
+    /// for its reason, and only in this direction. A line of body text is two
+    /// thirds of that, so a thumb aimed at a link lands on the line above or
+    /// below it about as often as on the link, and a one-word link is a target
+    /// a few points tall wherever it sits.
+    static let linkTargetHeight: CGFloat = 44
+
+    /// How far past its first and last glyph a link answers. A few points, not
+    /// the half-target a footnote's label gets: a link is words set in prose,
+    /// and the words beside it on the same line are the words a reader taps to
+    /// put a caret in. A pad sideways would take those taps; a pad up and down
+    /// takes the space between lines, which nobody aims at.
+    static let linkSlop: CGFloat = 4
+
+    /// The link a tap at `point` is aimed at, or nil — the link peer of
+    /// `footnote(at:)`, run by a touch view before it treats a tap as a caret
+    /// placement, so that what it acts on is the link under the finger rather
+    /// than wherever the system's own tap put the caret (which in a reader is
+    /// nowhere, and in an editor is beside the link as often as in it).
+    ///
+    /// Every `link` run answers — which is how core colours a parsed link, an
+    /// autolink and a bare URL alike — and so does each span in `extra`, which
+    /// is how a caller adds what core does not parse: a wikilink is literal
+    /// text drawn in the body's role, so only the document's source can say
+    /// where one is (see `LeafDoc.wikilinkSpans()`). A run in the link role that
+    /// is not in a link — a footnote reference, coloured as one — comes back
+    /// too, since geometry cannot tell; the caller asks the document for the
+    /// destination at the offset, and runs the footnote test first.
+    ///
+    /// Each line of a link answers over its glyphs grown to `linkTargetHeight`,
+    /// centred, and by `linkSlop` at either end. Grown boxes overlap a link on
+    /// the line above or below, so the link whose glyphs are nearest the point
+    /// wins — a point on a link's own glyphs is at distance zero, and no
+    /// neighbour's padding can take it.
+    ///
+    /// The rect handed back is the line's glyphs, not the grown target: it is
+    /// what a card is anchored on, for `footnote(at:)`'s reason.
+    func link(at point: CGPoint, also extra: [LinkSpan] = []) -> LinkTap? {
+        var spans: [LinkSpan] = []
+        for (index, rl) in rows.enumerated() where rl.drawsItsGlyphs {
+            var ch = 0
+            for run in rl.row.runs {
+                let length = run.text.utf16.count
+                defer { ch += length }
+                guard run.role == "link", length > 0 else { continue }
+                spans.append(LinkSpan(src: run.src, wikilink: nil,
+                                      from: (index, ch), to: (index, ch + length)))
+            }
+        }
+        spans += extra
+        var best: (tap: LinkTap, distance: CGFloat)?
+        for span in spans {
+            for line in rangeRects(from: span.from, to: span.to) {
+                let glyphs = line.rect
+                let target = glyphs.insetBy(dx: -Self.linkSlop,
+                                            dy: min(0, (glyphs.height - Self.linkTargetHeight) / 2))
+                guard target.contains(point) else { continue }
+                let dx = max(glyphs.minX - point.x, 0, point.x - glyphs.maxX)
+                let dy = max(glyphs.minY - point.y, 0, point.y - glyphs.maxY)
+                let distance = hypot(dx, dy)
+                if best.map({ distance < $0.distance }) ?? true {
+                    best = (LinkTap(src: span.src, wikilink: span.wikilink, rect: glyphs), distance)
+                }
+            }
+        }
+        return best?.tap
+    }
+
+    /// The character whose glyph is under `point` — its row and column — or
+    /// nil when the point is on no glyph at all.
+    ///
+    /// Not `hit(_:)`, which is a caret's question and always has an answer: a
+    /// point in the margin, past a line's end or in the gap between blocks is
+    /// *nearest* some position, and a caret goes there. This is the question
+    /// a tap on painted ink asks — is the finger on the wash, or only near it —
+    /// and a tap beside a highlight is not a tap on it. The two characters
+    /// either side of the caret's answer are tried, since a point on the right
+    /// half of a glyph is nearest the stop after it.
+    func glyph(at point: CGPoint) -> (row: Int, ch: Int)? {
+        guard !rows.isEmpty else { return nil }
+        let (row, ch) = hit(point)
+        let rl = rows[row]
+        guard rl.drawsItsGlyphs else { return nil }
+        let length = rl.attributed.length
+        for c in [ch, ch - 1] where c >= 0 && c < length {
+            let boxes = rangeRects(from: (row, c), to: (row, c + 1))
+            if boxes.contains(where: { $0.rect.contains(point) }) { return (row, c) }
+        }
+        return nil
+    }
+
+    /// The side of a highlight's margin marker as drawn — a 13-point symbol
+    /// centred in it — and how far in from the view's trailing edge it sits.
+    static let markerBox: CGFloat = 20
+    static let markerInset: CGFloat = 4
+
+    /// Where a highlight's margin marker is drawn: beside the line its wash
+    /// begins on (`lineMidY`), against `trailingEdge`. Both views draw it
+    /// here, and both hit-test what `markerTarget` grows it to.
+    static func markerFrame(lineMidY: CGFloat, trailingEdge: CGFloat) -> CGRect {
+        CGRect(x: trailingEdge - markerBox - markerInset, y: lineMidY - markerBox / 2,
+               width: markerBox, height: markerBox)
+    }
+
+    /// The square a marker drawn at `frame` answers a finger or a pointer over:
+    /// `footnoteTarget` on a side, centred on the glyph, and slid back inside
+    /// `trailingEdge` where centring would hang it off the view.
+    ///
+    /// It used to be the glyph's box grown by a few points — 40 by 36 on a
+    /// phone, of which the four past the screen's edge could never be touched.
+    /// Slid rather than clipped, so the whole square is on screen: the marker
+    /// sits at the edge of the page, and the edge is where a thumb comes from.
+    /// The cost is the last word or so of the marked line, which the square
+    /// covers — a tap there is the annotation's, which on the line that
+    /// carries the annotation's marker is the likelier meaning anyway.
+    static func markerTarget(_ frame: CGRect, trailingEdge: CGFloat) -> CGRect {
+        let side = footnoteTarget
+        var target = CGRect(x: frame.midX - side / 2, y: frame.midY - side / 2,
+                            width: side, height: side)
+        if target.maxX > trailingEdge { target.origin.x = trailingEdge - side }
+        return target
+    }
+
+    /// The marker of `hits` a tap at `point` is aimed at — the one whose
+    /// glyph is nearest, where the squares of two marked lines one above the
+    /// other overlap, rather than whichever highlight began first.
+    static func marker(at point: CGPoint, in hits: [(rect: CGRect, id: String)]) -> String? {
+        hits.filter { $0.rect.contains(point) }
+            .min { hypot(point.x - $0.rect.midX, point.y - $0.rect.midY)
+                 < hypot(point.x - $1.rect.midX, point.y - $1.rect.midY) }?
+            .id
+    }
+
+    /// The playable media whose box contains `point`, or `nil` — `mediaBox`
+    /// narrowed to the kinds that have something to play.
+    func playableMedia(at point: CGPoint) -> MediaView? {
+        guard let hit = mediaBox(at: point), hit.kind != .image else { return nil }
+        return hit
+    }
+
+    /// Every media box's rect in view coordinates, keyed by `src` — what an
+    /// installed player is positioned onto, and the set that decides which
+    /// players are still wanted. Keyed by `src` rather than row index because
+    /// rows renumber on every keystroke while a source doesn't: typing above a
+    /// playing video should move it, not restart it.
+    ///
+    /// A document naming the same `src` twice collapses to one entry, and only
+    /// one of the two boxes can host a player. That is the honest consequence of
+    /// keying by source, and a rare enough shape not to complicate this for.
+    func mediaRects() -> [String: CGRect] {
+        var out: [String: CGRect] = [:]
+        for rl in rows where rl.mediaFirst {
+            guard let box = rl.media else { continue }
+            out[box.media.src] = box.rect(top: rl.mediaTop,
+                                          left: rl.originX + rl.shaped.prefixWidth)
+        }
+        return out
+    }
+
+    /// Lay out into a column `wrapWidth` wide at the theme's left inset — the text
+    /// column stated directly rather than worked back out of a view width and a
+    /// measure. Convenience for tests.
+    init(_ docView: DocView, theme: EditorTheme, wrapWidth: CGFloat,
+         cache: inout [Row: ShapedRow], media: MediaStore? = nil, previous: EditorLayout? = nil,
+         change: RowChange? = nil, drawing: RegionDrawing = RegionDrawing()) {
+        self.init(docView, theme: theme, originX: theme.padding.left, columnWidth: wrapWidth,
+                  cache: &cache, media: media, previous: previous, change: change,
+                  drawing: drawing)
+    }
+
+    /// The same with no cross-frame cache — every row shaped fresh.
+    init(_ docView: DocView, theme: EditorTheme, wrapWidth: CGFloat, media: MediaStore? = nil,
+         drawing: RegionDrawing = RegionDrawing()) {
+        var scratch: [Row: ShapedRow] = [:]
+        self.init(docView, theme: theme, wrapWidth: wrapWidth, cache: &scratch, media: media,
+                  drawing: drawing)
+    }
+
+    /// Lay out for a view `viewWidth` wide with no cross-frame cache — the
+    /// column-from-the-theme path (`measure` and all), one frame at a time.
+    init(_ docView: DocView, theme: EditorTheme, viewWidth: CGFloat, media: MediaStore? = nil) {
+        var scratch: [Row: ShapedRow] = [:]
+        self.init(docView, theme: theme, viewWidth: viewWidth, cache: &scratch, media: media)
+    }
+
+    /// Build unwrapped (one visual line per row). Convenience for tests.
+    init(_ docView: DocView, theme: EditorTheme) {
+        self.init(docView, theme: theme, wrapWidth: 0)
+    }
+
+    /// Shape one row: its attributed text, the visual lines it wraps into, and the
+    /// block-decoration geometry the view paints over it (the quote bars' x's, the
+    /// prefix width its continuation lines hang from).
+    ///
+    /// A thematic break is shaped from its *prefix alone* — the `───` glyphs are
+    /// dropped, because the view draws a real line across the column instead.
+    /// Keeping them would wrap a long rule onto a second line and leave a caret
+    /// that walks across invisible dashes; dropping them leaves a one-line row
+    /// whose caret sits at its left edge (any `caret_ch` core reports on the rule
+    /// clamps there), exactly as a table's collapsed picture rows defer to the grid.
+    /// A `pageBreak` row is shaped from its prefix alone for the same reason a
+    /// thematic break is: the view draws a dashed hairline (or turns the page)
+    /// where core's `⧉ page-break` placeholder glyphs would have gone.
+    ///
+    /// `source` shapes the row for the source view — see `AttributedRow.make`.
+    static func shape(_ row: Row, theme: EditorTheme, wrapWidth: CGFloat,
+                      pageBreak: Bool = false, pictures: InlinePictures? = nil,
+                      source: Bool = false) -> ShapedRow {
+        let prefix = row.prefixRuns
+        let drawn = row.isThematicBreak || pageBreak ? prefix : row.runs
+        let attributed = AttributedRow.make(drawn, row: row, theme: theme, pictures: pictures, source: source)
+
+        // The prefix's own geometry, measured on its own line: its total width (the
+        // hanging indent) and where each level's bar glyph starts.
+        var prefixWidth: CGFloat = 0
+        var barXs: [CGFloat] = []
+        if !prefix.isEmpty {
+            let prefixText = AttributedRow.make(prefix, row: row, theme: theme)
+            let line = CTLineCreateWithAttributedString(prefixText as CFAttributedString)
+            prefixWidth = CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
+            let s = prefixText.string as NSString
+            let bar = String(AttributedRow.quoteBar)
+            for i in 0..<s.length where s.substring(with: NSRange(location: i, length: 1)) == bar {
+                barXs.append(CTLineGetOffsetForStringIndex(line, CFIndex(i), nil))
+            }
+        }
+
+        // A verse line's turnover hangs deeper than the line itself — core says
+        // how many ems past the prefix, its indent included, since the indent
+        // is real em spaces in the runs rather than prefix. An em is the body
+        // face's size in points.
+        let hang = row.hang.map { CGFloat($0) * theme.fontSize } ?? 0
+
+        return ShapedRow(
+            attributed: attributed,
+            wrapped: wrap(attributed, width: wrapWidth, indent: prefixWidth + hang,
+                          align: row.align,
+                          prefixLength: prefix.reduce(0) { $0 + $1.text.utf16.count }),
+            lineHeight: theme.rowHeight(for: row),
+            wrapWidth: wrapWidth,
+            prefixWidth: prefixWidth,
+            quoteBarXs: barXs
+        )
+    }
+
+    /// Break `attributed` into visual lines at `width` points via Core Text. Each
+    /// line owns a `CTLine` over its substring (relative indices). `width <= 0`
+    /// keeps the whole row on one line; an empty row is one empty line so it still
+    /// occupies a line box and holds a caret.
+    /// `indent` hangs every line after the first that far right of the margin (and
+    /// takes that much off its wrap budget), so a wrapped quote or list item lines
+    /// its continuations up with its own text instead of under its gutter.
+    /// `align` is the block's alignment token (`Row.align`): `center` and `right`
+    /// give each line an offset into the room it leaves, and `justify` spreads
+    /// that room across the spaces of every line but the block's last — which is
+    /// what a justified paragraph is, and what leaves its final line ragged.
+    /// `prefixLength` is how many UTF-16 units of the row are its block
+    /// decoration (a quote's gutters, a list's bullet) — never justified, since
+    /// spreading a gutter moves the bar the view paints beside it.
+    static func wrap(_ attributed: NSAttributedString, width: CGFloat, indent: CGFloat = 0,
+                     align: String? = nil, prefixLength: Int = 0) -> [WrappedLine] {
+        let len = attributed.length
+        if len == 0 {
+            return [WrappedLine(attributed: attributed, line: CTLineCreateWithAttributedString(attributed),
+                                start: 0, length: 0, width: 0)]
+        }
+        let typesetter = CTTypesetterCreateWithAttributedString(attributed as CFAttributedString)
+        var lines: [WrappedLine] = []
+        var start = 0
+        while start < len {
+            // The first line pays for the prefix in glyphs; the rest pay for it in
+            // indent. Never let the indent eat the whole budget.
+            let hang = lines.isEmpty ? 0 : min(indent, max(0, width - 1))
+            let budget = width - hang
+            let count: Int = width > 0
+                ? max(1, CTTypesetterSuggestLineBreak(typesetter, start, Double(budget)))
+                : len - start
+            var sub = attributed.attributedSubstring(from: NSRange(location: start, length: count))
+            // A justified line is spread *in the string* — kern on its spaces —
+            // rather than by a justified `CTLine` or a paragraph style, because
+            // the string is what both the glyphs and the geometry come from. Not
+            // the block's last line: that one stays ragged, as every typesetter
+            // leaves it.
+            if align == "justify", budget > 0, start + count < len {
+                sub = justify(sub, to: budget, after: max(0, prefixLength - start))
+            }
+            let line = CTLineCreateWithAttributedString(sub as CFAttributedString)
+            let lineWidth = CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
+            lines.append(WrappedLine(
+                attributed: sub,
+                line: line,
+                start: start,
+                length: count,
+                width: lineWidth,
+                indent: hang,
+                // Measured without the trailing space a wrap leaves on the line:
+                // counted in, a centred line would sit half a space to the left
+                // of centre and a right-aligned one a whole space short of the
+                // margin.
+                align: alignOffset(align, room: budget - lineWidth
+                    + CGFloat(CTLineGetTrailingWhitespaceWidth(line))),
+                rise: rise(line)
+            ))
+            start += count
+        }
+        return lines
+    }
+
+    /// How far an inline formula on `line` stands past its text: the picture's
+    /// reach above the tallest font's ascent plus its reach below the deepest
+    /// font's descent. A formula is a run whose delegate reports the picture's
+    /// metrics (`MathRunDelegate`); every run, the formula's own included,
+    /// carries a font, so a line that is nothing but a formula still measures
+    /// against the text it stands in.
+    private static func rise(_ line: CTLine) -> CGFloat {
+        var fontAscent: CGFloat = 0, fontDescent: CGFloat = 0
+        var mathAscent: CGFloat = 0, mathDescent: CGFloat = 0
+        let delegateKey = kCTRunDelegateAttributeName as String
+        for run in CTLineGetGlyphRuns(line) as? [CTRun] ?? [] {
+            let attrs = CTRunGetAttributes(run) as? [String: Any] ?? [:]
+            if let font = attrs[kCTFontAttributeName as String] {
+                let f = font as! CTFont
+                fontAscent = max(fontAscent, CTFontGetAscent(f))
+                fontDescent = max(fontDescent, CTFontGetDescent(f))
+            }
+            guard attrs[delegateKey] != nil else { continue }
+            var ascent: CGFloat = 0, descent: CGFloat = 0
+            CTRunGetTypographicBounds(run, CFRange(location: 0, length: 0), &ascent, &descent, nil)
+            mathAscent = max(mathAscent, ascent)
+            mathDescent = max(mathDescent, descent)
+        }
+        return (max(0, mathAscent - fontAscent) + max(0, mathDescent - fontDescent)).rounded(.up)
+    }
+
+    /// How far into the room a line leaves its alignment pushes it: half for
+    /// `center`, all of it for `right`, none for the default, for `justify`
+    /// (which took the room up instead) and for a line with no room to move in —
+    /// a line wider than its column, which is what an unbreakable word makes.
+    private static func alignOffset(_ align: String?, room: CGFloat) -> CGFloat {
+        guard let align, room > 0 else { return 0 }
+        switch align {
+        case "center": return room / 2
+        case "right": return room
+        default: return 0
+        }
+    }
+
+    /// `line` spread to exactly `width` by kerning its interior spaces — the
+    /// justification a paragraph style would do, done where this layout can see
+    /// it.
+    ///
+    /// The kern goes on the spaces *between* words and never on the trailing one:
+    /// Core Text drops a line's last glyph's kern, and a space pushed at the end
+    /// of a line is width nobody sees. A line with no space to spread — one long
+    /// word, a CJK line — is returned as it came, ragged rather than letter-spaced,
+    /// which is the lesser of the two wrongs.
+    private static func justify(_ line: NSAttributedString, to width: CGFloat,
+                                after prefix: Int) -> NSAttributedString {
+        let text = line.string as NSString
+        guard prefix < text.length else { return line }
+        // The line without whatever whitespace the wrap left hanging off its end.
+        var end = text.length
+        while end > 0, text.substring(with: NSRange(location: end - 1, length: 1))
+            .trimmingCharacters(in: .whitespaces).isEmpty { end -= 1 }
+        let spaces = (prefix..<max(prefix, end)).filter {
+            text.substring(with: NSRange(location: $0, length: 1)) == " "
+        }
+        guard !spaces.isEmpty else { return line }
+        let natural = CGFloat(CTLineGetTypographicBounds(
+            CTLineCreateWithAttributedString(line as CFAttributedString), nil, nil, nil))
+        let trailing = CGFloat(CTLineGetTrailingWhitespaceWidth(
+            CTLineCreateWithAttributedString(line as CFAttributedString)))
+        let extra = width - (natural - trailing)
+        guard extra > 0 else { return line }
+        let kern = extra / CGFloat(spaces.count)
+        let out = NSMutableAttributedString(attributedString: line)
+        for i in spaces {
+            out.addAttribute(.kern, value: kern, range: NSRange(location: i, length: 1))
+        }
+        return out
+    }
+
+    // MARK: geometry
+
+    /// A 1.5pt-wide vertical rect at row `row`, UTF-16 offset `ch` — the geometry a
+    /// caret or a selection endpoint occupies, resolved to the visual line `ch` falls
+    /// on. `nil` if the row is out of range. At a soft-wrap boundary the position
+    /// belongs to the *start* of the following line.
+    func rect(row: Int, ch: Int) -> CGRect? {
+        guard rows.indices.contains(row) else { return nil }
+        let rl = rows[row]
+        if rl.media != nil { return mediaCaretRect(rl, ch: ch) }
+        if rl.picture != nil { return pictureCaretRect(rl, ch: ch) }
+        if rl.hosted != nil { return hostedCaretRect(rl, ch: ch) }
+        let lines = rl.wrapped
+        for (i, wl) in lines.enumerated() where ch < wl.start + wl.length || i == lines.count - 1 {
+            let x = CTLineGetOffsetForStringIndex(wl.line, CFIndex(max(0, ch - wl.start)), nil)
+            let o = rl.lineOrigin(i)
+            return CGRect(x: o.x + wl.offset + x, y: o.y, width: 1.5, height: rl.lineHeight(i))
+        }
+        let o = rl.lineOrigin(0)
+        return CGRect(x: o.x, y: o.y, width: 1.5, height: rl.lineHeight(0))
+    }
+
+    /// The caret's frame on a block media row: the box's leading edge in front of
+    /// the picture, its trailing edge past it, and as tall as the box either way.
+    ///
+    /// Core gives a block image, video, or audio exactly two caret homes — one
+    /// before it and one just after it, with nothing inside the markup (see
+    /// `block_media`). The row's own glyphs are the `🖼 alt` label the box is
+    /// painted *over*, so measuring the caret against them puts it at some
+    /// arbitrary point inside the picture: a blinking bar in the middle of a
+    /// photo that says nothing about where the next character will land. Riding
+    /// the box's edges says what a word processor's caret beside a figure says.
+    private func mediaCaretRect(_ rl: RowLayout, ch: Int) -> CGRect? {
+        guard let box = rl.media else { return nil }
+        let r = box.rect(top: rl.mediaTop, left: rl.originX + rl.shaped.prefixWidth)
+        // Past the label's last glyph is core's trailing stop. The reserved rows
+        // below the first carry no glyphs at all, so they are only ever "after" —
+        // which is right: they are the picture's lower half.
+        let after = ch >= rl.attributed.length
+        return CGRect(x: after ? r.maxX - 1.5 : r.minX, y: r.minY, width: 1.5, height: r.height)
+    }
+
+    /// `mediaCaretRect` for a block region's picture: its two homes are the
+    /// box's edges, for the same reason.
+    private func pictureCaretRect(_ rl: RowLayout, ch: Int) -> CGRect? {
+        guard let box = rl.picture else { return nil }
+        let r = box.rect(top: rl.pictureTop, left: rl.originX + rl.shaped.prefixWidth,
+                         width: rl.columnWidth - rl.shaped.prefixWidth)
+        let after = ch >= rl.attributed.length
+        return CGRect(x: after ? r.maxX - 1.5 : r.minX, y: r.minY, width: 1.5, height: r.height)
+    }
+
+    /// `mediaCaretRect` for the open region's view: core gives it the same
+    /// two homes, in front of it and past it, and the view is the picture the
+    /// caret stands beside. The rows under the first are only ever "after".
+    private func hostedCaretRect(_ rl: RowLayout, ch: Int) -> CGRect? {
+        guard let box = rl.hosted else { return nil }
+        let r = box.rect(top: rl.hostedTop, left: rl.originX + rl.shaped.prefixWidth)
+        let after = !rl.hostedFirst || ch >= rl.attributed.length
+        return CGRect(x: after ? r.maxX - 1.5 : r.minX, y: r.minY, width: 1.5, height: r.height)
+    }
+
+    /// The caret's frame — `caret_ch` (UTF-16, within its block row) mapped through
+    /// the pixel wrap to a rect. `nil` if the caret row is out of range. Inside a
+    /// table the caret rides the grid (by its source offset), not the collapsed
+    /// picture row `caret_row` names.
+    func caretRect(_ docView: DocView, theme: EditorTheme) -> CGRect? {
+        caretRect(src: Int(docView.caretSrc), row: Int(docView.caretRow), ch: Int(docView.caretCh),
+                  theme: theme)
+    }
+
+    /// The frame a caret standing at source offset `src` would have, given the
+    /// picture-row position `(row, ch)` core maps it to (`posForOffset`) — the
+    /// same answer as `caretRect(_:theme:)` for any position, not just the
+    /// caret's. What `UITextInput.caretRect(for:)` is asked for: the system
+    /// draws its caret there, anchors the edit menu and the loupe on it, and
+    /// scrolls it into view, so a position inside a table has to answer with
+    /// its cell, not with the collapsed picture row the table's grid replaces
+    /// — which put every caret in a table at the grid's top-left corner.
+    func caretRect(src: Int, row: Int, ch: Int, theme: EditorTheme) -> CGRect? {
+        if rows.indices.contains(row), let grid = rows[row].table {
+            let rl = rows[row]
+            if let inCell = tableCaretRect(grid, tableTop: rl.tableTop, originX: rl.originX,
+                                           caretSrc: src, theme: theme) {
+                return inCell
+            }
+            // Not in any cell: the table's trailing stop, which core maps onto
+            // the bottom border row. Drawn just past the grid's trailing edge on
+            // its last row — where the plain surface's caret sits after `┘`, and
+            // what a word processor's caret beside a figure says: past the block,
+            // not inside it. Under the grid would overlap the block below.
+            guard rl.tableLast, let last = grid.rows.last else { return nil }
+            return CGRect(x: rl.originX + grid.width + TableMetrics.padX,
+                          y: rl.tableTop + last.top + TableMetrics.padY,
+                          width: 1.5, height: theme.lineHeight)
+        }
+        return rect(row: row, ch: ch)
+    }
+
+    /// The line box a placeholder cue draws in — exactly the box the document's
+    /// first typed character will take, so the cue and the prose that replaces it
+    /// begin at the same point.
+    ///
+    /// Not `theme.padding`, which is only the floor: a `measure` centres the text
+    /// column in the room the padding leaves (`EditorTheme.column(in:)`), and a
+    /// page moves it to the sheet's own margin. Both answers live in the layout
+    /// and nowhere else, which is why a cue drawn from outside it can only guess.
+    ///
+    /// Nil once the document holds anything: a cue under prose is a cue over
+    /// something the reader wrote.
+    var placeholderBox: CGRect? {
+        guard isEmpty, let first = rows.first else { return nil }
+        let o = first.lineOrigin(0)
+        return CGRect(x: o.x, y: o.y, width: columnWidth, height: first.lineHeight(0))
+    }
+
+    /// The caret's frame inside a table: the cell *line* its source offset falls
+    /// on, at the x the offset maps to within that line and the y of the line's
+    /// band. A multi-line cell (an in-cell `<br>`) puts later offsets lower.
+    private func tableCaretRect(_ grid: TableLayout, tableTop: CGFloat, originX: CGFloat,
+                                caretSrc: Int, theme: EditorTheme) -> CGRect? {
+        guard let (row, _, line, lineIndex) = grid.locate(src: caretSrc) else { return nil }
+        let dx = CTLineGetOffsetForStringIndex(line.line, CFIndex(line.utf16Index(forSrc: caretSrc)), nil)
+        return CGRect(x: originX + line.textX + dx,
+                      y: tableTop + row.top + TableMetrics.padY + CGFloat(lineIndex) * grid.lineHeight,
+                      width: 1.5, height: theme.lineHeight)
+    }
+
+    /// The source offset a click at `point` resolves to when it lands in a table,
+    /// else `nil` (the caller falls back to the row/ch hit path). Core snaps it
+    /// to a real stop.
+    func tableHitOffset(_ point: CGPoint) -> Int? {
+        for rl in rows {
+            guard let grid = rl.table, rl.tableFirst else { continue }
+            let yInTable = point.y - rl.tableTop
+            guard yInTable >= 0, yInTable < grid.height else { continue }
+            let xInTable = point.x - rl.originX
+            guard let (_, _, line, _) = grid.locate(atX: xInTable, y: yInTable) else { return nil }
+            let rel = CTLineGetStringIndexForPosition(
+                line.line, CGPoint(x: max(0, xInTable - line.textX), y: 0))
+            return line.src(forUTF16: max(0, min(rel, line.attributed.length)))
+        }
+        return nil
+    }
+
+    /// The selection rectangles for the source range `[from, to)` that fall
+    /// inside tables — one per cell line the range touches, in view coordinates.
+    /// Empty when the range meets no table. The peer of `fillSelection` for the
+    /// grid: a table's picture rows carry no `wrapped` lines, so the ordinary
+    /// row-based selection walk skips right over them and the system (iOS) or the
+    /// caller would otherwise draw no highlight over a table. `from`/`to` are
+    /// source byte offsets; each rect flags whether it holds an endpoint.
+    /// The boxes a range of text occupies, one per visual line it touches, in
+    /// layout coordinates — what a selection overlay, a find-bar match, or a
+    /// dictation highlight is drawn from. `from`/`to` are core positions
+    /// (`posForOffset`); each box says whether it holds the range's start or end,
+    /// which is where a touch surface puts its handles. Tables carry no wrapped
+    /// lines, so a range over one comes from `tableSelectionRects` instead.
+    func rangeRects(from s: (row: Int, ch: Int), to e: (row: Int, ch: Int))
+        -> [(rect: CGRect, containsStart: Bool, containsEnd: Bool)]
+    {
+        guard e.row >= s.row else { return [] }
+        var rects: [(rect: CGRect, containsStart: Bool, containsEnd: Bool)] = []
+        for row in s.row...e.row where rows.indices.contains(row) {
+            let rl = rows[row]
+            let rowFrom = (row == s.row) ? s.ch : 0
+            let rowTo = (row == e.row) ? min(e.ch, rl.attributed.length) : rl.attributed.length
+            for (i, wl) in rl.wrapped.enumerated() {
+                let lineStart = wl.start, lineEnd = wl.start + wl.length
+                let cs = max(rowFrom, lineStart), ce = min(rowTo, lineEnd)
+                guard cs < ce else { continue }
+                let x0 = CTLineGetOffsetForStringIndex(wl.line, CFIndex(cs - lineStart), nil)
+                let x1 = CTLineGetOffsetForStringIndex(wl.line, CFIndex(ce - lineStart), nil)
+                // `lineOrigin` is the one accessor both flows go through: the
+                // continuous stack's formula, or where pagination placed the line.
+                let o = rl.lineOrigin(i)
+                rects.append((CGRect(x: o.x + wl.offset + x0, y: o.y, width: x1 - x0, height: rl.lineHeight(i)),
+                              row == s.row && cs == s.ch,
+                              row == e.row && ce == e.ch))
+            }
+        }
+        return rects
+    }
+
+    func tableSelectionRects(from: Int, to: Int)
+        -> [(rect: CGRect, containsStart: Bool, containsEnd: Bool)]
+    {
+        guard to > from else { return [] }
+        var out: [(rect: CGRect, containsStart: Bool, containsEnd: Bool)] = []
+        for rl in rows {
+            guard let grid = rl.table, rl.tableFirst else { continue }
+            for row in grid.rows {
+                for cell in row.cells {
+                    for (i, line) in cell.lines.enumerated() {
+                        let cs = max(from, line.start), ce = min(to, line.end)
+                        guard cs < ce else { continue }
+                        let sIdx = line.utf16Index(forSrc: cs)
+                        let eIdx = line.utf16Index(forSrc: ce)
+                        let x0 = CTLineGetOffsetForStringIndex(line.line, CFIndex(sIdx), nil)
+                        let x1 = CTLineGetOffsetForStringIndex(line.line, CFIndex(eIdx), nil)
+                        let y = rl.tableTop + row.top + TableMetrics.padY
+                            + CGFloat(i) * grid.lineHeight
+                        out.append((
+                            CGRect(x: rl.originX + line.textX + x0, y: y,
+                                   width: x1 - x0, height: grid.lineHeight),
+                            cs == from, ce == to
+                        ))
+                    }
+                }
+            }
+        }
+        return out
+    }
+
+    /// The source offsets bounding the cell line that holds `src`, and whether
+    /// that line continues the one above across a soft wrap (so its `start` is
+    /// the line above's `end`). `nil` outside every table.
+    func tableLineBounds(src: Int) -> (start: Int, end: Int, continues: Bool)? {
+        for rl in rows {
+            guard let grid = rl.table, rl.tableFirst,
+                  let (_, cell, line, lineIndex) = grid.locate(src: src)
+            else { continue }
+            let continues = lineIndex > 0 && cell.lines[lineIndex - 1].softWrapped
+            return (line.start, line.end, continues)
+        }
+        return nil
+    }
+
+    /// The vertical band of the cell line holding source offset `src` — a full
+    /// table-cell band (clearing the cell's top/bottom padding) at the cell's
+    /// first/last line, and the bare line band between. A vertical probe just past
+    /// this band lands on the next line, the next cell, or out of the table,
+    /// whichever is adjacent. `nil` when `src` isn't in a table (the caller uses
+    /// the caret/line rect, whose thin height is already the right band there).
+    ///
+    /// `row`, the caret's row where the caller has it, answers the same for a
+    /// directive the host draws: the whole box the row reserves, breathing
+    /// room and all. The caret is as tall as the view and no taller, so a probe
+    /// a point past it lands in the room under the view — still this row, whose
+    /// hit answers the stop past it — and ↓ from past the view never left it.
+    func caretBand(src: Int, row: Int? = nil) -> (minY: CGFloat, maxY: CGFloat)? {
+        if let row, rows.indices.contains(row), rows[row].hosted != nil || rows[row].picture != nil {
+            let first = rows[..<(row + 1)].lastIndex { $0.hostedFirst || $0.pictureFirst } ?? row
+            let rl = rows[first]
+            return (rl.top, rl.top + rl.height)
+        }
+        for rl in rows {
+            guard let grid = rl.table, rl.tableFirst,
+                  let (row, cell, _, lineIndex) = grid.locate(src: src)
+            else { continue }
+            let top = rl.tableTop + row.top
+            let lineTop = top + TableMetrics.padY + CGFloat(lineIndex) * grid.lineHeight
+            // On the table's first/last grid row, reach all the way to the table's
+            // true outer edge (`tableTop` / `tableTop + height`), not just the
+            // cell's band — a grid row sits a border's-width inside the box
+            // (`row.top` starts at `TableMetrics.border`). Without this, ↑ from the
+            // top row probes `minY - 1`, which lands *on* the top border line; the
+            // hit-test resolves that back into the table and the caret never
+            // reaches the block above it. The bottom edge is the symmetric peer.
+            let atTop = row.top == grid.rows.first?.top
+            let atBottom = row.top == grid.rows.last?.top
+            let minY = lineIndex == 0
+                ? (atTop ? rl.tableTop : top)
+                : lineTop
+            let maxY = lineIndex == cell.lines.count - 1
+                ? (atBottom ? rl.tableTop + grid.height : top + row.height)
+                : lineTop + grid.lineHeight
+            return (minY, maxY)
+        }
+        return nil
+    }
+
+    /// Map a point (view coordinates) to core's `(row, ch)`: the block row from the
+    /// vertical band it lands in, the visual line within it from the y offset, and
+    /// the UTF-16 offset from Core Text's hit-test of the horizontal position.
+    /// `click_ch` then clamps `ch` to a real caret stop.
+    /// The reading-order slot a layout point falls in — its (sheet, column).
+    ///
+    /// Zero everywhere in the continuous flow, and just the sheet index while a
+    /// sheet has one column, which is what lets `locate` be the same walk in every
+    /// flow rather than three of them.
+    private func slot(at p: CGPoint) -> Int {
+        setup.map { $0.slot(at: p, sheetX: sheetX) } ?? 0
+    }
+
+    /// The row a point resolves to, and the visual line within it.
+    ///
+    /// While a sheet has one text column, `rows` runs top to bottom and this is
+    /// the scan it always was. A second column breaks that ordering outright — it
+    /// starts back at the *top* of the same sheet, so `top` is no longer
+    /// increasing down the array and "the first row the point is above" stops
+    /// meaning anything. So the point's slot picks the candidates first, and the
+    /// vertical scan runs inside it.
+    ///
+    /// Over lines rather than rows, because a row can straddle a column boundary
+    /// exactly as it can a page one, and its two halves are then in different
+    /// slots. A table, a media box, and a boundary gap are each one whole box (see
+    /// `lineBoxes`), being placed atomically.
+    private func locate(_ point: CGPoint) -> (row: Int, line: Int) {
+        let target = slot(at: point)
+        var first: (Int, Int)?      // the slot's first line — the point is above it
+        var above: (Int, Int)?      // the last line in the slot starting at or above the point
+        var before: (Int, Int)?     // the last line in any earlier slot
+        for (r, rl) in rows.enumerated() {
+            for (i, box) in rl.lineBoxes.enumerated() {
+                let s = slot(at: CGPoint(x: box.midX, y: box.midY))
+                if s < target { before = (r, i); continue }
+                guard s == target else { continue }
+                if first == nil { first = (r, i) }
+                if point.y >= box.minY { above = (r, i) }
+            }
+        }
+        // In the slot the point landed in; else above everything in it; else the
+        // end of the content before it — which is what a click into a column the
+        // document never reached should mean.
+        return above ?? first ?? before ?? (0, 0)
+    }
+
+    /// Whether `point` lies under everything laid out — below the last line's
+    /// box in its own slot, or in a slot past it (the second column of a sheet
+    /// the text never reached). A click there is on nothing, and the view asks
+    /// core for `clickPastEnd` — the caret onto an empty paragraph under the
+    /// last block, opened if need be — rather than a caret at the pointer's x on
+    /// the last line, which is what `hit` answers for want of anything nearer.
+    ///
+    /// The last *boxed* line rather than `rows.last`: a table's rows past its
+    /// first carry no box of their own (the grid is placed whole on the first),
+    /// and a boundary row collapsed to nothing has none either.
+    func isPastEnd(_ point: CGPoint) -> Bool {
+        guard let box = rows.reversed().lazy.compactMap({ $0.lineBoxes.last }).first else {
+            return false
+        }
+        let target = slot(at: point)
+        let last = slot(at: CGPoint(x: box.midX, y: box.midY))
+        return target > last || (target == last && point.y >= box.maxY)
+    }
+
+    func hit(_ point: CGPoint) -> (row: Int, ch: Int) {
+        guard !rows.isEmpty else { return (0, 0) }
+        let (row, li) = locate(point)
+        let rl = rows[row]
+        // A picture holds no text positions: the caret's only homes on a media
+        // row are in front of the box and past it, and which one a point wants is
+        // which half of the box it fell in. Hit-testing the label glyphs the box
+        // covers would answer "in front of it" for a tap anywhere on the picture,
+        // including the blank space under a document that *ends* with one — where
+        // the clamp above lands every point on this row.
+        if let box = rl.media {
+            let r = box.rect(top: rl.mediaTop, left: rl.originX + rl.shaped.prefixWidth)
+            return (row, point.y < r.midY ? 0 : rl.attributed.length)
+        }
+        // A block region's picture, likewise: in front of it or past it.
+        if let box = rl.picture {
+            let r = box.rect(top: rl.pictureTop, left: rl.originX + rl.shaped.prefixWidth,
+                             width: rl.columnWidth - rl.shaped.prefixWidth)
+            return (row, point.y < r.midY ? 0 : rl.attributed.length)
+        }
+        // The open region's view, likewise — the view is the host's, and its
+        // two homes are leaf's.
+        if let box = rl.hosted {
+            let r = box.rect(top: rl.hostedTop, left: rl.originX + rl.shaped.prefixWidth)
+            return (row, point.y < r.midY ? 0 : rl.attributed.length)
+        }
+        // A table's picture rows are collapsed onto its grid, and only the first
+        // has a box for `locate` to find — so every point the grid's own hit
+        // test (`tableHitOffset`) declined lands here on that row, whose glyphs
+        // core maps to the first cell. Right for a point *above* the grid; a
+        // point under it wants the table's trailing stop, which is the bottom
+        // border row's end. Without this a click in the blank space under a
+        // document's last table put the caret in its top-left cell.
+        if let grid = rl.table {
+            guard point.y >= rl.tableTop + grid.height,
+                  let last = rows[row...].firstIndex(where: { $0.tableLast })
+            else { return (row, 0) }
+            return (last, rows[last].row.runs.reduce(0) { $0 + $1.text.utf16.count })
+        }
+        guard rl.wrapped.indices.contains(li) else { return (row, 0) }
+        let wl = rl.wrapped[li]
+        let localX = point.x - rl.lineOrigin(li).x - wl.offset
+        let rel = CTLineGetStringIndexForPosition(wl.line, CGPoint(x: max(0, localX), y: 0))
+        let ch = wl.start + min(max(0, rel), wl.length)
+        return (row, ch)
+    }
+
+    /// The baseline origin of the glyph at `(row, ch)`, in layout coordinates —
+    /// where a string set in that glyph's font would have to start to sit on
+    /// top of it. A line is drawn from the top of its box
+    /// (`.usesLineFragmentOrigin`), which puts its baseline one ascent down.
+    func baselineOrigin(row: Int, ch: Int) -> CGPoint? {
+        guard rows.indices.contains(row) else { return nil }
+        let rl = rows[row]
+        guard rl.drawsItsGlyphs, !rl.wrapped.isEmpty else { return nil }
+        let i = rl.wrapped.firstIndex { ch < $0.start + $0.length } ?? rl.wrapped.count - 1
+        let wl = rl.wrapped[i]
+        var ascent: CGFloat = 0
+        CTLineGetTypographicBounds(wl.line, &ascent, nil, nil)
+        let x = CTLineGetOffsetForStringIndex(wl.line, CFIndex(max(0, ch - wl.start)), nil)
+        let o = rl.lineOrigin(i)
+        return CGPoint(x: o.x + wl.offset + x, y: o.y + ascent)
+    }
+
+    /// The visual line index within row `row` that offset `ch` sits on, and that
+    /// line's `[start, end)` UTF-16 range — for visual-line motion (Home/End/↑/↓).
+    /// Returns `nil` if the row is out of range.
+    func visualLine(row: Int, ch: Int) -> (index: Int, start: Int, end: Int)? {
+        guard rows.indices.contains(row) else { return nil }
+        let lines = rows[row].wrapped
+        for (i, wl) in lines.enumerated() where ch < wl.start + wl.length || i == lines.count - 1 {
+            return (i, wl.start, wl.start + wl.length)
+        }
+        return (0, 0, 0)
+    }
+
+    /// Fill the selection background behind the runs core marked `sel`, split across
+    /// the row's visual lines, into `ctx`. Core carves the selection into run
+    /// boundaries; we coalesce those into ranges and clip each to a visual line.
+    func fillSelection(row rl: RowLayout, color: LeafColor, in ctx: CGContext) {
+        var ranges: [(Int, Int)] = []
+        var utf16 = 0
+        for run in rl.row.runs {
+            let len = run.text.utf16.count
+            if run.sel {
+                if let last = ranges.last, last.1 == utf16 {
+                    ranges[ranges.count - 1].1 = utf16 + len       // merge adjacent runs
+                } else {
+                    ranges.append((utf16, utf16 + len))
+                }
+            }
+            utf16 += len
+        }
+        guard !ranges.isEmpty else { return }
+        ctx.setFillColor(color.cgColor)
+        for (i, wl) in rl.wrapped.enumerated() {
+            let lineStart = wl.start, lineEnd = wl.start + wl.length
+            let o = rl.lineOrigin(i)
+            for (s, e) in ranges {
+                let cs = max(s, lineStart), ce = min(e, lineEnd)
+                guard cs < ce else { continue }
+                let x0 = CTLineGetOffsetForStringIndex(wl.line, CFIndex(cs - lineStart), nil)
+                let x1 = CTLineGetOffsetForStringIndex(wl.line, CFIndex(ce - lineStart), nil)
+                ctx.fill(CGRect(x: o.x + wl.offset + x0, y: o.y, width: x1 - x0, height: rl.lineHeight(i)))
+            }
+        }
+    }
+}

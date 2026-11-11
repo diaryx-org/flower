@@ -1,0 +1,142 @@
+# Leaf for the Mac (`Leaf.app`, `org.diaryx.leaf`): the leaf-dioxus editor
+# widget (crates/leaf-dioxus) in a document app that is Rust from `main` up.
+# Each window is a Dioxus page drawn by Blitz on wgpu — the toolbar, the
+# editor and its status line, and the Settings window. What only AppKit can
+# be is AppKit, reached through objc2: an `NSDocument` per window (autosave,
+# Versions, Rename, Move To, Revert, recents, Finder's Open With), the menu
+# bar, the context menu, the spelling checker, Look Up, and the print panel.
+#
+# Its winit backend, wgpu's hardware layer and Blitz are patched in leaf's
+# root Cargo.toml, where a [patch] has to be. Run it, or build the Mac's as
+# a bundle through the xtask:
+#
+#     cargo run -p leaf-dioxus-app -- document.md
+#     cargo xtask mac                                    # Leaf.app, launched on the sample
+[package]
+# Not `leaf-dioxus`, which is the widget's name: one graph cannot hold two
+# packages by one name. The binary is the app's name.
+name = "leaf-dioxus-app"
+version.workspace = true
+edition = "2024"
+publish = false
+
+[[bin]]
+name = "Leaf"
+path = "src/main.rs"
+
+[dependencies]
+# The editor: everything drawn in a document window but the toolbar.
+leaf-dioxus = { path = "../../crates/leaf-dioxus" }
+# diaryx-org's components for Dioxus, which work on Blitz and are read by
+# assistive tech: the toolbar's buttons and menus, the context menu, the
+# Link prompt, the Settings window; and the pages' scrolling and zoom
+# (`unit::scroll`).
+unit = { git = "https://github.com/diaryx-org/unit", branch = "main" }
+dioxus = { version = "0.8.0-alpha.3", default-features = false, features = [
+    "macro",
+    "html",
+    "signals",
+    "hooks",
+] }
+# The document type and Blitz's pieces, with the editor's features (its
+# Cargo.toml says why each): classic `vello` for emoji, `system-fonts`, `net`
+# for pictures read from `file:` URLs, `svg`. No `launch`: the app runs its
+# own event loop handler, which opens a window per document (`app.rs`).
+dioxus-native = { version = "0.8.0-alpha.3", default-features = false, features = [
+    "net", "svg", "system-fonts", "vello", "accessibility",
+] }
+# `fs` on: a document is a file, read and written through its NSDocument.
+leaf-core = { path = "../../crates/leaf-core", default-features = false, features = [
+    "fs",
+    "syntax",
+] }
+# What dioxus-native's `launch` assembles, assembled here once per window.
+# The versions dioxus-native 0.8.0-alpha.3 pins.
+dioxus-core = "=0.8.0-alpha.3"
+# Each window's `document` context (`head.rs`).
+dioxus-document = "=0.8.0-alpha.3"
+blitz-shell = { version = "=0.3.0-beta.4", default-features = false }
+blitz-dom = { version = "=0.3.0-beta.4", default-features = false }
+blitz-net = "=0.3.0-beta.4"
+blitz-traits = "=0.3.0-beta.4"
+# Assistive tech's requests (a press), carried out by blitz-shell's
+# `View::accessibility_action_events` through the app's own window events:
+# the version blitz-shell's `accessibility` uses.
+accesskit_xplat = "0.2"
+# The tree itself, where the editor's text goes in (`access.rs`).
+accesskit = "0.25"
+# The renderer's scene (`renderer.rs`).
+anyrender = "0.14"
+# The windows' renderer, built here for its antialiasing (`renderer.rs`).
+anyrender_vello = "0.15"
+vello = { version = "0.11", default-features = false }
+# `apple-font-embolden`: glyphs thickened as macOS thickens its own text, and
+# not hinted, which the system never does — so the editor's text has the
+# weight of the text around it.
+blitz-paint = { version = "=0.3.0-beta.4", default-features = false, features = ["apple-font-embolden"] }
+skrifa = "0.44"
+# The font `Editor::font_at` answers with, for Look Up.
+parley = "=0.12.0"
+# The Reflow and Pages views, and the preview beside the source: the
+# document set by Typst, edited on its pages (`pages.rs` hosts them).
+leaf-pages = { path = "../../crates/leaf-pages" }
+# Export as PDF, Print and the PDF preview (`pdf.rs`): the document set by
+# Typst, as every paged format Diaryx writes is. `pdf` without `network`: a
+# document's Typst never reaches Typst Universe from the app. `svg`: the
+# preview's pages. It brings diaryx-org's Typst fork; a Typst crate named
+# here must name the same source.
+# `install`: a template from Typst Universe, fetched when the reader asks
+# for it, through the app's own HTTP client (`templates.rs`).
+twig-export = { git = "https://github.com/diaryx-org/twig-export", branch = "main", default-features = false, features = ["pdf", "svg", "install"] }
+# Fetching a template: the client and TLS blitz-net already brings, blocking,
+# off the UI's thread.
+reqwest = { version = "0.13", default-features = false, features = ["native-tls", "blocking"] }
+# What a typesetter is asked, and answers, a line each (`typeset.rs`).
+serde_json = "1"
+# A PDF from the typesetter, on the wire (`typeset.rs`).
+base64 = "0.22"
+# Blitz's network provider and the editor's timers run on tokio.
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "time"] }
+raw-window-handle = "0.6"
+
+[target.'cfg(unix)'.dependencies]
+# A typesetter's memory limit (`typeset.rs`).
+libc = "0.2"
+
+[target.'cfg(not(target_os = "macos"))'.dependencies]
+# Linux's and Windows' Open and Save dialogs (`platform/desktop`): the XDG
+# desktop portal on Linux, so the dialog is the desktop's own, GNOME's or
+# KDE's or the compositor's.
+rfd = "0.17"
+# The clipboard, with its HTML flavour; Wayland's too.
+arboard = { version = "3", default-features = false, features = ["wayland-data-control"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+# AppKit and Foundation, at the versions winit-appkit already uses.
+objc2 = "0.6"
+block2 = "0.6"
+dispatch2 = "0.3"
+objc2-foundation = { version = "0.3.2", default-features = false, features = [
+    "std", "block2", "NSArray", "NSAttributedString", "NSBundle", "NSData", "NSDictionary",
+    "NSError", "NSGeometry", "NSNotification", "NSObjCRuntime", "NSOrthography", "NSProcessInfo",
+    "NSRange", "NSString", "NSTextCheckingResult", "NSThread", "NSURL", "NSUserDefaults",
+    "NSValue", "NSEnumerator", "NSKeyValueCoding", "NSCharacterSet",
+] }
+objc2-app-kit = { version = "0.3.2", default-features = false, features = [
+    "std", "block2", "objc2-core-foundation", "NSAlert", "NSAppearance", "NSApplication",
+    "NSAttributedString", "NSButton", "NSCell", "NSColor", "NSControl", "NSDocument",
+    "NSDocumentController", "NSEvent", "NSFont", "NSFontManager", "NSGraphics", "NSMenu",
+    "NSMenuItem", "NSOpenPanel", "NSPanel", "NSPrintInfo", "NSPrintOperation", "NSResponder",
+    "NSRunningApplication", "NSSavePanel", "NSSound", "NSSpellChecker", "NSText",
+    "NSTextField", "NSUserInterfaceItemIdentification", "NSUserInterfaceValidation", "NSView",
+    "NSWindow", "NSWindowController", "NSWorkspace", "NSPasteboard", "NSTextCheckingClient",
+] }
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFCGTypes"] }
+# Print: the PDF `pdf.rs` makes, through PDFKit's print operation.
+objc2-pdf-kit = { version = "0.3.2", default-features = false, features = [
+    "std", "PDFDocument", "objc2-app-kit",
+] }
+
+[dev-dependencies]
+# A folder of their own for the tests that write files, removed after.
+tempfile = "3"

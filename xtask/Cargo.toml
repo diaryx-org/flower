@@ -1,14 +1,13 @@
-# flower's tasks too big to be a command: two CI jobs, the app's build and
-# packaging, and the version sync a release bump runs. Not a published crate —
-# `publish = false` keeps it out of any `cargo publish` sweep, and it
-# deliberately has no dependencies: CI jobs build it before they can do
-# anything, so the cost of building it is paid on every push.
 [package]
 name = "xtask"
-version = "0.0.0"
+version.workspace = true
 edition.workspace = true
-rust-version.workspace = true
-license.workspace = true
+description = "The workspace's task runner: `cargo xtask <task>` — the one place the multi-toolchain builds (Rust → UniFFI → Xcode, Rust → wasm → browser) are written down."
+# A development harness, never a published artifact.
 publish = false
 
 [dependencies]
+anyhow.workspace = true
+# Already in the lockfile via uniffi's `cli` feature, so the CLI surface costs
+# this crate nothing extra to build.
+clap = { version = "4", features = ["derive"] }

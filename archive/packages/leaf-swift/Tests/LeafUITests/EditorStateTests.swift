@@ -1,0 +1,103 @@
+//  EditorStateTests.swift
+//
+//  The chrome-facing projection of a `DocView` and its `Equatable` conformance —
+//  the latter is load-bearing: the SwiftUI host only republishes (and so only
+//  triggers a relayout) when the state actually changed. See `LeafEditorModel`.
+
+import XCTest
+import LeafFFI
+@testable import LeafUI
+
+final class EditorStateTests: XCTestCase {
+    func testProjectsDocViewChrome() {
+        let dv = docView([row([mkRun("x")])], dirty: true, view: "source", heading: 2,
+                         active: ["bold", "italic"], link: "https://x.dev")
+        let s = EditorState(dv)
+        XCTAssertEqual(s.view, "source")
+        XCTAssertTrue(s.dirty)
+        XCTAssertEqual(s.heading, 2)
+        XCTAssertEqual(s.active, ["bold", "italic"])
+        XCTAssertEqual(s.link, "https://x.dev")
+        XCTAssertFalse(s.canUndo)
+        XCTAssertFalse(s.canRedo)
+    }
+
+    /// The history buttons enable by these, so an undo that leaves nothing
+    /// else on the state different still has to republish.
+    func testHistoryDepthIsPartOfTheState() {
+        let fresh = EditorState(docView([row([mkRun("x")])]))
+        let edited = EditorState(docView([row([mkRun("x")])], canUndo: true))
+        let undone = EditorState(docView([row([mkRun("x")])], canRedo: true))
+        XCTAssertTrue(edited.canUndo && !edited.canRedo)
+        XCTAssertTrue(undone.canRedo && !undone.canUndo)
+        XCTAssertNotEqual(fresh, edited)
+        XCTAssertNotEqual(edited, undone)
+    }
+
+    func testEquatable() {
+        let a = EditorState(view: "wysiwyg", dirty: false, heading: nil, active: [])
+        let b = EditorState(view: "wysiwyg", dirty: false, heading: nil, active: [])
+        let dirtyChanged = EditorState(view: "wysiwyg", dirty: true, heading: nil, active: [])
+        let marksChanged = EditorState(view: "wysiwyg", dirty: false, heading: nil, active: ["bold"])
+        XCTAssertEqual(a, b)
+        XCTAssertNotEqual(a, dirtyChanged)
+        XCTAssertNotEqual(a, marksChanged)
+    }
+
+    /// The whole reason the destination rides the state: stepping in and out of a
+    /// link is a change the toolbar has to be *told about*. `EditorState` is only
+    /// republished when it differs, and nothing else on it moves with the caret
+    /// here — so if `link` weren't part of the comparison, the Link button's pill
+    /// would still be lit on plain text.
+    func testSteppingOutOfALinkIsAChangedState() {
+        let inALink = EditorState(view: "wysiwyg", dirty: false, heading: nil, active: [], link: "https://x.dev")
+        let outside = EditorState(view: "wysiwyg", dirty: false, heading: nil, active: [], link: nil)
+        XCTAssertNotEqual(inALink, outside)
+        // And one link to another — re-pointing has to relight the seed too.
+        let elsewhere = EditorState(view: "wysiwyg", dirty: false, heading: nil, active: [], link: "https://y.dev")
+        XCTAssertNotEqual(inALink, elsewhere)
+    }
+
+    /// Stepping into a code block is a change the toolbar has to be told about
+    /// for `link`'s reason: nothing else on the state moves with the caret.
+    func testSteppingIntoACodeBlockIsAChangedState() {
+        let inside = EditorState(docView([row([mkRun("x")])], codeBlock: true))
+        let outside = EditorState(docView([row([mkRun("x")])], codeBlock: false))
+        XCTAssertTrue(inside.codeBlock)
+        XCTAssertNotEqual(inside, outside)
+    }
+
+    func testVerseTicksFromTheFrame() {
+        XCTAssertTrue(EditorState(docView([row([mkRun("x")])], verse: true)).verse)
+        XCTAssertFalse(EditorState(docView([row([mkRun("x")])])).verse)
+    }
+
+    /// Stepping into a quote, likewise — and it stacks: a heading in a quote
+    /// is both, where a heading in a code block could not be.
+    func testSteppingIntoAQuoteIsAChangedState() {
+        let inside = EditorState(docView([row([mkRun("x")])], heading: 2, blockquote: true))
+        let outside = EditorState(docView([row([mkRun("x")])], heading: 2, blockquote: false))
+        XCTAssertTrue(inside.blockquote)
+        XCTAssertEqual(inside.heading, 2)
+        XCTAssertNotEqual(inside, outside)
+    }
+
+    /// Stepping from a bullet into a task item — and ticking the box the caret
+    /// stands in — are changes the toolbar has to be told about, for the same
+    /// reason: nothing else on the state moves.
+    func testSteppingIntoATaskItemIsAChangedState() {
+        let plain = EditorState(docView([row([mkRun("x")])], task: nil))
+        let unticked = EditorState(docView([row([mkRun("x")])], task: false))
+        let ticked = EditorState(docView([row([mkRun("x")])], task: true))
+        XCTAssertNil(plain.task)
+        XCTAssertEqual(unticked.task, false)
+        XCTAssertNotEqual(plain, unticked)
+        XCTAssertNotEqual(unticked, ticked)
+    }
+
+    /// The memberwise initializer keeps compiling for a host that wrote one out
+    /// before there was a destination on it.
+    func testLinkDefaultsToNone() {
+        XCTAssertNil(EditorState(view: "wysiwyg", dirty: false, heading: nil, active: []).link)
+    }
+}

@@ -1,16 +1,13 @@
-# What ship needs to know about flower: its release, and its CI. Everything not
+# What ship needs to know about leaf: its release, and its CI. Everything not
 # stated here is ship's default — the manifest, the changelog path, the cliff
 # config, and that this is a Cargo workspace.
-name = flower
-url = https://github.com/diaryx-org/flower
+name = leaf
+url = https://github.com/diaryx-org/leaf
 release_branch = main
 
 # No `verify`: before cutting, a release runs the jobs below.
 
-# The Mac app's bundle takes the workspace version when `cargo xtask mac`
-# puts it together, so a bump has nothing to move but the manifests.
-
-# Not on crates.io: flower is consumed from git, by commit, so a tag is a name
+# Not on crates.io: leaf is consumed from git, by commit, so a tag is a name
 # for a commit and the start of whatever else is listed below.
 publishes = false
 
@@ -18,86 +15,56 @@ publishes = false
 # before the push is handed back to you is composed from these.
 tag_starts
 > *
-> > workflow = homebrew.yml
-> > does = builds the `flower` CLI binaries and writes the tap formula
+> > workflow = mac-app.yml
+> > does = builds, signs and notarises Leaf.app, attaches its disk image to the release, and writes the tap's `leaf-editor` cask
+> *
+> > workflow = pages.yml
+> > does = builds Leaf for the browser (`cargo xtask web`) and deploys it to https://diaryx-org.github.io/leaf/, in place of what is there
 
-# CI. `.github/workflows/ci.yml` asks `ship ci --matrix` for these and runs one
-# per runner, as `ship ci <id>`; `ship ci` runs them all here, in this order,
-# with the same shell, and stops at the first that fails. Changing CI is an edit
-# here and nowhere else.
+# The checks a release has to pass. `ship ci` runs them here, in this order,
+# with the same shell, and stops at the first that fails; `ship ci <id>` runs
+# one. No GitHub workflow runs them.
 #
-# A job is `id` (what `ship ci <id>` takes), `name` (the check GitHub shows as
-# `CI / <name>` — renaming it renames the required status check) and `run` (run
-# by `bash -eo pipefail -c` at the repository root). `runner` is the workflow's:
-# `components` are the rustup components it installs, `apt` the Ubuntu
-# packages (space-separated) it installs for a job that links a system
-# library, and `builds = false` skips restoring the cargo cache. A job's `run`
-# never installs anything itself, so `ship ci` here asks for no `sudo`.
-# Cheapest and most likely to fail first.
-#
-# The Swift package (`packages/flower-swift`) is mostly not here: compiling it
-# needs macOS and Xcode, and `scripts/check-swift.sh` and
-# `scripts/test-swift.sh` are run by hand on a Mac. `bindings` is the exception
-# that fits a Linux runner.
+# A job is `id` (what `ship ci <id>` takes), `name` (the heading a full run
+# prints) and `run` (run by `bash -eo pipefail -c` at the repository root).
+# Cheapest and most likely to fail first, so the run that is going to fail
+# fails in seconds rather than after everything compiles.
 job
 > *
 > > id = fmt
 > > name = Format
 > > run = cargo fmt --all --check
-> > runner
-> > > components = rustfmt
-> > > builds = false
 > *
-> > # Warnings are errors in CI, so they are errors here too — a lint that only
-> > # fires on the runner is a lint found too late.
+> > # Warnings are errors here because they are errors in review — a lint that
+> > # only fires on someone else's machine is a lint found too late. The Dioxus
+> > # widget is linted without `system-clipboard` too (its renderer, `vello`,
+> > # turned back on: dioxus-native needs one), the shape a host with its own
+> > # clipboard builds.
 > > id = clippy
 > > name = Clippy
-> > run = cargo clippy --workspace --all-targets -- -D warnings
-> > runner
-> > > components = clippy
+> > run = cargo clippy --workspace --all-targets -- -D warnings && cargo clippy -p leaf-dioxus --all-targets --no-default-features --features vello -- -D warnings
 > *
+> > # Includes the xtask's own tests: that the two frontend bindings export the
+> > # same methods, and that every workspace member is checked alone below.
 > > id = test
 > > name = Test
 > > run = cargo test --workspace
 > *
 > > # Workspace feature unification means `cargo check --workspace` can pass
-> > # even when a crate cannot compile on its own. This builds each crate alone;
-> > # the list is in xtask, beside the test that fails when a new member is left
-> > # out of it.
+> > # when a crate cannot compile on its own, so each crate is checked alone, in
+> > # each feature shape a host builds. The list is in the xtask.
 > > id = package-isolation
 > > name = Package isolation
 > > run = cargo xtask package-isolation
 > *
-> > # The Swift package's UniFFI binding is committed, so it can go stale
-> > # against `crates/flower-ffi`. The script regenerates it from the crate's
-> > # embedded metadata and diffs; the output is arch-neutral source, so no
-> > # Swift is compiled and a Linux runner will do.
-> > id = bindings
-> > name = Swift bindings
-> > run = bash scripts/gen-bindings.sh --check
-> *
-> > # The Dioxus widget and its app, each a workspace of its own (an alpha
-> > # Dioxus; the app's winit-appkit is the patched one from the Blitz fork,
-> > # by git), so nothing above reaches them. Compiles Blitz and wgpu: the slowest job.
-> > # fontique, under Blitz's text, links fontconfig on Linux; wayland is
-> > # dlopened and the image has OpenSSL, so fontconfig is all it installs.
-> > id = dioxus
-> > name = Dioxus widget and app
-> > run = cargo fmt --manifest-path crates/flower-data-editor/Cargo.toml --check && cargo clippy --manifest-path crates/flower-data-editor/Cargo.toml --all-targets -- -D warnings && cargo test --manifest-path crates/flower-data-editor/Cargo.toml && cargo fmt --manifest-path apps/flower-dioxus/Cargo.toml --check && cargo clippy --manifest-path apps/flower-dioxus/Cargo.toml --all-targets -- -D warnings && cargo test --manifest-path apps/flower-dioxus/Cargo.toml
-> > runner
-> > > components = rustfmt, clippy
-> > > apt = libfontconfig-dev
-> *
-> > # A build, not a test run: MSRV is a promise about who can compile flower,
-> > # and the dev-dependencies need not hold to it. The version is read from
-> > # `[workspace.package] rust-version`, so the pin follows the declared floor.
-> > # `rustup run` rather than `cargo +<version>`, which only rustup's proxy knows.
-> > id = msrv
-> > name = MSRV
-> > run = '''
-version=$(sed -n 's/^rust-version = "\(.*\)"$/\1/p' Cargo.toml)
-test -n "$version" || { echo "no rust-version in Cargo.toml" >&2; exit 1; }
-echo "MSRV from Cargo.toml: $version"
-rustup toolchain install "$version" --profile minimal --no-self-update
-rustup run "$version" cargo build --workspace
-'''
+> > # The web host (apps/leaf-dioxus-web, the editor in a browser tab) and
+> > # the widget as it builds there: for `wasm32-unknown-unknown`, without the
+> > # system clipboard, on Blitz's hybrid renderer, with its Mermaid split
+> > # point. Off the web the host is empty, so the jobs above see none of it.
+> > # Linted only: it runs in a browser, which `cargo test` has none of, and
+> > # its split build (`cargo xtask web`) is slow; its README says how to try
+> > # it. Last because it compiles Blitz and wgpu for another target: the
+> > # slowest job, and the least likely to be the one that fails.
+> > id = web
+> > name = Dioxus web host
+> > run = cargo clippy -p leaf-dioxus-web --target wasm32-unknown-unknown --all-targets -- -D warnings && cargo clippy -p leaf-dioxus --target wasm32-unknown-unknown --no-default-features --features dioxus-native/vello-hybrid,wasm-split -- -D warnings

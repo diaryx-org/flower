@@ -1,0 +1,928 @@
+//  MediaLayoutTests.swift
+//
+//  The geometry of a block media box: how it fits a picture, how it collapses
+//  core's reserved rows onto one box, and what it resolves a `src` to.
+//
+//  No `MediaStore` is handed to the layout here, so every box lays out at its
+//  no-picture size — which is the point: the collapsing and the row bookkeeping
+//  are what these test, and neither should need a file on disk to exercise.
+
+import CoreGraphics
+import ImageIO
+import XCTest
+
+@testable import LeafUI
+import LeafFFI
+
+final class MediaLayoutTests: XCTestCase {
+    private let theme = EditorTheme.default
+
+    // MARK: fitting
+
+    func testFitScalesDownToTheBoxKeepingAspect() {
+        let out = MediaLayout.fit(CGSize(width: 800, height: 400), maxWidth: 400, maxHeight: 1000)
+        XCTAssertEqual(out.width, 400)
+        XCTAssertEqual(out.height, 200, "aspect held: half the width, half the height")
+    }
+
+    func testFitIsCappedByHeightAsWellAsWidth() {
+        // A tall, narrow picture is bounded by the height cap, not the column.
+        let out = MediaLayout.fit(CGSize(width: 100, height: 1000), maxWidth: 400, maxHeight: 200)
+        XCTAssertEqual(out.height, 200)
+        XCTAssertEqual(out.width, 20)
+    }
+
+    func testFitNeverEnlargesASmallPicture() {
+        // A 16pt icon blown up to span the text column reads as a bug, not a
+        // feature — the scale is clamped at 1.
+        let out = MediaLayout.fit(CGSize(width: 16, height: 16), maxWidth: 600, maxHeight: 600)
+        XCTAssertEqual(out, CGSize(width: 16, height: 16))
+    }
+
+    func testFitSurvivesADegenerateSize() {
+        // A zero dimension would divide by zero; it falls back to the full box.
+        let out = MediaLayout.fit(CGSize(width: 0, height: 0), maxWidth: 300, maxHeight: 100)
+        XCTAssertEqual(out, CGSize(width: 300, height: 100))
+    }
+
+    // MARK: kinds
+
+    func testAudioGetsAFixedControlHeightNotAnAspectRatio() {
+        let box = MediaLayout(mkMedia("take.mp3", kind: .audio), still: nil,
+                              contentWidth: 900, theme: theme)
+        XCTAssertEqual(box.size.height, MediaMetrics.audioHeight)
+        XCTAssertEqual(box.size.width, MediaMetrics.audioWidth,
+                       "capped rather than spanning a wide column")
+        XCTAssertTrue(box.showsPlayBadge)
+        XCTAssertFalse(box.isBroken, "audio has no picture to be missing")
+    }
+
+    func testAPosterlessVideoIsReservedAtVideoShapeNotAsAChip() {
+        // It has no poster to measure, but it is still a picture: reserving a
+        // chip would make the player letterbox a whole movie into a strip the
+        // height of a line of text the moment it starts.
+        let box = MediaLayout(mkMedia("clip.mp4", kind: .video), still: nil,
+                              contentWidth: 600, theme: theme)
+        XCTAssertTrue(box.showsPlayBadge)
+        XCTAssertFalse(box.isBroken, "a video with no poster isn't broken, just pictureless")
+        XCTAssertEqual(box.size.width / box.size.height, 16.0 / 9.0, accuracy: 0.02)
+        XCTAssertGreaterThan(box.size.height, MediaMetrics.audioHeight * 2,
+                             "not the chip height")
+    }
+
+    func testABrokenImageIsStillAChip() {
+        // The chip is for something with nothing to show *and* nothing expected.
+        let box = MediaLayout(mkMedia("gone.png"), still: nil, contentWidth: 600, theme: theme)
+        XCTAssertEqual(box.size.width, MediaMetrics.chipWidth)
+        XCTAssertEqual(box.chipLabel, "gone.png")
+    }
+
+    func testAnImageThatDidNotLoadReadsAsBroken() {
+        // The one case that earns the dashed frame: an image is *only* a picture,
+        // so no picture means the path is wrong.
+        let box = MediaLayout(mkMedia("gone.png"), still: nil, contentWidth: 600, theme: theme)
+        XCTAssertTrue(box.isBroken)
+        XCTAssertFalse(box.showsPlayBadge, "nothing to play")
+    }
+
+    func testChipLabelPrefersAltThenTheFileName() {
+        XCTAssertEqual(
+            MediaLayout(mkMedia("a/b/clip.mp4", kind: .video, alt: "the talk"), still: nil,
+                        contentWidth: 400, theme: theme).chipLabel,
+            "the talk")
+        XCTAssertEqual(
+            MediaLayout(mkMedia("a/b/clip.mp4", kind: .video), still: nil,
+                        contentWidth: 400, theme: theme).chipLabel,
+            "clip.mp4", "the path's last component, not the whole path")
+    }
+
+    // MARK: collapsing into the frame
+
+    func testMediaRowsCollapseOntoOneBoxAndStayOneToOneWithCoreRows() {
+        // Core reserved three rows; the box replaces them. `rows` must stay 1:1
+        // with the frame — every caret and click path indexes it by core's row
+        // number — so all three survive, sharing one top, with only the first
+        // carrying height. The same contract a table's picture rows hold.
+        let frame = docView(
+            [row([mkRun("before")]),
+             row([mkRun("🖼 a cat")]), row([]), row([]),
+             row([mkRun("after")])],
+            media: [mkMedia("cat.png", startRow: 1, endRow: 4)]
+        )
+        let layout = EditorLayout(frame, theme: theme, wrapWidth: 400)
+
+        XCTAssertEqual(layout.rows.count, 5, "rows stay 1:1 with core's rows")
+        let boxes = layout.rows.filter { $0.media != nil }
+        XCTAssertEqual(boxes.count, 3, "all three reserved rows carry the box")
+        XCTAssertEqual(boxes.filter(\.mediaFirst).count, 1, "exactly one paints it")
+        XCTAssertEqual(Set(boxes.map(\.mediaTop)).count, 1, "they share one top")
+        XCTAssertEqual(boxes.filter { !$0.mediaFirst }.map(\.height), [0, 0],
+                       "only the first row has height")
+        XCTAssertGreaterThan(boxes[0].height, 0)
+    }
+
+    func testTheRowAfterMediaStartsBelowTheWholeBox() {
+        let frame = docView(
+            [row([mkRun("🖼 a cat")]), row([]), row([mkRun("after")])],
+            media: [mkMedia("cat.png", startRow: 0, endRow: 2)]
+        )
+        let layout = EditorLayout(frame, theme: theme, wrapWidth: 400)
+        let box = layout.rows[0]
+        XCTAssertEqual(layout.rows[2].top, box.top + box.height, accuracy: 0.5,
+                       "prose resumes under the box, not under the reserved rows")
+    }
+
+    func testAFrameWithNoMediaIsUntouched() {
+        let frame = docView([row([mkRun("just prose")]), row([mkRun("more")])])
+        let layout = EditorLayout(frame, theme: theme, wrapWidth: 400)
+        XCTAssertTrue(layout.rows.allSatisfy { $0.media == nil })
+    }
+
+    // MARK: hit-testing
+
+    func testOnlyPlayableMediaAnswersAHit() {
+        // An image has nothing to *play*. Whether a click on one is worth acting
+        // on depends on what has loaded into its box, which only a view can see —
+        // so geometry answers `mediaBox` for it and `playableMedia` not at all.
+        let frame = docView(
+            [row([mkRun("🖼 a cat")]), row([mkRun("🎬 clip")])],
+            media: [mkMedia("cat.png", startRow: 0, endRow: 1),
+                    mkMedia("clip.mp4", kind: .video, startRow: 1, endRow: 2)]
+        )
+        let layout = EditorLayout(frame, theme: theme, wrapWidth: 400)
+
+        let image = layout.rows[0]
+        let inImage = CGPoint(x: theme.padding.left + 4, y: image.mediaTop + MediaMetrics.gap + 4)
+        XCTAssertNil(layout.playableMedia(at: inImage), "an image isn't playable")
+
+        let video = layout.rows[1]
+        let inVideo = CGPoint(x: theme.padding.left + 4, y: video.mediaTop + MediaMetrics.gap + 4)
+        XCTAssertEqual(layout.playableMedia(at: inVideo)?.src, "clip.mp4")
+
+        // The superset does answer for the image — an empty picture box is what
+        // the reader clicks to ask the host for it.
+        XCTAssertEqual(layout.mediaBox(at: inImage)?.src, "cat.png")
+        XCTAssertEqual(layout.mediaBox(at: inVideo)?.src, "clip.mp4")
+    }
+
+    func testAPointOutsideEveryBoxHitsNothing() {
+        let frame = docView([row([mkRun("🎬 clip")])],
+                            media: [mkMedia("clip.mp4", kind: .video, startRow: 0, endRow: 1)])
+        let layout = EditorLayout(frame, theme: theme, wrapWidth: 400)
+        XCTAssertNil(layout.playableMedia(at: CGPoint(x: 5000, y: 5000)))
+    }
+
+    // MARK: the caret around a picture
+
+    /// A document that ends with a picture — the shape the caret bugs show up in.
+    private func pictureLast() -> EditorLayout {
+        let frame = docView(
+            [row([mkRun("prose above")]), row([mkRun("🖼 a cat")])],
+            media: [mkMedia("cat.png", startRow: 1, endRow: 2)]
+        )
+        return EditorLayout(frame, theme: theme, wrapWidth: 400)
+    }
+
+    func testATapBelowATrailingPictureLandsAfterItNotBeforeIt() {
+        // Regression: every point below the last row clamps onto it, and when
+        // that row is a picture the label glyphs it's painted over answered the
+        // hit — putting the caret in *front* of the photo (drawn as a bar down
+        // its left edge) for a tap on the empty page under it.
+        let layout = pictureLast()
+        let label = layout.rows[1].attributed.length
+        let (row, ch) = layout.hit(CGPoint(x: theme.padding.left + 4, y: 99_999))
+        XCTAssertEqual(row, 1)
+        XCTAssertEqual(ch, label, "past the label's last glyph — core's stop after the image")
+    }
+
+    func testTheTopHalfOfAPictureIsStillInFrontOfIt() {
+        // The other home: a tap on the picture's upper half means "before this".
+        let layout = pictureLast()
+        let box = layout.rows[1]
+        let top = box.mediaTop + MediaMetrics.gap + 2
+        let (row, ch) = layout.hit(CGPoint(x: theme.padding.left + 40, y: top))
+        XCTAssertEqual(row, 1)
+        XCTAssertEqual(ch, 0)
+    }
+
+    func testTheCaretRidesTheBoxEdgesAndIsAsTallAsThePicture() throws {
+        let layout = pictureLast()
+        let rl = layout.rows[1]
+        let drawn = rl.media!.rect(top: rl.mediaTop, left: theme.padding.left + rl.shaped.prefixWidth)
+
+        let before = try XCTUnwrap(layout.rect(row: 1, ch: 0))
+        XCTAssertEqual(before.minX, drawn.minX, accuracy: 0.5, "at the picture's leading edge")
+        XCTAssertEqual(before.minY, drawn.minY, accuracy: 0.5)
+        XCTAssertEqual(before.height, drawn.height, accuracy: 0.5, "as tall as the box")
+
+        let after = try XCTUnwrap(layout.rect(row: 1, ch: rl.attributed.length))
+        XCTAssertEqual(after.maxX, drawn.maxX, accuracy: 0.5, "at its trailing edge")
+        XCTAssertEqual(after.minY, drawn.minY, accuracy: 0.5)
+        XCTAssertEqual(after.height, drawn.height, accuracy: 0.5)
+        XCTAssertGreaterThan(after.minX, before.minX)
+    }
+
+    func testAReservedRowBelowThePictureIsTheCaretHomePastIt() throws {
+        // The blank rows core reserves under a measured picture carry no glyphs,
+        // so they're only ever the stop past it — and their caret must still draw
+        // on the box, not at the origin of a zero-height row.
+        let frame = docView(
+            [row([mkRun("🖼 a cat")]), row([])],
+            media: [mkMedia("cat.png", startRow: 0, endRow: 2)]
+        )
+        let layout = EditorLayout(frame, theme: theme, wrapWidth: 400)
+        let rl = layout.rows[0]
+        let drawn = rl.media!.rect(top: rl.mediaTop, left: theme.padding.left)
+        let caret = try XCTUnwrap(layout.rect(row: 1, ch: 0))
+        XCTAssertEqual(caret.maxX, drawn.maxX, accuracy: 0.5)
+        XCTAssertEqual(caret.height, drawn.height, accuracy: 0.5)
+    }
+
+    // MARK: the rects a player is positioned onto
+
+    func testMediaRectsAreKeyedBySrcNotByRow() {
+        // Keying by src is what lets a playing video survive an edit above it:
+        // rows renumber on every keystroke, sources don't.
+        let frame = docView(
+            [row([mkRun("🖼 a cat")]), row([mkRun("🎬 clip")])],
+            media: [mkMedia("cat.png", startRow: 0, endRow: 1),
+                    mkMedia("clip.mp4", kind: .video, startRow: 1, endRow: 2)]
+        )
+        let rects = EditorLayout(frame, theme: theme, wrapWidth: 400).mediaRects()
+        XCTAssertEqual(Set(rects.keys), ["cat.png", "clip.mp4"])
+    }
+
+    func testAnEditAboveAVideoMovesItsRectWithoutChangingItsKey() {
+        // The scenario the keying exists for. Same document, one extra line of
+        // prose above: the video's rect moves down, its key is untouched — so a
+        // host repositions the installed player instead of tearing it down.
+        let before = docView(
+            [row([mkRun("intro")]), row([mkRun("🎬 clip")])],
+            media: [mkMedia("clip.mp4", kind: .video, startRow: 1, endRow: 2)]
+        )
+        let after = docView(
+            [row([mkRun("intro")]), row([mkRun("a new line")]), row([mkRun("🎬 clip")])],
+            media: [mkMedia("clip.mp4", kind: .video, startRow: 2, endRow: 3)]
+        )
+        let r1 = EditorLayout(before, theme: theme, wrapWidth: 400).mediaRects()
+        let r2 = EditorLayout(after, theme: theme, wrapWidth: 400).mediaRects()
+        XCTAssertNotNil(r1["clip.mp4"])
+        XCTAssertNotNil(r2["clip.mp4"])
+        XCTAssertGreaterThan(r2["clip.mp4"]!.minY, r1["clip.mp4"]!.minY,
+                             "the box moved down under the inserted line")
+    }
+
+    func testMediaDeletedFromTheDocumentLeavesTheRects() {
+        // What stops playback: a player whose src is absent from the new frame's
+        // rects has been edited away, and the host removes it.
+        let frame = docView([row([mkRun("just prose")])])
+        let rects = EditorLayout(frame, theme: theme, wrapWidth: 400).mediaRects()
+        XCTAssertNil(rects["clip.mp4"])
+        XCTAssertTrue(rects.isEmpty)
+    }
+
+    func testMediaRectsMatchWhereTheBoxIsDrawn() {
+        // The rect a player is installed at must be the one the still was drawn
+        // into, or the player would sit off the block it belongs to.
+        let frame = docView([row([mkRun("🎬 clip")])],
+                            media: [mkMedia("clip.mp4", kind: .video, startRow: 0, endRow: 1)])
+        let layout = EditorLayout(frame, theme: theme, wrapWidth: 400)
+        let rl = layout.rows[0]
+        let drawn = rl.media!.rect(top: rl.mediaTop,
+                                   left: theme.padding.left + rl.shaped.prefixWidth)
+        XCTAssertEqual(layout.mediaRects()["clip.mp4"], drawn)
+    }
+
+    // MARK: resolving a src
+
+    func testResolveJoinsARelativePathToTheDocumentDirectory() {
+        let store = MediaStore(baseURL: URL(fileURLWithPath: "/docs/notes/", isDirectory: true))
+        XCTAssertEqual(store.resolve("img/cat.png")?.path, "/docs/notes/img/cat.png")
+    }
+
+    func testResolveTakesAnAbsolutePathAsItIs() {
+        let store = MediaStore(baseURL: URL(fileURLWithPath: "/docs/", isDirectory: true))
+        XCTAssertEqual(store.resolve("/tmp/cat.png")?.path, "/tmp/cat.png")
+    }
+
+    func testResolveDeclinesWhatThisLoaderCannotRead() {
+        let store = MediaStore(baseURL: URL(fileURLWithPath: "/docs/", isDirectory: true))
+        // Remote and inline sources need an async fetch or a decoder this
+        // synchronous, local-file loader deliberately doesn't have.
+        XCTAssertNil(store.resolve("https://example.com/cat.png"))
+        XCTAssertNil(store.resolve("//cdn.example.com/cat.png"))
+        XCTAssertNil(store.resolve("data:image/png;base64,iVBORw0KGgo="))
+        XCTAssertNil(store.resolve("   "))
+    }
+
+    func testResolveDeclinesARelativePathWithNoDocumentDirectory() {
+        // An untitled buffer has nothing for `./cat.png` to be relative *to*.
+        XCTAssertNil(MediaStore(baseURL: nil).resolve("cat.png"))
+    }
+
+    // MARK: data: URIs — decoded here, no host, no network
+
+    /// A 1×1 PNG as a `data:` URI, the smallest real thing to decode.
+    private var dotDataURI: String {
+        "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJ"
+            + "AAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+    }
+
+    func testADataURIDecodesWithoutAHostOrABaseDirectory() {
+        // The point of handling these natively: a self-contained document needs
+        // neither a document directory nor anything from the app around it.
+        let store = MediaStore(baseURL: nil)
+        let still = store.still(for: mkMedia(dotDataURI))
+        XCTAssertNotNil(still)
+        XCTAssertEqual(still?.bitmap?.width, 1)
+    }
+
+    func testADataURIIsNeverHandedToTheHost() {
+        var asked: [String] = []
+        let store = MediaStore()
+        store.onResolveMedia = { src, done in asked.append(src); done(nil) }
+        _ = store.still(for: mkMedia(dotDataURI))
+        XCTAssertTrue(asked.isEmpty, "it carries its own bytes; nothing to resolve")
+    }
+
+    func testADataURIPayloadMayBeWrapped() {
+        // Base64 in a document is often line-wrapped, and whitespace is fatal to
+        // the decoder — so it's stripped rather than the document being rejected.
+        let wrapped = dotDataURI.replacingOccurrences(of: "base64,", with: "base64,\n  ")
+        XCTAssertNotNil(MediaStore.decodeDataURI(wrapped))
+    }
+
+    func testAMalformedDataURIIsJustNoPicture() {
+        XCTAssertNil(MediaStore.decodeDataURI("data:image/png;base64"), "no comma")
+        XCTAssertNil(MediaStore.decodeDataURI("https://example.com/a.png"))
+        XCTAssertNil(MediaStore(baseURL: nil).still(for: mkMedia("data:image/png;base64,!!!!")))
+    }
+
+    func testADataURIIsNotPlayable() {
+        // Nothing can stream from a string; playing one would mean writing the
+        // whole movie to a file first, for a spelling nobody uses for video.
+        XCTAssertNil(MediaStore().playableURL(for: dotDataURI))
+    }
+
+    // MARK: the host resolver
+
+    func testAnUnreadableSourceIsHandedToTheHostOnceAndCached() {
+        var asked = 0
+        let store = MediaStore()
+        store.onResolveMedia = { _, done in asked += 1; done(nil) }
+        let remote = mkMedia("https://example.com/cat.png")
+        _ = store.still(for: remote)
+        _ = store.still(for: remote)
+        _ = store.still(for: remote)
+        XCTAssertEqual(asked, 1, "a declined source is remembered, not re-asked every frame")
+    }
+
+    func testWithNoHostAnUnreadableSourceIsSimplyNoPicture() {
+        let store = MediaStore()
+        XCTAssertNil(store.still(for: mkMedia("https://example.com/cat.png")))
+        XCTAssertFalse(store.isResolving("https://example.com/cat.png"))
+    }
+
+    func testAResolvedFileIsDecodedAndAnnounced() throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("dot.png")
+        try onePixelPNG().write(to: file)
+
+        var announced: [String] = []
+        let store = MediaStore()
+        store.onLoaded = { announced.append($0) }
+        // A host that answers later — the usual shape, a fetch.
+        var pending: ((URL?) -> Void)?
+        store.onResolveMedia = { _, done in pending = done }
+
+        let remote = mkMedia("https://example.com/cat.png")
+        XCTAssertNil(store.still(for: remote), "nothing to draw on the first pass")
+        XCTAssertTrue(announced.isEmpty)
+        pending?(file)
+        XCTAssertEqual(announced, ["https://example.com/cat.png"],
+                       "the view is told to repaint when the answer lands")
+        XCTAssertNotNil(store.still(for: remote), "and now it has a picture")
+    }
+
+    func testASynchronousAnswerIsHandedToTheLayoutThatAsked() throws {
+        // `still(for:)` is called from inside a layout, and a repaint from
+        // inside a layout re-enters the view's render. A host that answers
+        // before `ask` returns — declining with `done(nil)`, or handing over a
+        // file it already has — therefore gets no announcement: the layout in
+        // progress takes the answer itself.
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("dot.png")
+        try onePixelPNG().write(to: file)
+
+        var announced: [String] = []
+        let store = MediaStore()
+        store.onLoaded = { announced.append($0) }
+        store.onResolveMedia = { _, done in done(file) }
+
+        XCTAssertNotNil(store.still(for: mkMedia("https://example.com/cat.png")),
+                        "the picture is there on the first pass")
+        XCTAssertTrue(announced.isEmpty, "no repaint from inside the layout that asked")
+        XCTAssertFalse(store.isResolving("https://example.com/cat.png"))
+    }
+
+    func testAResolvedFileIsAlsoWhatPlaybackStreamsFrom() throws {
+        // Why the host answers with a file rather than with bytes: the same
+        // answer serves the still *and* the player.
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("clip.mp4")
+        try Data([0, 1, 2, 3]).write(to: file)
+
+        let store = MediaStore()
+        store.onResolveMedia = { _, done in done(file) }
+        XCTAssertEqual(store.playableURL(for: "https://example.com/clip.mp4"), file)
+    }
+
+    func testASourceInFlightReportsItself() {
+        // So a tap can say "it's coming" rather than falling through as if the
+        // reader had hit nothing.
+        var pending: ((URL?) -> Void)?
+        let store = MediaStore()
+        store.onResolveMedia = { _, done in pending = done }
+        _ = store.still(for: mkMedia("https://example.com/cat.png"))
+        XCTAssertTrue(store.isResolving("https://example.com/cat.png"))
+        pending?(nil)
+        XCTAssertFalse(store.isResolving("https://example.com/cat.png"), "settled")
+    }
+
+    func testAnAnswerArrivingAfterAFlushIsDropped() throws {
+        // The document was swapped (or its directory repointed) while the host
+        // was still fetching; that answer belongs to a document that is gone.
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("dot.png")
+        try onePixelPNG().write(to: file)
+
+        var pending: ((URL?) -> Void)?
+        var announced: [String] = []
+        let store = MediaStore()
+        store.onLoaded = { announced.append($0) }
+        store.onResolveMedia = { _, done in pending = done }
+
+        _ = store.still(for: mkMedia("https://example.com/cat.png"))
+        store.flush()
+        pending?(file)          // the late answer
+        XCTAssertTrue(announced.isEmpty, "no repaint for a document that is gone")
+        XCTAssertFalse(store.isResolving("https://example.com/cat.png"))
+    }
+
+    // MARK: a local path that isn't here yet
+
+    func testALocalPathWithNoBytesYetIsOfferedToTheHost() throws {
+        // The synced-vault case: `img/cat.png` composes to a perfectly good URL
+        // and there is nothing at it, because the provider hasn't materialized
+        // the placeholder. That is the host's to fetch, not a decode failure to
+        // remember — so it goes to the host like any source this loader can't
+        // read, and the answer draws.
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let elsewhere = dir.appendingPathComponent("materialized.png")
+        try onePixelPNG().write(to: elsewhere)
+
+        var asked: [String] = []
+        let store = MediaStore(baseURL: dir)
+        store.onResolveMedia = { src, done in asked.append(src); done(elsewhere) }
+
+        XCTAssertNotNil(store.still(for: mkMedia("img/cat.png")),
+                        "the host answered at once, so the first pass has the picture")
+        XCTAssertEqual(asked, ["img/cat.png"], "asked with the src as written")
+    }
+
+    func testTheHostsOwnSpellingIsReadAtOnceWithoutARoundTrip() throws {
+        // A `/`-rooted reference means the app's root, not the machine's. With
+        // the app saying so up front, the file draws in the pass that asked —
+        // no trip through `onResolveMedia`, no second layout for the reader
+        // to watch happen.
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("chart.svg")
+        try Data(#"<svg xmlns="http://www.w3.org/2000/svg" width="20" height="10"/>"#.utf8)
+            .write(to: file)
+
+        var asked = 0
+        var announced = 0
+        let store = MediaStore(baseURL: dir)
+        store.onLocateMedia = { src in
+            src.hasPrefix("/") ? dir.appendingPathComponent(String(src.dropFirst())) : nil
+        }
+        store.onResolveMedia = { _, done in asked += 1; done(nil) }
+        store.onLoaded = { _ in announced += 1 }
+
+        let still = store.still(for: mkMedia("/chart.svg"))
+        XCTAssertNotNil(still, "drawn in the same pass")
+        if case .vector(let picture)? = still {
+            XCTAssertEqual(picture.size, CGSize(width: 20, height: 10))
+        } else {
+            XCTFail("an SVG is a vector still")
+        }
+        XCTAssertEqual(asked, 0, "the host's async hook is never reached")
+        XCTAssertEqual(announced, 0, "nothing arrived late, so nothing to announce")
+    }
+
+    func testAHostWithNoOpinionLeavesTheLoadersOwnResolution() throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try onePixelPNG().write(to: dir.appendingPathComponent("dot.png"))
+
+        var located: [String] = []
+        let store = MediaStore(baseURL: dir)
+        store.onLocateMedia = { src in located.append(src); return nil }
+        XCTAssertNotNil(store.still(for: mkMedia("dot.png")), "relative to the document, as before")
+        XCTAssertEqual(located, ["dot.png"], "asked first, with the src as written")
+    }
+
+    func testAHostLocationThatIsNotHereYetStillGoesToTheHostToFetch() throws {
+        // The app knew where the file belongs, but the bytes are not on this
+        // device (an iCloud placeholder): that is exactly what `onResolveMedia`
+        // is for, and it is asked with the source as written.
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let missing = dir.appendingPathComponent("later.png")
+
+        var asked: [String] = []
+        let store = MediaStore(baseURL: dir)
+        store.onLocateMedia = { _ in missing }
+        store.onResolveMedia = { src, done in asked.append(src); done(nil) }
+        XCTAssertNil(store.still(for: mkMedia("/later.png")))
+        XCTAssertEqual(asked, ["/later.png"])
+    }
+
+    func testAMissWithNoHostHookIsNotRememberedAgainstAHookWiredLater() throws {
+        // The surface sets the document's directory — which lays out, and asks
+        // for every picture — before it wires the hooks. That first look must
+        // not poison the cache, or the picture waits for a double-click.
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try onePixelPNG().write(to: dir.appendingPathComponent("dot.png"))
+
+        let store = MediaStore(baseURL: dir)
+        XCTAssertNil(store.still(for: mkMedia("/dot.png")), "no host, and no such absolute path")
+        store.onLocateMedia = { src in dir.appendingPathComponent(String(src.dropFirst())) }
+        XCTAssertNotNil(store.still(for: mkMedia("/dot.png")), "the hook gets its look")
+    }
+
+    func testALocalFileThatIsHereIsNeverOfferedToTheHost() throws {
+        // The common case must not acquire a round trip through the app.
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try onePixelPNG().write(to: dir.appendingPathComponent("dot.png"))
+
+        var asked = 0
+        let store = MediaStore(baseURL: dir)
+        store.onResolveMedia = { _, done in asked += 1; done(nil) }
+        XCTAssertNotNil(store.still(for: mkMedia("dot.png")))
+        XCTAssertEqual(asked, 0)
+    }
+
+    func testALocalVideoIsPlayableWithoutTheHostEvenThoughItDecodesToNoStill() throws {
+        // Readability is the test, not a successful decode: `load` will never
+        // make a CGImage out of an mp4, and the file URL is exactly what
+        // playback needs. Guarding on the decode would send every local video
+        // to the host.
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let clip = dir.appendingPathComponent("clip.mp4")
+        try Data([0, 1, 2, 3]).write(to: clip)
+
+        var asked = 0
+        let store = MediaStore(baseURL: dir)
+        store.onResolveMedia = { _, done in asked += 1; done(nil) }
+        XCTAssertEqual(store.playableURL(for: "clip.mp4"), clip)
+        XCTAssertEqual(asked, 0)
+    }
+
+    // MARK: forgetting a decline
+
+    func testForgetLetsADeclinedSourceBeAskedAgain() throws {
+        // What `reloadMedia` is for: the app declined on open, the reader said
+        // load it anyway, and the refusal has to be reconsidered.
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("dot.png")
+        try onePixelPNG().write(to: file)
+
+        var allow = false
+        var asked = 0
+        let store = MediaStore()
+        store.onResolveMedia = { _, done in asked += 1; done(allow ? file : nil) }
+
+        let remote = mkMedia("https://example.com/cat.png")
+        XCTAssertNil(store.still(for: remote), "declined")
+        XCTAssertNil(store.still(for: remote))
+        XCTAssertEqual(asked, 1, "and the decline is cached")
+
+        allow = true
+        store.forget("https://example.com/cat.png")
+        XCTAssertNotNil(store.still(for: remote), "asked again, and this time the answer was a file")
+        XCTAssertEqual(asked, 2)
+    }
+
+    func testForgetLeavesASourceInFlightAlone() {
+        // Forgetting a pending entry would send the host after the same bytes a
+        // second time, and the first answer would still be on its way.
+        var asked = 0
+        let store = MediaStore()
+        store.onResolveMedia = { _, done in asked += 1; _ = done }
+        let remote = mkMedia("https://example.com/cat.png")
+        _ = store.still(for: remote)
+        store.forget("https://example.com/cat.png")
+        _ = store.still(for: remote)
+        XCTAssertEqual(asked, 1)
+        XCTAssertTrue(store.isResolving("https://example.com/cat.png"))
+    }
+
+    func testForgetEverythingIsAFlush() throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try onePixelPNG().write(to: dir.appendingPathComponent("dot.png"))
+        let store = MediaStore(baseURL: dir)
+        XCTAssertNotNil(store.still(for: mkMedia("dot.png")))
+        try FileManager.default.removeItem(at: dir.appendingPathComponent("dot.png"))
+        store.forget(nil)
+        XCTAssertNil(store.still(for: mkMedia("dot.png")))
+    }
+
+    // MARK: the way up a photo says it goes
+
+    // MARK: SVG
+
+    /// A 20×10 picture, its left half red, its right half blue.
+    private let halvesSVG = """
+        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="10">
+          <rect width="10" height="10" fill="#ff0000"/>
+          <rect x="10" width="10" height="10" fill="#0000ff"/>
+        </svg>
+        """
+
+    func testAnSVGFileIsAVectorStillAtItsDeclaredSize() throws {
+        // ImageIO has no SVG codec; this used to be the dashed broken chip. Now
+        // it is a picture, measured by the canvas the SVG declares.
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try Data(halvesSVG.utf8).write(to: dir.appendingPathComponent("halves.svg"))
+
+        let still = try XCTUnwrap(MediaStore(baseURL: dir).still(for: mkMedia("halves.svg")))
+        guard case .vector(let picture) = still else { return XCTFail("an SVG is vector, not pixels") }
+        XCTAssertEqual(picture.size, CGSize(width: 20, height: 10))
+        XCTAssertEqual(still.naturalSize, CGSize(width: 20, height: 10))
+
+        let box = MediaLayout(mkMedia("halves.svg"), still: still, contentWidth: 600, theme: theme)
+        XCTAssertFalse(box.isBroken)
+        XCTAssertEqual(box.size, CGSize(width: 20, height: 10), "fit never enlarges, SVG or not")
+    }
+
+    func testAnSVGDataURIDecodesInBothSpellings() throws {
+        let store = MediaStore(baseURL: nil)
+        let base64 = "data:image/svg+xml;base64," + Data(halvesSVG.utf8).base64EncodedString()
+        let percent = "data:image/svg+xml;utf8,"
+            + halvesSVG.addingPercentEncoding(withAllowedCharacters: .alphanumerics)!
+        for src in [base64, percent] {
+            let still = store.still(for: mkMedia(src))
+            guard case .vector(let picture)? = still else { return XCTFail("\(src.prefix(30))… is vector") }
+            XCTAssertEqual(picture.size.width, 20)
+        }
+    }
+
+    func testAnSVGDrawsUprightAndUnmirroredIntoTheFlippedBox() throws {
+        // The two things a flipped context gets wrong. Left half red, right
+        // half blue, drawn into a y-down 40×20 context the way the views draw:
+        // red must be on the left, and — with a tall red rect on top only —
+        // top must be top.
+        let svg = """
+            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="10">
+              <rect width="10" height="10" fill="#ff0000"/>
+              <rect x="10" width="10" height="10" fill="#0000ff"/>
+              <rect width="20" height="3" fill="#00ff00"/>
+            </svg>
+            """
+        let still = try XCTUnwrap(MediaStore(baseURL: nil).still(
+            for: mkMedia("data:image/svg+xml;base64," + Data(svg.utf8).base64EncodedString())))
+
+        let width = 40, height = 20
+        var pixels = [UInt8](repeating: 0, count: width * height * 4)
+        pixels.withUnsafeMutableBytes { raw in
+            let ctx = CGContext(
+                data: raw.baseAddress, width: width, height: height, bitsPerComponent: 8,
+                bytesPerRow: width * 4, space: CGColorSpace(name: CGColorSpace.sRGB)!,
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue)!
+            // As the views do: flip so y runs down, then draw the box.
+            ctx.translateBy(x: 0, y: CGFloat(height))
+            ctx.scaleBy(x: 1, y: -1)
+            still.draw(in: CGRect(x: 0, y: 0, width: width, height: height), ctx: ctx)
+        }
+        func px(_ x: Int, _ y: Int) -> (UInt8, UInt8, UInt8) {
+            let i = (y * width + x) * 4
+            return (pixels[i], pixels[i + 1], pixels[i + 2])
+        }
+        XCTAssertEqual(px(10, 15).0, 255, "left is red")
+        XCTAssertEqual(px(30, 15).2, 255, "right is blue")
+        XCTAssertEqual(px(10, 2).1, 255, "the green band is at the top, not the bottom")
+        XCTAssertEqual(px(10, 17).1, 0)
+    }
+
+    func testATaggedPhotoIsTurnedTheWayUpItSaysItGoes() throws {
+        // A camera stores the sensor's pixels and a tag saying how it was held,
+        // so a photo taken upside down is stored upside down. Decoding the
+        // pixels and dropping the tag draws it that way, which is what a phone
+        // showed for every picture it took in any orientation but one.
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try cornerMarkedJPEG(width: 32, height: 32, orientation: .down)
+            .write(to: dir.appendingPathComponent("photo.jpg"))
+
+        let still = try XCTUnwrap(MediaStore(baseURL: dir).still(for: mkMedia("photo.jpg"))?.bitmap)
+        XCTAssertFalse(isRed(still, x: 8, y: 8), "the stored corner is not where it is drawn")
+        XCTAssertTrue(isRed(still, x: 24, y: 24), "half a turn puts it opposite")
+    }
+
+    func testABigPictureIsMeasuredWholeAndDecodedAtTheSizeItIsDrawn() throws {
+        // Layout reads the header, so the box is the shape of the whole picture;
+        // the pixels are decoded for the box, not for the camera.
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try cornerMarkedJPEG(width: 4000, height: 2000, orientation: nil)
+            .write(to: dir.appendingPathComponent("big.jpg"))
+        let store = MediaStore(baseURL: dir)
+        store.decodesForPaper = true
+        guard case .bitmap(let bitmap) = try XCTUnwrap(store.still(for: mkMedia("big.jpg"))) else {
+            return XCTFail("a JPEG is a raster")
+        }
+        XCTAssertEqual(bitmap.naturalSize, CGSize(width: 4000, height: 2000))
+        XCTAssertNil(bitmap.image, "nothing decoded until it is drawn")
+        let pixels = try XCTUnwrap(bitmap.pixels(for: CGSize(width: 300, height: 150), scale: 2))
+        XCTAssertLessThan(pixels.width, 4000)
+        XCTAssertGreaterThanOrEqual(pixels.width, 300 * Int(MediaBitmap.paperDensity))
+    }
+
+    func testAScreenDecodesOffTheMainThreadAndSaysWhenItHas() throws {
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try cornerMarkedJPEG(width: 800, height: 400, orientation: nil)
+            .write(to: dir.appendingPathComponent("pic.jpg"))
+        let store = MediaStore(baseURL: dir)
+        let decoded = expectation(description: "decoded")
+        store.onDecoded = { decoded.fulfill() }
+        guard case .bitmap(let bitmap) = try XCTUnwrap(store.still(for: mkMedia("pic.jpg"))) else {
+            return XCTFail("a JPEG is a raster")
+        }
+        let size = CGSize(width: 400, height: 200)
+        XCTAssertNil(bitmap.pixels(for: size, scale: 2), "the first draw has nothing yet")
+        wait(for: [decoded], timeout: 5)
+        XCTAssertNotNil(bitmap.pixels(for: size, scale: 2))
+    }
+
+    func testAQuarterTurnSwapsTheSizeTheBoxIsMeasuredFrom() throws {
+        // Why this isn't only a drawing nicety: `MediaLayout` measures the box
+        // from the picture's own dimensions, and a quarter turn exchanges them.
+        // A portrait photo laid out landscape is the wrong shape whatever is
+        // then painted into it.
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try cornerMarkedJPEG(width: 400, height: 200, orientation: .right)
+            .write(to: dir.appendingPathComponent("photo.jpg"))
+
+        let still = try XCTUnwrap(MediaStore(baseURL: dir).still(for: mkMedia("photo.jpg")))
+        XCTAssertEqual(still.bitmap?.width, 200)
+        XCTAssertEqual(still.bitmap?.height, 400, "and at its own resolution, not a thumbnail's")
+
+        let box = MediaLayout(mkMedia("photo.jpg"), still: still, contentWidth: 600, theme: theme)
+        XCTAssertGreaterThan(box.size.height, box.size.width, "laid out as the portrait it is")
+    }
+
+    func testAnUntaggedPictureIsLeftExactlyAsItIs() throws {
+        // The common case — a screenshot, a drawing, anything not off a camera.
+        // It must not acquire a turn, and it takes the cheap decode.
+        let dir = try makeTempDir()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        try cornerMarkedJPEG(width: 32, height: 32, orientation: nil)
+            .write(to: dir.appendingPathComponent("shot.jpg"))
+
+        let still = try XCTUnwrap(MediaStore(baseURL: dir).still(for: mkMedia("shot.jpg"))?.bitmap)
+        XCTAssertTrue(isRed(still, x: 8, y: 8), "the corner is where it was stored")
+    }
+
+    /// A JPEG with its top-left quarter red and the rest white, tagged with
+    /// `orientation` — or with no tag at all, which is how everything that isn't
+    /// a photograph arrives. The mark is a quarter rather than a pixel because
+    /// JPEG is lossy and a lone pixel would be smeared into its neighbours.
+    private func cornerMarkedJPEG(
+        width: Int, height: Int, orientation: CGImagePropertyOrientation?
+    ) throws -> Data {
+        let context = try XCTUnwrap(CGContext(
+            data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue))
+        context.setFillColor(gray: 1, alpha: 1)
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        context.setFillColor(red: 1, green: 0, blue: 0, alpha: 1)
+        // Quartz counts up from the bottom, so the *top* half is the far end.
+        context.fill(CGRect(x: 0, y: height / 2, width: width / 2, height: height / 2))
+        let image = try XCTUnwrap(context.makeImage())
+
+        let data = NSMutableData()
+        let out = try XCTUnwrap(CGImageDestinationCreateWithData(
+            data, "public.jpeg" as CFString, 1, nil))
+        var properties: [CFString: Any] = [kCGImageDestinationLossyCompressionQuality: 1.0]
+        if let orientation { properties[kCGImagePropertyOrientation] = orientation.rawValue }
+        CGImageDestinationAddImage(out, image, properties as CFDictionary)
+        XCTAssertTrue(CGImageDestinationFinalize(out))
+        return data as Data
+    }
+
+    /// Whether the pixel at (`x`, `y`), counted from the top-left the way a
+    /// picture is read, is the red mark rather than the white field. Loose about
+    /// the exact values, since JPEG does not hand back what it was given.
+    private func isRed(_ image: CGImage, x: Int, y: Int) -> Bool {
+        var pixel = [UInt8](repeating: 0, count: 4)
+        let drawn: Bool = pixel.withUnsafeMutableBytes { raw in
+            guard let context = CGContext(
+                data: raw.baseAddress, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 4,
+                space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { return false }
+            // Slide the picture so the pixel wanted lands in the one-pixel
+            // window, remembering that Quartz's y runs the other way.
+            context.draw(image, in: CGRect(x: -x, y: y - image.height + 1,
+                                           width: image.width, height: image.height))
+            return true
+        }
+        guard drawn else { return false }
+        return pixel[0] > 200 && pixel[1] < 80 && pixel[2] < 80
+    }
+
+    private func makeTempDir() throws -> URL {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("leaf-media-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+
+    private func onePixelPNG() -> Data {
+        Data(base64Encoded: """
+            iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==
+            """)!
+    }
+
+    func testStillIsNilForAudioAndForAPosterlessVideo() {
+        let store = MediaStore(baseURL: URL(fileURLWithPath: "/docs/", isDirectory: true))
+        XCTAssertNil(store.still(for: mkMedia("take.mp3", kind: .audio)))
+        XCTAssertNil(store.still(for: mkMedia("clip.mp4", kind: .video)))
+    }
+
+    func testStillLoadsARealImageAndCachesTheFailureOfAMissingOne() throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("leaf-media-tests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        // A 1x1 PNG, so the loader has a real file to decode.
+        let png = Data(base64Encoded: """
+            iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==
+            """)!
+        try png.write(to: dir.appendingPathComponent("dot.png"))
+
+        let store = MediaStore(baseURL: dir)
+        let loaded = store.still(for: mkMedia("dot.png"))
+        XCTAssertNotNil(loaded, "a real PNG decodes")
+        XCTAssertEqual(loaded?.bitmap?.width, 1)
+
+        // A missing file answers nil — and with no host to offer it to, that is
+        // cached, so it keeps answering nil without going back to disk on every
+        // redraw.
+        XCTAssertNil(store.still(for: mkMedia("gone.png")))
+        XCTAssertNil(store.still(for: mkMedia("gone.png")))
+    }
+
+    func testFlushDropsLoadedStills() throws {
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("leaf-media-flush-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let png = Data(base64Encoded: """
+            iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==
+            """)!
+        try png.write(to: dir.appendingPathComponent("dot.png"))
+
+        let store = MediaStore(baseURL: dir)
+        XCTAssertNotNil(store.still(for: mkMedia("dot.png")))
+        // Delete the file, then flush: a stale hit would still answer non-nil.
+        try FileManager.default.removeItem(at: dir.appendingPathComponent("dot.png"))
+        store.flush()
+        XCTAssertNil(store.still(for: mkMedia("dot.png")),
+                     "flush must drop the cache, not just mark it stale")
+    }
+}
+
+/// The tests that read a still's pixels want the raster; an SVG has none.
+extension MediaStill {
+    var bitmap: CGImage? {
+        if case .bitmap(let bitmap) = self { return bitmap.decodedWhole() }
+        return nil
+    }
+}

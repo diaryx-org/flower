@@ -1,0 +1,35 @@
+[package]
+name = "leaf"
+version = "0.1.2"
+edition = "2024"
+description = "leaf — the flagship rich-text document editor: a standalone gpui application over the leaf-gpui editor widget."
+# Never crates.io: the name `leaf` there has belonged to an unrelated 2016
+# machine-learning framework since long before this one, which no manifest scan
+# could infer.
+publish = false
+
+# The binary keeps the name `leaf-gui`; the TUI crate ships the `leaf` binary for
+# the fast everyday `cargo run`. Run this GUI app with `cargo run -p leaf`.
+# Standalone workspace, alongside crates/leaf-gpui and for the same reason: the
+# gpui graph stays out of leaf's lockfile. Built from here, not from the root:
+#
+#     cargo build --manifest-path apps/leaf/Cargo.toml
+[workspace]
+
+[[bin]]
+name = "leaf-gui"
+path = "src/main.rs"
+
+[dependencies]
+# Explicit paths, no `version`: neither crate is publishable (both carry gpui,
+# which is a git dependency), so a version pin here would only be a second place
+# for the number to drift.
+leaf-gpui = { path = "../../crates/leaf-gpui" }
+leaf-core = { path = "../../crates/leaf-core" }
+
+# The app shell owns the window and the run-loop, so it pulls gpui + the platform
+# backend directly, as the same gpui-pre snapshot leaf-gpui names — the crates pin
+# each other with `=`, so the two must move together (font-kit and
+# runtime_shaders as there — see leaf-gpui's Cargo.toml).
+gpui = { package = "gpui-pre", version = "=0.3.8" }
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.8", features = ["font-kit", "runtime_shaders"] }

@@ -1,0 +1,116 @@
+name: CI
+# One job so far: the committed UniFFI binding under
+# packages/leaf-swift/uniffi-generated/ must be exactly what crates/leaf-ffi
+# produces. The Swift package is consumed by version from a bare git checkout
+# (SwiftPM runs no generators), so a stale committed binding is what a consumer
+# would build — this is the check that makes committing generated code safe.
+#
+# The binding is arch-neutral source generated from the crate's embedded UniFFI
+# metadata, so a Linux runner can regenerate and diff it; the Swift never
+# compiles here. `scripts/check-swift.sh` and `scripts/test-swift.sh` still run
+# by hand on a Mac.
+on:
+  push: { branches: [main] }
+  pull_request: null
+  workflow_dispatch: null
+
+# Cancel superseded runs on the same ref — a new push makes the old one moot.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  bindings:
+    name: Swift bindings
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v7
+    - uses: dtolnay/rust-toolchain@stable
+    - uses: Swatinem/rust-cache@v2
+    - run: bash scripts/gen-bindings.sh --check
+
+  # Rehearse the release build. homebrew.yml cross-compiles `leaf-tui` to these
+  # four targets on a `v*.*.*` tag, and until this job existed none of it was
+  # exercised until the tag was already pushed — the repo's Rust code was never
+  # built in CI at all. The thing here that is only ever wrong on a cross target
+  # is the toolchain: leaf pins 1.98.1 in rust-toolchain.toml, and a toolchain
+  # file outranks whatever `rustup default` was set to — so targets have to be
+  # added to the *resolved* toolchain, not to `stable`.
+  #
+  # Which is why this installs the target with a bare `rustup target add` from
+  # inside the checkout rather than naming a version: rustup reads
+  # rust-toolchain.toml, auto-installs what it names, and adds the target there.
+  # The pin stays stated in exactly one file.
+  #
+  # `-p leaf-tui` deliberately. It used to matter a great deal: apps/leaf pinned
+  # gpui to a Zed git rev from inside this workspace. The gpui crates are now
+  # excluded and have their own lockfiles, so `--workspace` would no longer reach
+  # them either — but the release builds exactly this, so CI rehearses exactly
+  # this.
+  release-build:
+    name: Release build ${{ matrix.asset }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - asset: macos-arm64
+            os: macos-latest
+            target: aarch64-apple-darwin
+          - asset: macos-x86_64
+            os: macos-latest
+            target: x86_64-apple-darwin
+          - asset: linux-x86_64
+            os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+          - asset: linux-aarch64
+            os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            cross-apt: gcc-aarch64-linux-gnu
+            cross-linker: aarch64-linux-gnu-gcc
+    steps:
+    - uses: actions/checkout@v7
+    - name: Add the target to the pinned toolchain
+      run: rustup target add ${{ matrix.target }}
+    - name: Install cross linker
+      if: matrix.cross-apt != ''
+      env:
+        CROSS_APT: ${{ matrix.cross-apt }}
+      run: sudo apt-get update && sudo apt-get install -y "$CROSS_APT"
+    - uses: Swatinem/rust-cache@v2
+      with: { key: "${{ matrix.target }}" }
+    - name: Build
+      env:
+        CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER: ${{ matrix.cross-linker }}
+      run: cargo build --release -p leaf-tui --target ${{ matrix.target }}
+    # The binary the formula installs, and the command its `test do` block runs.
+    # Only meaningful on the leg whose target is the runner's own arch.
+    - name: Check `leaf --version`
+      if: matrix.asset == 'macos-arm64' || matrix.asset == 'linux-x86_64'
+      run: ./target/${{ matrix.target }}/release/leaf --version
+
+  # The pin above and the one homebrew.yml passes to the shared workflow have to
+  # agree; nothing else notices if they stop agreeing, because the shared
+  # workflow would happily install the wrong toolchain and only the three
+  # cross-compiled legs would fail, on a tag, after the release was cut.
+  toolchain-pin:
+    name: Toolchain pin agrees with homebrew.yml
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v7
+    - run: |
+        set -euo pipefail
+        pinned=$(sed -n 's/^channel = "\(.*\)"$/\1/p' rust-toolchain.toml)
+        declared=$(sed -n 's/^ *rust-toolchain: "\(.*\)"$/\1/p' .github/workflows/homebrew.yml)
+        echo "rust-toolchain.toml: ${pinned:-<none>}"
+        echo "homebrew.yml:        ${declared:-<none>}"
+        if [ -z "$pinned" ] || [ -z "$declared" ]; then
+          echo "::error::could not read one of the two pins"; exit 1
+        fi
+        if [ "$pinned" != "$declared" ]; then
+          echo "::error::homebrew.yml passes rust-toolchain $declared but rust-toolchain.toml pins $pinned"
+          exit 1
+        fi

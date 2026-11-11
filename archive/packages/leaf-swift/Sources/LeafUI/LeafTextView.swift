@@ -1,0 +1,5616 @@
+//  LeafTextView.swift  (AppKit / macOS)
+//
+//  The macOS editing surface — the peer of leaf-wasm's `LeafEditor`. It owns
+//  presentation and input, never the model; `LeafDoc` (leaf-core, over the FFI)
+//  stays the single source of truth. Each already-wrapped `Row` is drawn directly
+//  (no NSTextView/NSLayoutManager), the caret is placed at `caret_ch`, and every
+//  key/mouse intent routes back into core, which edits and returns the next frame.
+//  Shared geometry lives in `EditorLayout`; the UIKit peer is `LeafTextView` in
+//  `LeafTextViewiOS.swift`.
+//
+//  ## Native selection on AppKit
+//
+//  AppKit has no analogue to iOS's `UITextInteraction` — nothing lets the system
+//  draw or own a selection over custom-laid-out text, so (like Xcode's own editor)
+//  this view paints the selection itself. What makes it *native* is that the OS is
+//  told the truth about it: `NSTextInputClient` reports the real `selectedRange` and
+//  answers `attributedSubstring`/`firstRect`/`characterIndex`, the view is an
+//  `NSServicesMenuRequestor`, and it exposes an `NSAccessibility` text area. So
+//  the Services menu, dictation, the right-click menu, VoiceOver, and the
+//  emphasized/unemphasized (key-window-aware) highlight all behave natively — the
+//  same experience the iOS peer gets from `UITextInput`, reached a different way.
+//
+//  Look Up is the one the system cannot do alone, since it has no layout to
+//  read words out of: a force click (seen as its pressure reaching stage 2)
+//  and a three-finger tap (`quickLook(with:)`) are answered by hit-testing the
+//  point itself — the selection, a footnote's or link's peek, else the word
+//  core names there — and `showDefinition(for:at:)` is handed the word as it
+//  is drawn, font and baseline, so the system's highlight lands on it exactly. The context menu's Look Up goes the same way.
+
+#if canImport(AppKit) && !targetEnvironment(macCatalyst)
+import AppKit
+import AVFoundation
+import LeafFFI
+
+public final class LeafTextView: NSView, NSTextInputClient, NSServicesMenuRequestor, NSUserInterfaceValidations,
+                                 NSTextFinderClient, NSDraggingSource, FootnotePeekDelegate {
+    let doc: LeafDoc
+    public var theme: EditorTheme {
+        didSet {
+            mediaPlayers.retheme(theme)
+            // Re-wrap only when the geometry changed; a colour-only (or identical)
+            // theme just repaints. Guarding this breaks the relayout⇄state-publish
+            // loop that otherwise re-scrolled the view to the caret every frame.
+            guard theme.metricsDiffer(from: oldValue) else { needsDisplay = true; return }
+            shapeCache.removeAll(keepingCapacity: true)   // shaping is theme-dependent
+            relayoutForWidth(force: true)
+        }
+    }
+
+    /// The sheet this document is laid onto, or `nil` (the default) for the
+    /// continuous scrolling flow the editor has always had.
+    ///
+    /// Setting one is a *mode*, not a style: rows break across a stack of pages
+    /// and wrap to the sheet's margins instead of the theme's `measure`, which a
+    /// page supersedes. See `PageSetup`.
+    public var pageSetup: PageSetup? {
+        didSet {
+            // Held sound, so the zoom, the sheet frames and the layout all read
+            // the same setup — see `PageSetup.sanitized`.
+            if let set = pageSetup, set != set.sanitized { pageSetup = set.sanitized }
+            guard pageSetup != oldValue else { return }
+            // The column width changed, and the shape cache is only valid at the
+            // width it was built for.
+            shapeCache.removeAll(keepingCapacity: true)
+            // A paginated document is a fixed width the scroll view may have to
+            // scroll sideways to, so it stops tracking the viewport's.
+            autoresizingMask = pageSetup == nil ? [.width] : []
+            // A fit is a rule about the sheet, and the sheet just changed (or
+            // went away, which makes a fit the identity). Resolve it over the new
+            // one before the layout that will draw it.
+            let scale = zoomMode.resolve(in: viewportSize, page: pageSetup)
+            let rescaled = scale != zoomScale
+            zoomScale = scale
+            relayoutForWidth(force: true)
+            if rescaled { onZoomChange?(zoomMode, zoomScale) }
+        }
+    }
+
+    /// How large the document is on screen: a scale, or a fit the viewport
+    /// resolves — see `Zoom`. `zoomScale` is what it currently resolves to.
+    ///
+    /// A view-level transform and nothing more: `EditorLayout` always works in
+    /// unzoomed page space, `draw` scales the context, and points coming the other
+    /// way (clicks, drags, the IME's screen rects) are divided back out. So a drag
+    /// of a zoom slider re-*draws* but never re-shapes — the row cache, which is
+    /// keyed by wrap width, survives untouched — and the text stays vector-crisp
+    /// at every stop, which is what scaling a rasterized layer would cost.
+    ///
+    /// Setting it here keeps the centre of the viewport where it is; a pinch
+    /// keeps the point under the fingers, through `setZoom(_:anchor:)`.
+    public var zoom: Zoom {
+        get { zoomMode }
+        set { setZoom(newValue, anchor: nil) }
+    }
+    private var zoomMode: Zoom = .actualSize
+
+    /// The scale `zoom` resolves to on this viewport, `1` being one layout point
+    /// per screen point. The same as the scale for `.scale`; for a fit, the
+    /// number the fit currently is.
+    public private(set) var zoomScale: CGFloat = 1
+
+    /// Fired when `zoom` or `zoomScale` changes for any reason — a pinch, a
+    /// resize under a fit, a page set or cleared — so a host that owns the zoom
+    /// (the model does) learns what the surface decided.
+    public var onZoomChange: ((Zoom, CGFloat) -> Void)?
+
+    /// The scales the view will hold. `Zoom.range`, kept here for the callers
+    /// that had it.
+    public static let zoomRange: ClosedRange<CGFloat> = Zoom.range
+
+    /// Set the zoom, keeping the layout under `anchor` (a point in this view's
+    /// coordinates) at the same place on screen — the point under a pinch, or,
+    /// for `nil`, the centre of what is visible, which is what a keyboard step
+    /// should hold still.
+    public func setZoom(_ zoom: Zoom, anchor: CGPoint? = nil) {
+        let scale = zoom.resolve(in: viewportSize, page: pageSetup)
+        // A scale past the range is held at its edge as a mode too, so what is
+        // reported back is the scale the view is at, not the one it was asked.
+        let zoom = zoom.isFit ? zoom : .scale(scale)
+        let changed = zoom != zoomMode || scale != zoomScale
+        zoomMode = zoom
+        if scale != zoomScale { applyZoomScale(scale, anchor: anchor) }
+        if changed { onZoomChange?(zoomMode, zoomScale) }
+    }
+
+    /// Re-resolve a fit against the viewport as it is now — after a resize.
+    /// The top-left of what is visible stays put, so a window widened under a
+    /// fit grows the page in place rather than sliding it.
+    private func refitZoom() {
+        guard zoomMode.isFit else { return }
+        let scale = zoomMode.resolve(in: viewportSize, page: pageSetup)
+        guard scale != zoomScale else { return }
+        applyZoomScale(scale, anchor: visibleRect.origin)
+        onZoomChange?(zoomMode, zoomScale)
+    }
+
+    /// The viewport in view points — the clip view's, or the bounds when
+    /// there is no scroll view around this one.
+    private var viewportSize: CGSize {
+        enclosingScrollView?.contentView.bounds.size ?? bounds.size
+    }
+
+    /// Move to `scale`, holding the layout point under `anchor` (view
+    /// coordinates at the *old* scale; nil for the viewport's centre) at the
+    /// same place in the viewport.
+    ///
+    /// The scroll offset moves by `p · (s′ − s)` for the layout point `p` under
+    /// the anchor: its view position is `p·s`, the anchor's offset within the
+    /// viewport is `p·s − origin`, and keeping that offset at the new scale is
+    /// `origin′ = p·s′ − (p·s − origin)`.
+    private func applyZoomScale(_ scale: CGFloat, anchor: CGPoint?) {
+        let visible = visibleRect
+        let anchorView = anchor ?? CGPoint(x: visible.midX, y: visible.midY)
+        let p = layoutPoint(anchorView)
+        let delta = scale - zoomScale
+        zoomScale = scale
+        // No re-shaping: the wrap width is the sheet's (or the theme's) and
+        // neither moved. This re-runs the layout only because the viewport
+        // measured in layout points just changed, which is what decides where
+        // the stack centres.
+        relayoutForWidth(force: true)
+        needsDisplay = true
+        guard let scroll = enclosingScrollView else { return }
+        let clip = scroll.contentView
+        let target = CGPoint(x: visible.origin.x + p.x * delta, y: visible.origin.y + p.y * delta)
+        let bounds = clip.bounds
+        let clamped = CGPoint(
+            x: min(max(target.x, 0), max(0, frame.width - bounds.width)),
+            y: min(max(target.y, -clip.contentInsets.top), max(-clip.contentInsets.top, frame.height - bounds.height)))
+        clip.scroll(to: clamped)
+        scroll.reflectScrolledClipView(clip)
+    }
+
+    /// A point in view coordinates in layout (page) space — the inverse of the
+    /// scale `draw` applies. The identity at `zoomScale == 1`.
+    private func layoutPoint(_ p: CGPoint) -> CGPoint { CGPoint(x: p.x / zoomScale, y: p.y / zoomScale) }
+
+    /// A rect in layout space back out in view coordinates.
+    private func viewRect(_ r: CGRect) -> CGRect {
+        r.applying(CGAffineTransform(scaleX: zoomScale, y: zoomScale))
+    }
+
+    /// A rect in view coordinates back in layout space — how a dirty band becomes
+    /// something the row and page loops can cull against.
+    private func layoutRect(_ r: CGRect) -> CGRect {
+        r.applying(CGAffineTransform(scaleX: 1 / zoomScale, y: 1 / zoomScale))
+    }
+
+    // MARK: zooming by gesture
+
+    /// A pinch on the trackpad, about the point under it. Each event carries the
+    /// change since the last, so the scale compounds through the gesture and
+    /// the clamp at the range's edge simply holds.
+    public override func magnify(with event: NSEvent) {
+        let anchor = convert(event.locationInWindow, from: nil)
+        setZoom(.scale(zoomScale * (1 + event.magnification)), anchor: anchor)
+    }
+
+    /// A two-finger double tap: in to twice the fit, and from anywhere else back
+    /// to the fit — Safari's smart zoom, read onto a page.
+    public override func smartMagnify(with event: NSEvent) {
+        let anchor = convert(event.locationInWindow, from: nil)
+        let fit = Zoom.fitWidth.resolve(in: viewportSize, page: pageSetup)
+        if abs(zoomScale - fit) < 0.01 {
+            setZoom(.scale(fit * 2), anchor: anchor)
+        } else {
+            setZoom(.fitWidth, anchor: anchor)
+        }
+    }
+    /// Fired after every repaint so a host can update a toolbar/footer.
+    public var onStateChange: ((EditorState) -> Void)?
+    /// Fired after a repaint that laid the frame out again — its rows changed,
+    /// by an edit or a selection, or the geometry under them did, by a width
+    /// or a page — and not after one that only moved the caret. What a count
+    /// hangs on: a caret move changed no count, and a recount of a long
+    /// document is not free. See `LeafEditorModel.scheduleCounts`.
+    public var onLayoutChange: (() -> Void)?
+    /// Fired after a repaint whose text is not the last one's — an edit, an
+    /// undo, a paste — and not after a caret step, a reflow or a view toggle.
+    /// See `LeafEditorModel.onEdit`.
+    public var onEdit: (() -> Void)?
+    /// Host hook for link activation. Called with the link's raw destination
+    /// before the view falls back to opening it with the system; return `true`
+    /// to claim it. This is how a host resolves destinations only *it* can make
+    /// sense of — a note app's `./sibling.md` or `id:6tzwsxg` means a document
+    /// in its own workspace, not a file: URL, and handing either to
+    /// `NSWorkspace` is at best wrong and at worst opens the raw markdown in
+    /// another app. Nil (or a `false` return) keeps the system behaviour.
+    public var onOpenLink: ((String) -> Bool)?
+
+    /// The history, as the responder chain asks for it. Edit ▸ Undo/Redo, and
+    /// anything else that reaches for the first responder's undo manager, gets
+    /// twig's history through this — see `UndoBridge.swift`.
+    private lazy var historyManager = LeafUndoManager(
+        state: { [weak self] in
+            guard let self else { return (false, false) }
+            return (self.docView.canUndo, self.docView.canRedo)
+        },
+        undo: { [weak self] in self?.command { $0.undo() } },
+        redo: { [weak self] in self?.command { $0.redo() } })
+    public override var undoManager: UndoManager? { historyManager }
+
+    /// The system find bar. Edit ▸ Find's items send `performTextFinderAction:`
+    /// down the responder chain; this answers them, and the bar itself is the
+    /// enclosing scroll view's (set when the view lands in one). Incremental,
+    /// so matches light up as the pattern is typed, with the rest dimmed — the
+    /// `NSTextFinderClient` conformance below is what it reads and draws from.
+    private lazy var textFinder: NSTextFinder = {
+        let finder = NSTextFinder()
+        finder.client = self
+        finder.isIncrementalSearchingEnabled = true
+        finder.incrementalSearchingShouldDimContentView = true
+        return finder
+    }()
+
+    /// Whether this surface is a reader — see the iOS peer for the full
+    /// contract. The *document* is the enforcement (leaf-core's gate refuses
+    /// every splice, so typing changes nothing whatever the chrome says); on
+    /// this platform the property turns off what offers an edit unasked —
+    /// Writing Tools and the spelling checker — and is otherwise that
+    /// guarantee's label, kept so a cross-platform host sets one flag without
+    /// conditionals. Quieting the caret and the beep a refused key makes is
+    /// still to do.
+    public var isReadOnly: Bool = false {
+        didSet {
+            guard isReadOnly != oldValue else { return }
+            if #available(macOS 15.2, *) { updateWritingToolsBehavior() }
+            scheduleSpellCheck()
+        }
+    }
+
+    /// Whether the find bar's replace bracket — `shouldReplaceCharacters` to
+    /// `didReplaceCharacters` — holds a core undo group open.
+    private var finderUndoGroupOpen = false
+
+    /// Called with a highlight's `id` when a click lands on its margin marker
+    /// — how a host's painted annotation opens. The marker, not the wash: the
+    /// wash is ink a reader selects and copies through, the glyph in the
+    /// margin is the control. Nil leaves every highlight purely visual.
+    public var onTapHighlight: ((String) -> Void)?
+
+    /// The margin markers' hit targets, in layout coordinates, rebuilt on
+    /// every draw — the touch surface's 44-point squares
+    /// (`EditorLayout.markerTarget`), which a pointer has no trouble with and
+    /// a trackpad tap is glad of.
+    private var markerHits: [(rect: CGRect, id: String)] = []
+
+    /// Asked to edit the destination of the link under the caret, with its
+    /// current destination to seed a field with. See `LeafEditorModel.onEditLink`.
+    public var onEditLink: ((String) -> Void)?
+
+    /// Asked what a link points at, so a hover can show it. See
+    /// `LeafEditorModel.onPeekLink`.
+    public var onPeekLink: ((String, @escaping (LinkPeekSource?) -> Void) -> Void)?
+
+    /// Whether a bare `[[…]]` counts as a link to follow. Off by default: it is
+    /// not Markdown, not Djot, and not something twig parses, so the editor
+    /// makes no claim about it unless a host whose documents use the convention
+    /// asks. See `LeafDoc.activatableTargetAtCaret`.
+    public var recognizesWikilinks = false
+
+    /// Host hook for activating a block video or audio — called with its raw
+    /// `src` when the editor isn't playing it itself.
+    ///
+    /// With `mediaPlayback == .inline` (the default) a click installs an
+    /// `AVPlayerView` over the box and this is never called, *except* for a
+    /// source the editor's own loader can't resolve to a local file — a remote
+    /// URL, which a host is better placed to handle since it can fetch
+    /// asynchronously and this loader cannot. With `.host` it is called for every
+    /// activation. Nil in either case leaves a click doing nothing but placing
+    /// the caret.
+    public var onOpenMedia: ((String) -> Void)?
+
+    /// Host hook for *showing* an attachment — called with a media box's raw
+    /// `src` when the reader asks to go to the attachment itself rather than to
+    /// have it loaded here. See `LeafEditorModel.onShowMedia`, which is where the
+    /// difference from `onOpenMedia` is written down.
+    ///
+    /// Nil leaves the affordances out entirely: no "Show Attachment" in the
+    /// contextual menu, and ⌘-click on a picture goes on placing the caret.
+    public var onShowMedia: ((String) -> Void)?
+
+    /// The document's directory, which a relative `src` in the markup resolves
+    /// against. Core does no I/O and knows no paths, so the host supplies this;
+    /// nil (an untitled buffer) leaves relative paths unresolvable and their
+    /// boxes drawn as labelled chips.
+    public var documentDirectory: URL? {
+        get { mediaStore.baseURL }
+        set {
+            guard newValue != mediaStore.baseURL else { return }
+            mediaStore.baseURL = newValue
+            mediaStore.flush()          // every relative path now points elsewhere
+            render(docView, reflow: true)
+        }
+    }
+
+    /// Gets first refusal on a paste. See `LeafEditorModel.onPaste`.
+    public var onPaste: (() -> Bool)?
+
+    /// Gets first refusal on a drop, with the drag's pasteboard. See
+    /// `LeafEditorModel.onDrop`.
+    public var onDrop: ((NSPasteboard) -> Bool)?
+
+    /// A mouse-down inside the selection that has not yet become a drag. A
+    /// native text view lets the selected text be picked up and carried, so the
+    /// caret must not move on that press — it moves on the release, if no drag
+    /// came of it. The point is in layout space.
+    private var dragCandidate: (point: CGPoint, event: NSEvent)?
+
+    /// A mouse-down on a picture, or in the margin left of a row, that has not
+    /// yet become a block drag — the block under it, by an offset inside it
+    /// and the rows it covers. Resolved the way `dragCandidate` is: a drag in
+    /// `mouseDragged`, a click on the row in `mouseUp`.
+    private var blockDragCandidate: (point: CGPoint, event: NSEvent, from: Int, rows: RowRange)?
+
+    /// The stage the press under way has reached on a Force Touch trackpad: 1
+    /// for a click, 2 for a force click, 0 between presses. What a force click
+    /// is, is the step from 1 to 2.
+    private var pressureStage = 0
+
+    /// The block being carried by a dragging session this view started, and
+    /// where it would land — `nil` between drags. The target is core's
+    /// answer for the row under the pointer, redrawn as the indicator.
+    private var blockDrag: (from: Int, rows: RowRange)?
+    private var dropTarget: DropTargetView? {
+        didSet {
+            if oldValue?.row != dropTarget?.row || oldValue?.offset != dropTarget?.offset { needsDisplay = true }
+        }
+    }
+
+    /// Reconsider `src` — or every source, for nil — and redraw.
+    /// See `LeafEditorModel.reloadMedia`.
+    public func reloadMedia(_ src: String?) {
+        mediaStore.forget(src)
+        render(docView, reflow: true)
+    }
+
+    /// A cue shown while the document is empty — "Start writing…" — drawn where
+    /// its first character will go. Nil (the default) draws nothing.
+    ///
+    /// The editor's own, rather than a label a host stacks over the view,
+    /// because only the layout knows where the prose starts: the text column is
+    /// centred when the theme sets a `measure`, and sits at the sheet's margin
+    /// when a `pageSetup` is set — neither of which is `theme.padding`. Drawn
+    /// under the caret, so a reader sees the caret standing at the cue's first
+    /// letter rather than hidden behind it.
+    public var placeholder: String? {
+        didSet { if placeholder != oldValue { needsDisplay = true } }
+    }
+
+    /// What activating a block video or audio does. `.inline` (the default)
+    /// installs a real AVKit player over the box; `.host` draws the still and
+    /// hands the source to `onOpenMedia` instead. See `MediaPlaybackMode`.
+    public var mediaPlayback: MediaPlaybackMode = .inline
+
+    /// The host's own reading of a source, answered synchronously and read at
+    /// once if it names a file that is here. See `MediaStore.onLocateMedia`.
+    public var onLocateMedia: ((String) -> URL?)? {
+        get { mediaStore.onLocateMedia }
+        set { mediaStore.onLocateMedia = newValue }
+    }
+
+    /// Asks the host to resolve a source this view can't read itself — a remote
+    /// URL, or a scheme only the host understands — to a local file it can.
+    /// See `MediaStore.onResolveMedia`; LeafUI never touches the network.
+    public var onResolveMedia: ((String, @escaping (URL?) -> Void) -> Void)? {
+        get { mediaStore.onResolveMedia }
+        set { mediaStore.onResolveMedia = newValue }
+    }
+
+    /// Loads and caches the stills the media boxes draw.
+    private let mediaStore = MediaStore()
+    /// The AVKit players currently installed over media boxes.
+    private let mediaPlayers = MediaPlayerHost()
+    /// The source the reader activated while the host was still resolving it,
+    /// so the answer can start playback rather than land silently.
+    private var pendingMediaActivation: String?
+
+    private var docView: DocView
+    /// Readable by the tests, which check that a caret move keeps it.
+    private(set) var layoutEngine: EditorLayout {
+        didSet { accessibilityLineCache = nil; accessibilityTextCache = nil }
+    }
+    /// `accessibilityLines`, until the next layout.
+    private var accessibilityLineCache: [AccessibilityLine]?
+    /// `accessibilityText`, until the next layout or edit.
+    private var accessibilityTextCache: NSString?
+    /// The selection an assistive app was last told of, as `(anchor, caret)`.
+    private var lastAccessibilitySelection: (UInt32, UInt32)?
+    /// The view width the current layout was built for. The text column inside it
+    /// — where it starts, how wide it wraps — is the theme's to decide (see
+    /// `EditorTheme.column(in:)`), and the layout carries the answer.
+    private var viewWidth: CGFloat = 0
+    /// Per-row shaped-text cache reused across frames; an edit re-shapes only the
+    /// changed row(s). Cleared when the theme geometry changes (see `theme`).
+    private var shapeCache: [Row: ShapedRow] = [:]
+    /// The pixel x that ↑/↓ aim for, so repeated vertical motion rides the visual
+    /// wrap without drifting through shorter lines. Nil except mid vertical run.
+    private var verticalGoalX: CGFloat?
+    /// The byte range of the in-flight IME composition (marked text), drawn with a
+    /// composing underline. Nil when not composing. Committed text clears it.
+    private var markedByteRange: NSRange? {
+        didSet { if markedByteRange == nil { markedClauses = [] } }
+    }
+    /// The composition's clauses, as source byte ranges, and whether each is
+    /// the one the input method is converting — drawn with a thick underline,
+    /// the rest thin, as every Mac text view draws a Japanese or Chinese
+    /// composition. Empty for an input method that marks no clauses, which is
+    /// drawn as one thin clause.
+    private(set) var markedClauses: [(range: NSRange, selected: Bool)] = []
+
+    // MARK: spelling
+
+    /// Whether prose is checked with the user's macOS dictionaries while it is
+    /// edited. Source view is deliberately exempt: markup delimiters, destinations,
+    /// and code are source, not prose (the same rule as the UIKit peer's
+    /// `spellCheckingType`).
+    public var isContinuousSpellCheckingEnabled = true {
+        didSet {
+            guard isContinuousSpellCheckingEnabled != oldValue else { return }
+            scheduleSpellCheck()
+        }
+    }
+    /// Whether the checker runs at all: the preference above, in prose, on a
+    /// surface that can edit. A reader is exempt — a red wave asks for a fix
+    /// the reader cannot make — and the preference is kept, so making the
+    /// document editable again brings the checking back.
+    var checksSpelling: Bool {
+        isContinuousSpellCheckingEnabled && docView.view != "source" && !isReadOnly
+    }
+    private let spellDocumentTag = NSSpellChecker.uniqueSpellDocumentTag()
+    private var misspelledRanges: [NSRange] = []
+    /// The boxes the reported ranges occupy, in layout coordinates — mapped
+    /// once when the checker answers and again when the layout is rebuilt,
+    /// never in `draw`. Mapping a range is four crossings of the binding (both
+    /// ends to bytes, both bytes to positions); with a hundred or two words
+    /// the checker does not know, mapping them on every repaint was what made a
+    /// scroll of a long document beach-ball.
+    private var misspelledRects: [CGRect] = []
+    private var spellCheckWork: DispatchWorkItem?
+    /// Advanced by every `scheduleSpellCheck` — an older answer is dropped
+    /// against it. Readable so a test can see that a frame asked again.
+    private(set) var spellCheckGeneration = 0
+
+    /// One correction captured when its menu is built. Keeping the original word
+    /// lets the action reject a range made stale while the menu was open.
+    private final class SpellCorrection: NSObject {
+        let range: NSRange
+        let original: String
+        let replacement: String
+
+        init(range: NSRange, original: String, replacement: String) {
+            self.range = range
+            self.original = original
+            self.replacement = replacement
+        }
+    }
+
+    // MARK: automatic substitution — what the system does *to* text as it is typed
+
+    /// Correct Spelling Automatically, for this view: a misspelled word is
+    /// replaced by the checker's correction as the character that ends it is
+    /// typed. Seeded from the user's system setting and following it when it
+    /// changes, as `NSTextView`'s is; Edit ▸ Spelling and Grammar toggles it
+    /// per view. The rendered view only — see `substitutionsApply`.
+    public var isAutomaticSpellingCorrectionEnabled = NSSpellChecker.isAutomaticSpellingCorrectionEnabled
+    /// The user's text replacements (System Settings ▸ Keyboard ▸ Text
+    /// Replacements), expanded as the word that triggers one ends.
+    public var isAutomaticTextReplacementEnabled = NSSpellChecker.isAutomaticTextReplacementEnabled
+    /// Smart quotes: a straight `"` or `'` is curled as it is typed.
+    public var isAutomaticQuoteSubstitutionEnabled = NSSpellChecker.isAutomaticQuoteSubstitutionEnabled
+    /// Smart dashes: `--` becomes an em dash once the character after it is typed.
+    public var isAutomaticDashSubstitutionEnabled = NSSpellChecker.isAutomaticDashSubstitutionEnabled
+
+    /// A correction made while typing that can still be taken back: the range
+    /// the corrected word occupies in `fullText()`, and both spellings. Drawn
+    /// with the blue underline `NSTextView` gives one, and offered back through
+    /// the system's reversion indicator when the caret comes to rest on it.
+    /// Dropped once the text under the range is no longer the correction.
+    struct Autocorrection: Equatable {
+        var range: NSRange
+        let original: String
+        let replacement: String
+    }
+    private(set) var autocorrections: [Autocorrection] = []
+    /// The boxes `autocorrections` occupy, mapped when they change or the
+    /// layout does — never in `draw`, for `misspelledRects`' reason.
+    private var autocorrectionRects: [CGRect] = []
+    /// The correction the reversion indicator is up for, so a caret that
+    /// stays on it does not raise the indicator again at every frame.
+    private var offeredReversion: Autocorrection?
+    /// Whether a reverted correction is reported to the checker, which learns
+    /// from it — for every app on the Mac, not this document alone. Off only
+    /// in tests, which must not teach the user's checker anything.
+    var recordsCorrectionResponses = true
+    /// The stretch of `fullText()` the checker was last asked to look at for a
+    /// keystroke's substitutions — what a test pins the scope by.
+    private(set) var lastSubstitutionCheck: NSRange?
+
+    // MARK: Writing Tools state — see the Writing Tools extension below
+
+    /// The coordinator's delegate. The coordinator holds it weakly, so the view
+    /// keeps it; `AnyObject` because both are newer than the package's floor.
+    var writingToolsDelegate: AnyObject?
+    /// The contexts, animation effects, and undo group of a Writing Tools
+    /// session — see WritingTools.swift.
+    let writingTools = WritingToolsSession()
+    /// Whether a Writing Tools session holds a core undo group open.
+    var writingToolsGroupOpen: Bool { writingTools.groupOpen }
+
+    /// The caret is drawn by `draw` itself, as tall as the line it stands on,
+    /// and blinked by `blinkTimer` on the cadence the user set. Not the system's
+    /// `NSTextInsertionIndicator`, which over a heading stayed the height of
+    /// body text, and never blinked.
+    private var caretVisible = true
+    private var blinkTimer: Timer?
+    private var isFocused = false
+    /// The caret offset the view last scrolled to reveal. Only a *move* re-scrolls,
+    /// so passive reflows (width/theme relayout, state refreshes) leave the reader's
+    /// scroll position alone instead of yanking it back to the caret.
+    private var lastCaretOffset: UInt32?
+    /// The region open for editing, if any, and its routing — see
+    /// `RegionEditing.swift`.
+    let regionSlot = RegionSlot()
+    /// Set while a frame shows the same document another way — the kinds of
+    /// region the view owns changed — so its rows reading differently is not
+    /// an edit the host has to save.
+    private var reshowing = false
+    /// What the open region was last laid out as, so a keystroke inside it
+    /// that changed nothing core knows still lays its row out again.
+    private var laidRegion: OpenRegionLayout?
+    /// Whether a formula is open for structural editing.
+    var isEditingFormula: Bool { regionSlot.open?.kind == MathRenderer.kind }
+
+    /// Whether a formula is edited in place as structure — fractions, scripts,
+    /// roots, written back as TeX — or, when `false`, revealed as its TeX on
+    /// the caret's line to be typed. On by default.
+    public var editsFormulasAsStructure: Bool = true {
+        didSet {
+            guard editsFormulasAsStructure != oldValue else { return }
+            regionSlot.editsMath = editsFormulasAsStructure
+            reshowing = true
+            render(doc.setOwnedRegions(kinds: regionSlot.ownedKinds))
+            reshowing = false
+        }
+    }
+
+    /// The host's editors, by region kind — `"fence:"` and a language
+    /// (`"fence:mermaid"`), or `"directive:"` and a name. Formulas are leaf's
+    /// own (`editsFormulasAsStructure`).
+    /// → in front of a region, ← behind it or a click on its picture opens it
+    /// in the session the editor's `open` answers with; a session with a view
+    /// of its own stands it where the picture was and gives it the focus.
+    /// While closed, a region is its kind's picture (`regionRenderers`), or
+    /// leaf's placeholder row where the kind has no renderer. A kind a host may
+    /// not name is dropped. See `RegionEditing.swift`.
+    public var regionEditors: [String: RegionEditor] {
+        get { regionSlot.editors }
+        set {
+            regionSlot.editors = newValue.filter { RegionKinds.editable($0.key) }
+            reownRegions()
+        }
+    }
+
+    /// The host's renderers, by region kind, over leaf's own: `"fence:"` and a
+    /// language, or `"math"` to replace leaf-math's pictures. Each named
+    /// kind's regions are drawn as the pictures it answers — laid out, paged
+    /// and printed with the text — and leaf's placeholder row where it
+    /// answers nil. A named fence stops being code. See `RegionPictures.swift`.
+    public var regionRenderers: [String: RegionRenderer] {
+        get { regionSlot.pictures.renderers }
+        set {
+            regionSlot.pictures.renderers = newValue.filter { RegionKinds.hostable($0.key) }
+            reownRegions()
+        }
+    }
+
+    /// Forget the pictures drawn for regions of `kind`, or of every kind, and
+    /// draw them again — for a renderer whose picture changed for a reason
+    /// leaf cannot see, such as data it was waiting for.
+    public func redrawRegions(kind: String? = nil) {
+        regionSlot.pictures.invalidate(kind: kind)
+        render(docView, keepVerticalGoal: true, reflow: true)
+    }
+
+    /// Tell core the kinds the view now owns, and show the document again.
+    private func reownRegions() {
+        reshowing = true
+        render(doc.setOwnedRegions(kinds: regionSlot.ownedKinds), keepVerticalGoal: true, reflow: true)
+        reshowing = false
+    }
+
+    public convenience init(doc: LeafDoc, theme: EditorTheme = .default) {
+        self.init(doc: doc, theme: theme, regions: RegionSetup())
+    }
+
+    /// A view over `doc` that draws and edits its regions as `regions` says —
+    /// a sheet over another view's document owns the kinds that view owns.
+    init(doc: LeafDoc, theme: EditorTheme, regions: RegionSetup) {
+        self.doc = doc
+        self.theme = theme
+        regionSlot.adopt(regions)
+        editsFormulasAsStructure = regions.editsMath
+        // A formula is edited in place as structure (`MathEditing.swift`), so
+        // on the caret's line it stays its picture rather than revealing TeX.
+        // Said before frames become changes: the frame it answers with is
+        // dropped, and `setUnwrapped`'s below must be whole.
+        _ = doc.setOwnedRegions(kinds: regionSlot.ownedKinds)
+        // A `sup` run is set raised and smaller (`AttributedRow`), so a
+        // footnote's label is told from the prose by where it sits and core
+        // can drop the brackets a terminal needs. Said here as well as by the
+        // model, for a host that builds the view over a document of its own.
+        _ = doc.setRaisedSuperscripts(on: true)
+        // Every frame after the first is the change since the frame before —
+        // the rows that differ, and where they go — which `render` splices
+        // into `docView`. Lifting every row of a long document into Swift
+        // records on every click was most of what a click cost.
+        doc.setIncrementalFrames(on: true)
+        // Switch core to unwrapped layout (one row per block); the view soft-wraps
+        // each row at its own pixel width.
+        let first = doc.setUnwrapped()
+        self.docView = first
+        var seed: [Row: ShapedRow] = [:]
+        self.layoutEngine = EditorLayout(first, theme: theme, viewWidth: 0, cache: &seed)
+        self.shapeCache = seed
+        super.init(frame: .zero)
+        regionSlot.owner = self
+        regionSlot.listen()
+        autoresizingMask = [.width]
+        // A resolved source has a picture to draw, and may be the one the reader
+        // tapped while it was still being fetched. Laid out again rather than
+        // just repainted: every box keeps the still it was laid out with, and a
+        // chip-height row repainted with a picture is still a chip-height row —
+        // the picture used to wait, invisible, for whatever relayout came next.
+        mediaStore.onLoaded = { [weak self] src in
+            guard let self else { return }
+            self.render(self.docView, keepVerticalGoal: true, reflow: true)
+            self.playIfAwaited(src)
+        }
+        // A picture's pixels arrive after the box was laid out at their size.
+        mediaStore.onDecoded = { [weak self] in self?.needsDisplay = true }
+        // Seed with the initial caret so the first reflow opens at the top rather
+        // than scrolling to wherever the caret happens to start.
+        lastCaretOffset = doc.caretOffset()
+        scheduleSpellCheck()
+        // The user's system settings, followed as they change — `NSTextView`
+        // takes each new value over its own.
+        for name in [NSSpellChecker.didChangeAutomaticSpellingCorrectionNotification,
+                     NSSpellChecker.didChangeAutomaticTextReplacementNotification,
+                     NSSpellChecker.didChangeAutomaticQuoteSubstitutionNotification,
+                     NSSpellChecker.didChangeAutomaticDashSubstitutionNotification] {
+            NotificationCenter.default.addObserver(
+                self, selector: #selector(systemSubstitutionSettingChanged(_:)), name: name, object: nil)
+        }
+
+        // The inline Writing Tools experience, where the system has it; below
+        // that, the Services path (`readSelection`) is Writing Tools' panel.
+        if #available(macOS 15.2, *) { installWritingToolsCoordinator() }
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+
+    public override var isFlipped: Bool { true }   // origin top-left → rows top-down
+    public override var acceptsFirstResponder: Bool { true }
+    public override var isOpaque: Bool { false }
+
+    // MARK: layout / wrap
+
+    public override func layout() {
+        super.layout()
+        refitZoom()
+        relayoutForWidth(force: false)
+        applyContentSize()
+    }
+
+    /// The width the layout is asked to fill, in unzoomed points: the *viewport's*,
+    /// not this view's own.
+    ///
+    /// They are the same thing in the continuous flow, where the document view
+    /// tracks the clip view's width. Paginated they part company — the frame grows
+    /// to the stack's width so a sheet wider than the window can be scrolled to —
+    /// and it is the viewport the stack should centre in, since that is what the
+    /// reader is looking through.
+    private var layoutWidth: CGFloat {
+        (enclosingScrollView?.contentView.bounds.width ?? bounds.width) / zoomScale
+    }
+
+    /// How many times this turn of the run loop has re-wrapped for a changed
+    /// width, and the most it may. A wrap is not free of consequences for the
+    /// width it was asked at: it sets the frame's height, which can show or
+    /// hide a scroller that takes up room (scroll bars set to "Always", or a
+    /// mouse attached), which changes the width, which asks for a wrap. When
+    /// the document's height sits near the viewport's — five pictures fitted
+    /// to the column will put it anywhere — that is a loop, and AppKit's
+    /// answer to a layout that stays dirty is to throw. So a turn gets a
+    /// handful of width-driven wraps and then keeps the one it has; the next
+    /// turn, if anything is still unsettled, may try again.
+    private var widthRelayoutsThisTurn = 0
+    private static let widthRelayoutCeiling = 6
+
+    private func admitWidthRelayout() -> Bool {
+        if widthRelayoutsThisTurn == 0 {
+            DispatchQueue.main.async { [weak self] in self?.widthRelayoutsThisTurn = 0 }
+        }
+        widthRelayoutsThisTurn += 1
+        if widthRelayoutsThisTurn > Self.widthRelayoutCeiling {
+            // Not silently stale: once the loop has been broken, look once more
+            // at whatever width the viewport settled on.
+            if widthRelayoutsThisTurn == Self.widthRelayoutCeiling + 1 {
+                DispatchQueue.main.async { [weak self] in self?.needsLayout = true }
+            }
+            return false
+        }
+        return true
+    }
+
+    private func relayoutForWidth(force: Bool) {
+        let w = layoutWidth
+        guard w > theme.padding.left + theme.padding.right else { return }
+        if force || abs(w - viewWidth) > 0.5 {
+            guard force || admitWidthRelayout() else { return }
+            viewWidth = w
+            // Re-wrap the current frame at the new pixel width — the unwrapped map is
+            // width-independent, so no round trip to core is needed.
+            render(docView, keepVerticalGoal: true, reflow: true)
+        }
+    }
+
+    /// Keep the view at least as tall as the enclosing scroll view's visible clip
+    /// area, never just the text's own height. `NSScrollView` only routes clicks to
+    /// a view under the cursor; a view sized tightly to short/empty content left the
+    /// rest of the visible editor pane unclickable — no caret, no focus, typing
+    /// impossible. `EditorLayout.hit` already clamps a point below the last row to
+    /// it, so filling the clip area just makes that reachable: clicking below the
+    /// text lands the caret at the document's end, same as most text editors.
+    private func applyContentSize() {
+        let clip = enclosingScrollView?.contentView.bounds.size ?? bounds.size
+        let raw = layoutEngine.contentHeight * zoomScale
+        // Once the document already needs to scroll, pad another half screen below
+        // the last line, so a long entry can be pulled up to a comfortable reading
+        // height instead of staying glued to the bottom edge. Content that already
+        // fits the clip area (the common short-document case) gets no extra room —
+        // `raw > clip.height` is false — so nothing here makes a short document
+        // scrollable.
+        //
+        // Not in the paginated flow. There the document's height is the stack's,
+        // and a sheet of blank paper below the last page is already the room this
+        // was reaching for — half a screen more would just be backdrop, and would
+        // let the reader scroll a whole page past the end of their document.
+        let extra = pageSetup == nil && raw > clip.height ? clip.height * 0.5 : 0
+        let h = max(raw + extra, clip.height)
+        // Continuously the layout has no width of its own: it fills the viewport
+        // (and `autoresizingMask` keeps it there). A stack of sheets is a fixed
+        // width, so a window narrower than one scrolls sideways to it.
+        let w = max(layoutEngine.contentWidth * zoomScale, clip.width)
+        if abs(frame.height - h) > 0.5 || abs(frame.width - w) > 0.5 {
+            setFrameSize(NSSize(width: w, height: h))
+        }
+    }
+
+    // MARK: applying a frame
+
+    /// Lay this view out from the document as a page shows it — no line
+    /// revealed — rather than as the screen does, where the caret's line is
+    /// source: a formula as its TeX, and under the full markup mode its
+    /// delimiters. What the paper sheet a PDF or a printout is drawn from
+    /// calls once, having no caret of its own. See `LeafDoc.paperView()`.
+    func layOutAsPaper() {
+        mediaStore.decodesForPaper = true
+        render(doc.paperView(), reflow: true)
+    }
+
+    /// Install `frame` and lay it out. The frame is the change since the
+    /// frame before — the rows that differ and where they go, which is what
+    /// core answers every gesture with — or the whole document, and either
+    /// way `docView` ends up whole: a change is spliced into it (`DocView.apply`),
+    /// and a change against a frame this view does not hold, which cannot
+    /// happen unless a frame was dropped on the floor, is replaced by a whole
+    /// one asked of core. The layout is the frame before's wherever the rows
+    /// are: kept whole when nothing changed but the caret, which is the plain
+    /// click; rebuilt from the first changed row on, with the rows before it
+    /// as they were and the rows after it re-placed in their old shapes, for a
+    /// keystroke or a drag. `reflow` says the geometry under the rows moved —
+    /// the width, the theme, the page, a picture that arrived — and every row
+    /// is laid out again.
+    private func render(_ frame: DocView, keepVerticalGoal: Bool = false, reflow: Bool = false,
+                        picturesFrom: Int? = nil) {
+        if !keepVerticalGoal { verticalGoalX = nil }
+        // Whatever the peek was pointing at has just moved, changed or gone: an
+        // edit reflowed the line under it, or a relayout put the reference
+        // somewhere else. It is chrome about a position, and the positions are
+        // being rebuilt.
+        dismissFootnotePeek()
+        let frame = frame.isChange && frame.basis != docView.frame ? doc.view() : frame
+        // The frame's blocks that render as a thing rather than as rows — a
+        // table's cells, a formula's TeX — can change under rows that did not.
+        // Complete on every frame, so compared before the rows are touched.
+        let blocksChanged = frame.tables != docView.tables || frame.media != docView.media
+            || frame.math != docView.math || frame.directives != docView.directives
+            || frame.regions != docView.regions
+        // An owned fence is one placeholder row whatever it holds, so an edit
+        // inside it that keeps its length changes no row: its region's
+        // content says so instead.
+        let regionContentChanged = frame.view == docView.view
+            && !frame.regions.map(\.content).elementsEqual(docView.regions.map(\.content)) {
+                $0.utf8.elementsEqual($1.utf8)
+            }
+        // The find bar caches the string and its matches; an edit — or a view
+        // toggle, which changes what the visible text *is* — invalidates both.
+        // Rows compare cheaply, and a motion leaves them equal. A selection
+        // does not — it splits the runs it covers — so the rows it touched are
+        // read back with it forgotten (`sameText`): a drag changes what is
+        // shown of the text, not the text, and neither the find bar, the spell
+        // checker nor the host is told of an edit by one. A change says which
+        // rows those are; a whole frame is compared to find them. A change
+        // that moved the rows below its span is an edit whatever the span
+        // holds: a comment pasted between two paragraphs is source with no
+        // row to show, and the span is empty — but the text the find bar and
+        // the checker hold offsets into has changed under them, and the host
+        // has a document to save.
+        let viewFlipped = frame.view != docView.view
+        // A flip shapes every row afresh: the cache is keyed by the row's
+        // value, and a line that reads the same in both views — plain prose —
+        // is set in the body face in one and the mono face in the other.
+        if viewFlipped { shapeCache.removeAll(keepingCapacity: true) }
+        let change: RowChange?
+        let textChanged: Bool
+        if frame.isChange {
+            let shifted = frame.srcShift != 0
+            let (span, replaced) = docView.apply(frame)
+            change = span
+            textChanged = viewFlipped || shifted || !frame.rows.sameText(as: replaced)
+        } else {
+            change = frame.rows.changedRange(from: docView.rows)
+            textChanged = viewFlipped || !frame.rows.sameText(as: docView.rows, over: change)
+            docView = frame
+        }
+        let view = docView
+        // Pictures drawn later arrived for regions from `picturesFrom` on:
+        // the rows above it stand as they were laid out.
+        let layoutChange = change ?? picturesFrom.map { (new: $0..<$0 + 1, old: $0..<$0 + 1) }
+        // The open region, followed into this frame — or closed, when the
+        // frame has none at its place any more — and laid out again whenever
+        // what it draws changed.
+        regionSlot.follow(view)
+        let open = regionSlot.layout
+        let openChanged = !(open?.same(as: laidRegion) ?? (laidRegion == nil))
+        laidRegion = open
+        if textChanged || regionContentChanged {
+            textFinder.noteClientStringWillChange()
+            accessibilityTextCache = nil
+        }
+        // The document changed, as distinct from what is shown of it: a toggle
+        // between source and rendered rewrites every row and edits nothing.
+        let edited = !viewFlipped && !reshowing && (textChanged || regionContentChanged)
+        // Under this view's own appearance, not whatever happens to be current.
+        // The text's colours are dynamic and resolve when drawn, inside
+        // `draw(_:)`, where AppKit has made the view's appearance current; a
+        // formula's ink is resolved *here*, to the bytes the typesetter is
+        // handed. Left to the caller's appearance, a paper sheet (`aqua`,
+        // whatever the screen) laid out from a dark-mode window would set its
+        // formulas in white — and print them on white.
+        let drawing = regionSlot.drawing(dark: effectiveAppearance.isDark, scale: (window?.backingScaleFactor ?? 2) * zoomScale)
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            if reflow {
+                layoutEngine = EditorLayout(view, theme: theme, viewWidth: viewWidth, page: pageSetup,
+                                            cache: &shapeCache, media: mediaStore,
+                                            regions: regionSlot.views.measure, drawing: drawing)
+            } else if layoutChange != nil || blocksChanged || openChanged || layoutEngine.rows.isEmpty {
+                layoutEngine = EditorLayout(view, theme: theme, viewWidth: viewWidth, page: pageSetup,
+                                            cache: &shapeCache, media: mediaStore, previous: layoutEngine,
+                                            change: layoutChange,
+                                            regions: regionSlot.views.measure, drawing: drawing)
+            }
+        }
+        let relaid = reflow || layoutChange != nil || blocksChanged || openChanged
+        // The host's views follow their boxes, as the players do, and a view
+        // whose directive was edited away goes with it. Scaled by hand: this
+        // view zooms its drawing, not itself.
+        if relaid, !regionSlot.views.isEmpty {
+            regionSlot.views.place(layoutEngine.openRegionRect(), in: self, scale: zoomScale)
+        }
+        // The misspellings still stand where the text did not change, but the
+        // layout under them is new: map them onto it again. A text change
+        // clears them instead, below, and asks the checker afresh.
+        if relaid, !textChanged, !misspelledRanges.isEmpty {
+            misspelledRects = mapMisspellings()
+        }
+        // Installed players follow their boxes: the layout just moved every one
+        // of them, and any media edited out of the document is gone from the
+        // rects, which is what stops its playback. Skipped entirely when nothing
+        // is installed, which is the overwhelmingly common case.
+        if relaid, !mediaPlayers.isEmpty {
+            mediaPlayers.reposition(layoutEngine.mediaRects())
+        }
+        if relaid { applyContentSize() }
+        needsDisplay = true
+        resetBlink()
+        // Only follow the caret when it actually moved (typing, motion, click), not
+        // on a passive reflow — otherwise every relayout snaps the reader back.
+        let caret = doc.caretOffset()
+        if caret != lastCaretOffset {
+            lastCaretOffset = caret
+            scrollCaretToVisible()
+        }
+        if textChanged { scheduleSpellCheck() }
+        if textChanged || relaid { refreshAutocorrections(textChanged: textChanged) }
+        if #available(macOS 15.2, *), textChanged || relaid {
+            writingToolsTextMoved(edited: textChanged && !writingTools.applying)
+        }
+        if !textChanged { offerReversionAtCaret() }
+        postAccessibilityChanges(textChanged: textChanged)
+        onStateChange?(EditorState(view))
+        if relaid { onLayoutChange?() }
+        if relaid { sheetsRelaid() }
+        if edited { onEdit?() }
+    }
+
+    // MARK: drawing
+
+    public override func draw(_ dirtyRect: NSRect) {
+        guard let ctx = NSGraphicsContext.current?.cgContext else { return }
+        // Everything below this line is in layout coordinates. Scaling the context
+        // once — rather than multiplying every rect on the way out — is what keeps
+        // zoom out of the geometry: `EditorLayout` never learns it exists, and the
+        // text is re-rendered at the new scale rather than resampled, so it stays
+        // crisp. `dirtyRect` comes in already scaled, so the culling band is it
+        // divided back out.
+        ctx.saveGState()
+        defer { ctx.restoreGState() }
+        ctx.scaleBy(x: zoomScale, y: zoomScale)
+        let band = layoutRect(dirtyRect)
+
+        // On paper there is no caret, no selection, no flash, no marker in the
+        // margin, and no picture of a sheet on a backdrop — the sheet is the paper.
+        let printing = !NSGraphicsContext.currentContextDrawingToScreen()
+        let active = selectionIsActive && !printing
+        let selColor: NSColor = printing ? .clear : active ? theme.selectionColor : theme.inactiveSelectionColor
+
+        // The paper first: every other thing here paints onto a sheet.
+        if !printing { PageChrome.draw(layoutEngine.pages, theme: theme, clip: band, in: ctx) }
+        // Then the landing flash, under every other mark: it is a light behind
+        // the words, not something drawn over them.
+        if !printing { drawLandingFlash(in: ctx) }
+        drawDirectiveBorders(in: ctx, dirtyRect: band)
+        // The verse the caret is in, while it is being written — not on paper.
+        BlockChrome.drawVerseMark(layoutEngine.rows,
+                                  caretRow: active && isEditable ? Int(docView.caretRow) : nil,
+                                  theme: theme, in: ctx)
+        // The quote bars are one pass over the frame (a run of quoted rows merges
+        // into a single bar), so they're painted before the rows, like the
+        // directive outlines — the text then draws beside them.
+        BlockChrome.drawQuoteBars(layoutEngine.rows, theme: theme, in: ctx)
+        // What Writing Tools is animating over: hidden under its preview, or
+        // greyed while it waits. Nothing, and no work, the rest of the time.
+        let effects = printing ? (hidden: [], dimmed: []) : writingToolsEffectRects()
+        // The open region's selection, behind its picture: leaf draws a
+        // picture session's selection, as it draws the document's.
+        if !printing, regionSlot.isOpen {
+            ctx.setFillColor(selColor.cgColor)
+            for r in regionSlot.selectionRects() { ctx.fill(r) }
+        }
+
+        for rl in layoutEngine.rows {
+            // Cull to the dirty band, so a scroll or a caret blink repaints only
+            // what's on screen. Skipped rather than stopped at the first row past
+            // the band: rows run top-down only while a sheet has one column, and a
+            // second one starts back at the top of the same sheet.
+            if rl.top >= band.maxY || rl.top + rl.height <= band.minY { continue }
+            // A table draws its own grid (once, on its first picture row); its
+            // rows carry no text to paint.
+            if let grid = rl.table {
+                if rl.tableFirst { drawTable(grid, tableTop: rl.tableTop, selColor: selColor, in: ctx) }
+                continue
+            }
+            // A media box likewise draws once, on its first placeholder row, in
+            // place of core's `🖼 alt` glyphs. Inset by the row's own prefix, so a
+            // picture inside a quote or a list sits beside its gutter rather than
+            // under it.
+            if let box = rl.media {
+                if rl.mediaFirst {
+                    BlockChrome.drawMedia(box,
+                                          at: box.rect(top: rl.mediaTop,
+                                                       left: rl.originX + rl.shaped.prefixWidth),
+                                          theme: theme,
+                                          playing: mediaPlayers.isPlaying(box.media.src), in: ctx)
+                }
+                continue
+            }
+            // A block region's picture, once, on its first placeholder row,
+            // centred on the column — vectors, so the PDF gets paths, and a
+            // kept bitmap on screen.
+            if let box = rl.picture {
+                if rl.pictureFirst {
+                    box.draw(in: box.rect(top: rl.pictureTop, left: rl.originX + rl.shaped.prefixWidth,
+                                          width: rl.columnWidth - rl.shaped.prefixWidth), ctx: ctx,
+                             screen: !printing)
+                }
+                continue
+            }
+            // The open region's view is a subview over the box; nothing of
+            // core's placeholder is painted under it.
+            if rl.hosted != nil { continue }
+            // The row's bands, not one rect over its whole height: a split row has
+            // a sheet edge — or a column gutter — through the middle of it, and a
+            // code fill drawn over that would tile the backdrop or the gutter too.
+            // Each band carries its own column, so this is where the x comes from.
+            let bands = rl.bands
+            let rowRect = bands.first
+                ?? CGRect(x: rl.originX, y: rl.top, width: rl.columnWidth, height: rl.height)
+            if rl.row.directive, let label = rl.row.directiveLabel, !label.isEmpty {
+                drawDirectiveLabel(label, in: rowRect)
+            }
+            if rl.row.code {
+                ctx.setFillColor(theme.codeBackground.cgColor)
+                for fill in rl.codeFills { ctx.fill(fill) }
+                if let lang = rl.row.codeLang, !lang.isEmpty { drawCodeLang(lang, in: rowRect) }
+            }
+            BlockChrome.drawRule(rl, theme: theme, selColor: selColor, in: ctx)
+            BlockChrome.drawPageBreak(rl, theme: theme, selColor: selColor, in: ctx)
+            layoutEngine.fillSelection(row: rl, color: selColor, in: ctx)
+            // Draw each wrapped visual line's substring on its own line box, hung
+            // at the row's indent (zero on the first line, the prefix width after).
+            let drawLines = {
+                for (i, wl) in rl.wrapped.enumerated() {
+                    // `continue`, not `break`: a row's lines run down one column and
+                    // then back up to the top of the next, so passing the dirty band
+                    // once says nothing about the lines after it.
+                    let o = rl.lineOrigin(i)
+                    if o.y >= band.maxY || o.y + rl.lineHeight(i) <= band.minY { continue }
+                    wl.attributed.draw(with: CGRect(x: o.x + wl.offset, y: o.y,
+                                                    width: rl.columnWidth - wl.indent,
+                                                    height: rl.lineHeight(i)),
+                                       options: [.usesLineFragmentOrigin])
+                }
+            }
+            if effects.hidden.isEmpty && effects.dimmed.isEmpty {
+                drawLines()
+            } else {
+                WritingToolsSession.drawMasked(hidden: effects.hidden, dimmed: effects.dimmed, band: band, in: ctx, drawLines)
+            }
+        }
+
+        if printing { return }
+        drawMisspellings(in: ctx, dirtyRect: band)
+        drawAutocorrections(in: ctx, dirtyRect: band)
+        if markedByteRange != nil { drawMarkedUnderline(in: ctx) }
+
+        // Before the caret, never after: the caret stands at the cue's first
+        // letter, and painted over it the reader sees no caret at all until
+        // typing pushes the cue away.
+        if let placeholder, let box = layoutEngine.placeholderBox {
+            BlockChrome.drawPlaceholder(placeholder, in: box, theme: theme, in: ctx)
+        }
+
+        if active, caretVisible, let rect = shownCaretRect {
+            ctx.setFillColor(theme.caretColor.cgColor)
+            ctx.fill(rect)
+        }
+        if !printing { drawRegionComposition(in: ctx) }
+        drawDropIndicator(in: ctx)
+
+        drawHighlightMarkers()
+    }
+
+    /// Paint the familiar red wave under each box of `misspelledRects` that
+    /// touches the dirty band. The ranges the checker reported stay in AppKit's
+    /// UTF-16 space until `mapMisspellings` maps them, through the same
+    /// source-offset mapping as Find, accessibility, and text input; this only
+    /// draws what that mapped.
+    private func drawMisspellings(in ctx: CGContext, dirtyRect band: CGRect) {
+        guard checksSpelling, !misspelledRects.isEmpty else { return }
+        ctx.saveGState()
+        defer { ctx.restoreGState() }
+        ctx.setStrokeColor(NSColor.systemRed.cgColor)
+        ctx.setLineWidth(0.8)
+        ctx.setLineCap(.round)
+        for rect in misspelledRects where rect.maxY > band.minY && rect.minY < band.maxY {
+            let y = rect.maxY - 1.5
+            let path = CGMutablePath()
+            path.move(to: CGPoint(x: rect.minX, y: y))
+            var x = rect.minX
+            var high = true
+            while x < rect.maxX {
+                x = min(x + 2, rect.maxX)
+                path.addLine(to: CGPoint(x: x, y: y + (high ? -1 : 1)))
+                high.toggle()
+            }
+            ctx.addPath(path)
+        }
+        ctx.strokePath()
+    }
+
+    /// The boxes every reported range occupies in the current layout — what
+    /// `drawMisspellings` paints from. Called when the checker answers and
+    /// whenever the layout is rebuilt under ranges that are still current; a
+    /// frame whose text changed clears the ranges instead and asks again.
+    private func mapMisspellings() -> [CGRect] {
+        guard !misspelledRanges.isEmpty else { return [] }
+        return misspelledRanges.flatMap { range -> [CGRect] in
+            let (from, to) = byteBounds(range)
+            return rangeRects(fromByte: from, toByte: to).filter { $0.width > 0 }
+        }
+    }
+
+    // MARK: printing — the document on the printer's paper
+
+    /// File ▸ Print. The document is laid onto the printer's paper — every page
+    /// of it, at the margins in the print panel — whatever the screen shows: a
+    /// continuous flow prints as pages, and a paginated view prints on the
+    /// printer's sheet rather than its own. Done by a second view over the same
+    /// document, paginated to the paper, so nothing on screen moves.
+    public override func printView(_ sender: Any?) {
+        guard let info = NSPrintInfo.shared.copy() as? NSPrintInfo else { return }
+        let operation = printOperation(with: info)
+        operation.showsPrintPanel = true
+        operation.showsProgressPanel = true
+        if let window {
+            operation.runModal(for: window, delegate: nil, didRun: nil, contextInfo: nil)
+        } else {
+            operation.run()
+        }
+    }
+
+    /// The operation `printView(_:)` runs, over a fresh view paginated to
+    /// `info`'s paper and margins. `info` is edited: the margins are read into
+    /// the page setup and then zeroed, so the operation draws each sheet onto
+    /// the whole of the paper it stands for rather than inset by them twice.
+    ///
+    /// The paper is the printer's; the columns are the screen's. A document set
+    /// in two on screen prints in two, because the column count is a decision
+    /// about the document and the paper size is a fact about the printer.
+    func printOperation(with info: NSPrintInfo) -> NSPrintOperation {
+        let paper = PageSetup(
+            size: info.paperSize,
+            margins: LeafInsets(top: info.topMargin, left: info.leftMargin,
+                                bottom: info.bottomMargin, right: info.rightMargin))
+            .columned(pageSetup?.columns ?? 1, gutter: pageSetup?.columnGutter)
+        info.topMargin = 0; info.bottomMargin = 0; info.leftMargin = 0; info.rightMargin = 0
+        info.isHorizontallyCentered = false
+        info.isVerticallyCentered = false
+
+        let operation = NSPrintOperation(view: paperSheet(paper), printInfo: info)
+        if let title = window?.title, !title.isEmpty { operation.jobTitle = title }
+        return operation
+    }
+
+    /// The File menu's other spelling of the same command.
+    @objc public func printDocument(_ sender: Any?) { printView(sender) }
+
+    /// One printed page per laid-out sheet. `false` off paper, which hands the
+    /// continuous flow to AppKit's own slicing — reached only if a host prints
+    /// this view directly rather than through `print(_:)`.
+    public override func knowsPageRange(_ range: NSRangePointer) -> Bool {
+        guard pageSetup != nil, !layoutEngine.pages.isEmpty else { return false }
+        range.pointee = NSRange(location: 1, length: layoutEngine.pages.count)
+        return true
+    }
+
+    /// Every sheet's frame in layout coordinates, top to bottom. Empty in the
+    /// continuous flow.
+    var pages: [CGRect] { layoutEngine.pages }
+
+    // MARK: sheets as leaves (see `Sheets`)
+
+    /// Whether scrolling stops at the edges of the sheet in view, `sheet` —
+    /// for a host that turns the sheets itself. The UIKit peer's twin; see it.
+    /// Bound through `LeafClipView`, which `LeafEditor` puts this view in.
+    public var holdsSheet = false {
+        didSet {
+            guard holdsSheet != oldValue else { return }
+            if holdsSheet { moveSheet(to: sheetInView()) }
+            rehold()
+        }
+    }
+
+    /// The sheet in view: the held one, or the one under the middle of the
+    /// clip view. `0` off paper.
+    public private(set) var sheet = 0
+
+    /// How many sheets the document is laid out on; `0` off paper.
+    public var sheetCount: Int { pageSetup == nil ? 0 : pages.count }
+
+    /// Told the sheet in view and the count, whenever either changes.
+    public var onSheetChange: ((_ sheet: Int, _ count: Int) -> Void)?
+
+    /// Bring sheet `index` to the top of the viewport; past the last, the
+    /// last. The caret goes with it from another sheet. Asked before the
+    /// document is laid out, it is done once it is.
+    public func showSheet(_ index: Int, animated: Bool = false) {
+        guard pageSetup != nil, !pages.isEmpty, let scroll = enclosingScrollView,
+              scroll.contentView.bounds.height > 0 else {
+            wantedSheet = (index, animated)
+            // Unseen until it is there — see the UIKit peer.
+            if pageSetup != nil { alphaValue = 0 }
+            return
+        }
+        wantedSheet = nil
+        alphaValue = 1
+        let target = min(max(index, 0), pages.count - 1)
+        if let caret = layoutEngine.caretRect(docView, theme: theme),
+           Sheets.index(at: caret.midY, in: pages) != target, let page = pageSetup {
+            let sheet = pages[target]
+            let (row, ch) = layoutEngine.hit(CGPoint(x: sheet.minX + page.margins.left,
+                                                     y: sheet.minY + page.margins.top + 1))
+            let offset = doc.offsetForPos(row: UInt32(row), ch: UInt32(ch))
+            command { $0.caretMoved(to: offset) }
+        }
+        moveSheet(to: target)
+        let clip = scroll.contentView
+        let origin = CGPoint(x: clip.bounds.origin.x, y: heldRange(target, in: clip).lowerBound)
+        if animated {
+            NSAnimationContext.runAnimationGroup { _ in clip.animator().setBoundsOrigin(origin) }
+        } else {
+            clip.scroll(to: origin)
+        }
+        scroll.reflectScrolledClipView(clip)
+    }
+
+    private var wantedSheet: (index: Int, animated: Bool)?
+    private var reportedSheets: (sheet: Int, count: Int)?
+
+    private func moveSheet(to index: Int) {
+        sheet = pages.isEmpty ? 0 : min(max(index, 0), pages.count - 1)
+        reportSheets()
+    }
+
+    private func reportSheets() {
+        let now = (sheet: sheet, count: sheetCount)
+        guard reportedSheets.map({ $0 != now }) ?? true else { return }
+        reportedSheets = now
+        onSheetChange?(now.sheet, now.count)
+    }
+
+    private func sheetInView() -> Int {
+        guard pageSetup != nil, !pages.isEmpty, let clip = enclosingScrollView?.contentView else { return 0 }
+        return Sheets.index(at: clip.bounds.midY / zoomScale, in: pages)
+    }
+
+    /// The clip origins the held sheet `index` allows: its band in this
+    /// view's (zoomed) coordinates, within the clip's own range.
+    private func heldRange(_ index: Int, in clip: NSClipView) -> ClosedRange<CGFloat> {
+        let insets = clip.contentInsets
+        let lowest = -insets.top
+        let highest = max(lowest, frame.height - clip.bounds.height + insets.bottom)
+        guard let page = pageSetup, pages.indices.contains(index) else { return lowest...highest }
+        let band = Sheets.band(index, pages: pages, backdrop: page.backdrop,
+                               contentHeight: layoutEngine.contentHeight)
+        let top = index == 0 ? lowest : band.lowerBound * zoomScale - insets.top
+        let bottom = index == pages.count - 1 ? highest
+            : band.upperBound * zoomScale - clip.bounds.height + insets.bottom
+        let from = Sheets.clamp(top, to: lowest...highest)
+        return from...max(from, Sheets.clamp(bottom, to: lowest...highest))
+    }
+
+    /// `proposed` as the held sheet allows it — what `LeafClipView` asks of
+    /// every bounds it is about to take.
+    func heldBounds(_ proposed: NSRect, in clip: NSClipView) -> NSRect {
+        guard holdsSheet, pageSetup != nil, !pages.isEmpty else { return proposed }
+        var bounds = proposed
+        bounds.origin.y = Sheets.clamp(bounds.origin.y, to: heldRange(sheet, in: clip))
+        return bounds
+    }
+
+    /// The clip view moved: not holding, the sheet in view may be another.
+    @objc private func clipScrolled() {
+        guard !holdsSheet, pageSetup != nil else { return }
+        moveSheet(to: sheetInView())
+    }
+
+    private func followCaretToItsSheet() {
+        guard holdsSheet, pageSetup != nil, !pages.isEmpty,
+              let caret = layoutEngine.caretRect(docView, theme: theme) else { return }
+        moveSheet(to: Sheets.index(at: caret.midY, in: pages))
+    }
+
+    private func sheetsRelaid() {
+        guard pageSetup != nil else {
+            wantedSheet = nil
+            alphaValue = 1
+            return moveSheet(to: 0)
+        }
+        // A sheet asked for is the one in view from here on, not the first
+        // the view was made at — see the UIKit peer.
+        if let wanted = wantedSheet {
+            moveSheet(to: wanted.index)
+        } else if sheet >= pages.count {
+            moveSheet(to: pages.count - 1)
+        } else {
+            reportSheets()
+        }
+        if let wanted = wantedSheet {
+            DispatchQueue.main.async { [weak self] in
+                guard let self, let again = self.wantedSheet,
+                      again.index == wanted.index else { return }
+                self.showSheet(wanted.index, animated: wanted.animated)
+            }
+        }
+        rehold()
+    }
+
+    private func rehold() {
+        guard holdsSheet, let scroll = enclosingScrollView else { return }
+        let clip = scroll.contentView
+        clip.scroll(to: clip.bounds.origin)
+        scroll.reflectScrolledClipView(clip)
+    }
+
+    public override func rectForPage(_ page: Int) -> NSRect {
+        let pages = layoutEngine.pages
+        guard pages.indices.contains(page - 1) else { return .zero }
+        return viewRect(pages[page - 1])
+    }
+
+    /// The margin pass: a small glyph beside the first line of every marked
+    /// highlight, at the trailing edge — the UIKit peer's rule, drawn with
+    /// AppKit's symbols. Layout coordinates throughout; the context is already
+    /// scaled, and the hit test divides the zoom back out (`layoutPoint`).
+    private func drawHighlightMarkers() {
+        markerHits.removeAll()
+        let highlights = doc.highlights()
+        guard highlights.contains(where: { $0.marker != nil }) else { return }
+        let width = bounds.width / zoomScale
+        for highlight in highlights {
+            guard let symbol = highlight.marker else { continue }
+            let rc = doc.posForOffset(off: UInt32(highlight.start))
+            guard let line = layoutEngine.rect(row: Int(rc.row), ch: Int(rc.ch)) else { continue }
+            let frame = EditorLayout.markerFrame(lineMidY: line.midY, trailingEdge: width)
+            let config = NSImage.SymbolConfiguration(pointSize: 13, weight: .regular)
+                .applying(.init(paletteColors: [theme.secondaryColor]))
+            if let image = NSImage(systemSymbolName: symbol, accessibilityDescription: nil)?
+                .withSymbolConfiguration(config)
+            {
+                image.draw(
+                    in: CGRect(
+                        x: frame.midX - image.size.width / 2,
+                        y: frame.midY - image.size.height / 2,
+                        width: image.size.width, height: image.size.height))
+            }
+            markerHits.append((EditorLayout.markerTarget(frame, trailingEdge: width), highlight.id))
+        }
+    }
+
+    /// Answer a click on a block media box, returning whether it was handled (so
+    /// the caller can fall through to plain caret placement if not).
+    ///
+    /// In `.inline` mode this installs an AVKit player over the box and starts
+    /// it; a second click on a playing one pauses. `.host` mode, and any source
+    /// this loader can't resolve to a local file, fall through to `onOpenMedia`
+    /// — a remote URL is exactly the case a host is better placed to handle,
+    /// since it can fetch asynchronously and this cannot.
+    private func activateMedia(_ media: MediaView) -> Bool {
+        // An image plays nothing, so it is worth activating only when its box is
+        // empty and the host might yet fill it — a source the host declined, or
+        // one whose bytes aren't on this device. A picture that loaded is just
+        // text to click into, and swallowing that click would be a bug.
+        if media.kind == .image {
+            guard mediaStore.still(for: media) == nil else { return false }
+            if mediaStore.isResolving(media.src) { return true }
+            guard let open = onOpenMedia else { return false }
+            open(media.src)
+            return true
+        }
+        if mediaPlayback == .inline {
+            if let url = mediaStore.playableURL(for: media.src) {
+                let rects = layoutEngine.mediaRects()
+                if let rect = rects[media.src],
+                   mediaPlayers.activate(media, at: rect, in: self, url: url, theme: theme) {
+                    needsDisplay = true   // the badge under the player must stop drawing
+                    return true
+                }
+            } else if mediaStore.isResolving(media.src) {
+                // The host is fetching it. Remember what was asked for, so the
+                // answer starts playback instead of leaving the reader to tap a
+                // second time on a box that looks unchanged.
+                pendingMediaActivation = media.src
+                return true
+            }
+        }
+        guard let open = onOpenMedia else { return false }
+        open(media.src)
+        return true
+    }
+
+    /// Play the media the reader tapped, now that the host has resolved it.
+    /// Called from the store's `onLoaded`; a no-op unless this is the source
+    /// they were waiting on.
+    private func playIfAwaited(_ src: String) {
+        guard pendingMediaActivation == src else { return }
+        pendingMediaActivation = nil
+        guard let url = mediaStore.playableURL(for: src),
+              let info = layoutEngine.rows.compactMap(\.media).first(where: { $0.media.src == src })
+        else { return }
+        if let rect = layoutEngine.mediaRects()[src] {
+            mediaPlayers.activate(info.media, at: rect, in: self, url: url, theme: theme)
+            needsDisplay = true
+        }
+    }
+
+    /// Draw a table as a proportional grid — header fill and body stripes, the
+    /// cell text, then the grid rules over them — the Apple peer of leaf-gpui's
+    /// `table_chrome`. `tableTop` is the grid's top in view coordinates.
+    private func drawTable(_ grid: TableLayout, tableTop: CGFloat, selColor: LeafColor, in ctx: CGContext) {
+        let left = layoutEngine.originX
+        let border = TableMetrics.border
+        let x0 = left + (grid.colX.first ?? 0)
+        let x1 = left + (grid.colX.last ?? 0)
+
+        // Fills under the text: the header rows, then every other body row.
+        var body = 0
+        for row in grid.rows {
+            let bg: LeafColor?
+            if row.head {
+                bg = theme.tableHeaderColor
+            } else {
+                body += 1
+                bg = body % 2 == 0 ? theme.tableStripeColor : nil // first body row clear
+            }
+            if let bg {
+                ctx.setFillColor(bg.cgColor)
+                ctx.fill(CGRect(x: x0, y: tableTop + row.top, width: x1 - x0, height: row.height))
+            }
+        }
+
+        // Selection highlight, behind the cell text — the table peer of the row
+        // path's `fillSelection`. One rect per selected span, clipped to its cell
+        // line; the row backgrounds above it, the text below, exactly as a plain
+        // row layers them.
+        ctx.setFillColor(selColor.cgColor)
+        for row in grid.rows {
+            let selTop = tableTop + row.top + TableMetrics.padY
+            for cell in row.cells {
+                for (i, line) in cell.lines.enumerated() where !line.selRanges.isEmpty {
+                    let y = selTop + CGFloat(i) * grid.lineHeight
+                    for (s, e) in line.selRanges {
+                        let sx = CTLineGetOffsetForStringIndex(line.line, CFIndex(s), nil)
+                        let ex = CTLineGetOffsetForStringIndex(line.line, CFIndex(e), nil)
+                        ctx.fill(CGRect(x: left + line.textX + sx, y: y,
+                                        width: ex - sx, height: grid.lineHeight))
+                    }
+                }
+            }
+        }
+
+        // Cell text — each cell line on its own row within the cell's band.
+        for row in grid.rows {
+            let top = tableTop + row.top + TableMetrics.padY
+            for cell in row.cells {
+                for (i, line) in cell.lines.enumerated() {
+                    line.attributed.draw(
+                        with: CGRect(x: left + line.textX,
+                                     y: top + CGFloat(i) * grid.lineHeight,
+                                     width: .greatestFiniteMagnitude, height: theme.lineHeight),
+                        options: [.usesLineFragmentOrigin])
+                }
+            }
+        }
+
+        // Grid rules over the fills and text.
+        ctx.setFillColor(theme.tableBorderColor.cgColor)
+        for bx in grid.colX { // verticals, outer two included
+            ctx.fill(CGRect(x: left + bx, y: tableTop, width: border, height: grid.height))
+        }
+        var edgeYs = [tableTop] // horizontals: top, each row boundary, bottom
+        for row in grid.rows { edgeYs.append(tableTop + row.top + row.height) }
+        for ey in edgeYs {
+            ctx.fill(CGRect(x: x0, y: min(ey, tableTop + grid.height - border),
+                            width: x1 - x0 + border, height: border))
+        }
+    }
+
+    /// Underline the in-flight IME composition, one segment per visual line — the
+    /// native "you're still composing this" affordance.
+    ///
+    /// A composition the input method split into clauses is drawn a clause at
+    /// a time — the one being converted thick, the others thin — with a small
+    /// gap between neighbours so the reader can see where one ends.
+    private func drawMarkedUnderline(in ctx: CGContext) {
+        guard let m = markedByteRange, m.length > 0 else { return }
+        guard !markedClauses.isEmpty else { return drawMarkedUnderline(m, thick: false, in: ctx) }
+        for clause in markedClauses { drawMarkedUnderline(clause.range, thick: clause.selected, gap: true, in: ctx) }
+    }
+
+    private func drawMarkedUnderline(_ m: NSRange, thick: Bool, gap: Bool = false, in ctx: CGContext) {
+        guard m.length > 0 else { return }
+        let s = doc.posForOffset(off: UInt32(m.location))
+        let e = doc.posForOffset(off: UInt32(m.location + m.length))
+        let height: CGFloat = thick ? 2 : 1
+        let inset: CGFloat = gap ? 1 : 0
+        ctx.setFillColor(theme.caretColor.cgColor)
+        for row in Int(s.row)...Int(e.row) where layoutEngine.rows.indices.contains(row) {
+            let rl = layoutEngine.rows[row]
+            let rowFrom = (row == Int(s.row)) ? Int(s.ch) : 0
+            let rowTo = (row == Int(e.row)) ? Int(e.ch) : rl.attributed.length
+            for (i, wl) in rl.wrapped.enumerated() {
+                let lineStart = wl.start, lineEnd = wl.start + wl.length
+                let cs = max(rowFrom, lineStart), ce = min(rowTo, lineEnd)
+                guard cs < ce else { continue }
+                let x0 = CTLineGetOffsetForStringIndex(wl.line, CFIndex(cs - lineStart), nil)
+                let x1 = CTLineGetOffsetForStringIndex(wl.line, CFIndex(ce - lineStart), nil)
+                let o = rl.lineOrigin(i)
+                ctx.fill(CGRect(x: o.x + wl.offset + x0 + inset, y: o.y + rl.lineHeight(i) - 0.5 - height,
+                                width: max(0, x1 - x0 - 2 * inset), height: height))
+            }
+        }
+    }
+
+    /// Whether this view owns the text focus right now: first responder **and** in the
+    /// key window. Drives the emphasized-vs-unemphasized selection fill and whether the
+    /// caret shows — matching a native `NSTextView`, which greys its selection and hides
+    /// its caret the moment its window stops being key.
+    private var selectionIsActive: Bool { isFocused && (window?.isKeyWindow ?? false) }
+
+    private func drawCodeLang(_ lang: String, in rowRect: CGRect) {
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: theme.monospaceFont(size: theme.fontSize * 0.75, bold: false, italic: false),
+            .foregroundColor: theme.secondaryColor,
+        ]
+        let s = lang as NSString
+        let size = s.size(withAttributes: attrs)
+        s.draw(at: CGPoint(x: rowRect.maxX - size.width - 2, y: rowRect.minY + 1), withAttributes: attrs)
+    }
+
+    /// A directive container's `.class` label, top-left of its first row — the
+    /// mirror of `drawCodeLang`'s top-right fence-language label. Opposite
+    /// corners so a directive wrapping a code block never collides the two.
+    private func drawDirectiveLabel(_ label: String, in rowRect: CGRect) {
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: theme.proportionalFont(size: theme.fontSize * 0.75, bold: false, italic: false),
+            .foregroundColor: theme.secondaryColor,
+        ]
+        (label as NSString).draw(at: CGPoint(x: rowRect.minX + 2, y: rowRect.minY + 1), withAttributes: attrs)
+    }
+
+    /// One dashed outline per maximal run of consecutive `directive` rows — a
+    /// directive block reads as a single bordered aside, not one filled band per
+    /// row. Drawn before the row loop so the label/text paint over it, not the
+    /// reverse. Skips a table row (it has no drawable rect of its own here; a
+    /// directive-wrapped table isn't chromed today).
+    private func drawDirectiveBorders(in ctx: CGContext, dirtyRect: NSRect) {
+        let rows = layoutEngine.rows
+        var i = 0
+        while i < rows.count {
+            guard rows[i].isChromedDirective else { i += 1; continue }
+            let start = i
+            while i < rows.count, rows[i].isChromedDirective { i += 1 }
+            // The run's rows reduced to their vertical bands, merged where they
+            // touch. Continuously that always collapses back to the single box
+            // this drew before. Paginated, a run crossing a sheet edge — between
+            // two of its rows, or through the middle of one of them — comes out as
+            // one box per sheet, so no outline is ever stroked across the backdrop.
+            var spans: [CGRect] = []
+            for rl in rows[start..<i] {
+                for b in rl.bands {
+                    if let last = spans.last, abs(last.maxY - b.minY) < 0.5,
+                       abs(last.minX - b.minX) < 0.5 {
+                        spans[spans.count - 1].size.height += b.height
+                    } else {
+                        spans.append(b)
+                    }
+                }
+            }
+            for span in spans {
+                let rect = span.insetBy(dx: -4, dy: 0)
+                if rect.maxY < dirtyRect.minY || rect.minY > dirtyRect.maxY { continue }
+                ctx.saveGState()
+                ctx.setStrokeColor(theme.directiveBorderColor.cgColor)
+                ctx.setLineWidth(1)
+                ctx.setLineDash(phase: 0, lengths: [3, 3])
+                ctx.addPath(CGPath(roundedRect: rect.insetBy(dx: 0.5, dy: 0.5),
+                                   cornerWidth: 6, cornerHeight: 6, transform: nil))
+                ctx.strokePath()
+                ctx.restoreGState()
+            }
+        }
+    }
+
+    /// Put the caret at `offset` and land the reader on it — how a host arrives
+    /// at the place a `#v2` names.
+    ///
+    /// `through` bounds the block that was named, and gets it flashed. Passing it
+    /// is what makes an arrival legible: without it the reader is somewhere new
+    /// with nothing saying which words they were sent to.
+    ///
+    /// A landing rather than the caret-following in `render`, which scrolls the
+    /// least it can and only when the caret *moved* — right for typing, wrong for
+    /// arriving. See `Landing`.
+    public func reveal(offset: UInt32, through end: UInt32? = nil) {
+        command { $0.caretMoved(to: offset) }
+        lastCaretOffset = offset
+        land()
+        guard let end, end > offset else { return }
+        flash(from: offset, to: end)
+    }
+
+    /// Scroll so the caret's block sits a fixed distance below the top of the
+    /// viewport. Falls back to the ordinary minimum scroll when there is no clip
+    /// view to measure against (a text view not in a scroll view at all).
+    private func land() {
+        followCaretToItsSheet()
+        guard let clip = enclosingScrollView?.contentView,
+              let rect = layoutEngine.caretRect(docView, theme: theme)
+        else { return scrollCaretToVisible() }
+        let target = viewRect(rect)
+        let y = Landing.scrollTop(for: target,
+                                  visibleHeight: clip.bounds.height,
+                                  documentHeight: bounds.height)
+        clip.scroll(to: CGPoint(x: clip.bounds.origin.x, y: y))
+        enclosingScrollView?.reflectScrolledClipView(clip)
+    }
+
+    private func scrollCaretToVisible() {
+        // A sheet asked for and not yet shown takes the caret there itself —
+        // see the UIKit peer.
+        guard wantedSheet == nil else { return }
+        followCaretToItsSheet()
+        if let rect = layoutEngine.caretRect(docView, theme: theme) {
+            scrollToVisible(viewRect(rect.insetBy(dx: 0, dy: -theme.lineHeight)))
+        }
+    }
+
+    // MARK: the flash a landing leaves
+
+    /// The byte range lit up by the landing in progress, and when it started.
+    /// Both nil between landings, which is what keeps `draw` free of the whole
+    /// question on every ordinary repaint.
+    private var flashRange: Range<UInt32>?
+    private var flashStarted: Date?
+    private var flashTimer: Timer?
+
+    /// Light up the block from `start` to `end` and fade it out.
+    ///
+    /// Redrawn on a timer rather than through Core Animation: the highlight is
+    /// painted in `draw` alongside every other band of block chrome, in layout
+    /// space, and a layer over the top would have to be re-placed on each scroll
+    /// and reflow to stay on the words it belongs to.
+    private func flash(from start: UInt32, to end: UInt32) {
+        flashTimer?.invalidate()
+        flashRange = start..<end
+        flashStarted = Date()
+        needsDisplay = true
+        flashTimer = Timer.scheduledTimer(withTimeInterval: 1 / 30, repeats: true) { [weak self] t in
+            guard let self, let started = self.flashStarted else { return t.invalidate() }
+            guard Landing.opacity(elapsed: Date().timeIntervalSince(started)) != nil else {
+                t.invalidate()
+                self.flashTimer = nil
+                self.flashRange = nil
+                self.flashStarted = nil
+                self.needsDisplay = true
+                return
+            }
+            self.needsDisplay = true
+        }
+    }
+
+    /// Paint the landing flash behind the rows its range covers.
+    ///
+    /// Behind the text and over the paper, where a code block's fill goes, and
+    /// measured off `bands` for that same reason: a row's `height` reaches across
+    /// a page break and a column gutter, and a highlight is a thing that must
+    /// never appear in either.
+    private func drawLandingFlash(in ctx: CGContext) {
+        guard let flashRange, let flashStarted,
+              let alpha = Landing.opacity(elapsed: Date().timeIntervalSince(flashStarted))
+        else { return }
+        // Core says which rows the range covers. Mapping `upperBound - 1`
+        // through `posForOffset` looked equivalent and wasn't: a block ending in
+        // a link ends inside the hidden destination, and the caret snap carries
+        // that offset onto the row below — the flash lit the next block too.
+        let span = doc.rowRangeFor(start: flashRange.lowerBound, end: flashRange.upperBound)
+        let first = Int(span.first), last = Int(span.last)
+        guard first <= last else { return }
+        ctx.saveGState()
+        ctx.setFillColor(theme.landingFlashColor.withAlphaComponent(
+            theme.landingFlashColor.alphaComponent * alpha).cgColor)
+        for rl in layoutEngine.rows[max(0, first)...min(last, layoutEngine.rows.count - 1)] {
+            for band in rl.bands where band.height > 0 {
+                let lit = band.insetBy(dx: -6, dy: 0)
+                ctx.addPath(CGPath(roundedRect: lit, cornerWidth: 4, cornerHeight: 4, transform: nil))
+            }
+        }
+        ctx.fillPath()
+        ctx.restoreGState()
+    }
+
+    // MARK: mouse
+
+    /// The `(row, ch)` a click at `p` resolves to. Inside a table the point is
+    /// mapped through the grid to a source offset and back to a picture-row
+    /// coordinate, so the ordinary `clickCh` path (which snaps to a cell stop)
+    /// still applies; elsewhere it's the plain visual hit-test.
+    private func hitRowCh(_ p: CGPoint) -> (Int, Int) {
+        if let off = layoutEngine.tableHitOffset(p) {
+            let rc = doc.posForOffset(off: UInt32(off))
+            return (Int(rc.row), Int(rc.ch))
+        }
+        return layoutEngine.hit(p)
+    }
+
+    public override func mouseDown(with event: NSEvent) {
+        closeIdleWritingToolsGroup()
+        window?.makeFirstResponder(self)
+        let p = layoutPoint(convert(event.locationInWindow, from: nil))
+        // A click on a formula's picture or a region's drawing opens it, the
+        // caret at the stop under the pointer; a click anywhere else closes
+        // the open one first.
+        if regionClick(p, event: event) { return }
+        // A margin marker outranks everything at its point, and this click is
+        // consumed whole, as the touch surface keeps the system's tap off one:
+        // the caret stays where it was, because the reader asked for
+        // the annotation, not for a caret at the end of its line. A selection
+        // survives it for the same reason, and is no bar to it: the marker is
+        // never the selection's.
+        if let onTapHighlight, let id = EditorLayout.marker(at: p, in: markerHits) {
+            onTapHighlight(id)
+            return
+        }
+        // ⌘-click on a box with something drawn in it — a picture that loaded, or
+        // a video showing its poster — asks the host for the attachment's own
+        // place, mirroring ⌘-click on a link. It is tried before activation
+        // because activation answers a bare `clickCount == 1` and would
+        // otherwise start the video the reader was asking to *go to*. A box with
+        // nothing in it is still "load it anyway" (`onOpenMedia`), since there is
+        // no picture there to have meant.
+        if event.clickCount == 1, event.modifierFlags.contains(.command),
+           let onShowMedia,
+           let hit = layoutEngine.mediaBox(at: p),
+           mediaStore.still(for: hit) != nil, !hit.src.isEmpty
+        {
+            let (row, ch) = hitRowCh(p)
+            render(doc.clickCh(row: UInt32(row), ch: UInt32(ch), extend: false))
+            onShowMedia(hit.src)
+            return
+        }
+        // A plain press on a picture, or in the margin left of a row, picks the
+        // row's *block* up — the paragraph, the picture, the table, the list
+        // item with its children — to be dropped between two others. Like the
+        // selection press below it is not yet a drag: the caret lands on the row
+        // in `mouseUp` if none comes of it. A press inside text stays a caret
+        // placement or a selection, and the pictures with a transport (video,
+        // audio) keep their click, since a press on those is a play.
+        if event.clickCount == 1, event.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty,
+           docView.view != "source", !isReadOnly, doc.capabilities().moveBlock,
+           let candidate = blockDragCandidate(at: p) {
+            blockDragCandidate = (p, event, candidate.from, candidate.rows)
+            return
+        }
+        // A plain click on a video or audio box starts it — the box's whole point
+        // is the play badge drawn on it — and a click on an *empty* picture box
+        // asks the host for it. The caret still moves there first, so a host that
+        // ignores the media (no `onOpenMedia`) behaves exactly as before, and the
+        // reader can still type around the block afterwards.
+        if event.clickCount == 1, !event.modifierFlags.contains(.shift),
+           let hit = layoutEngine.mediaBox(at: p),
+           activateMedia(hit) {
+            let (row, ch) = hitRowCh(p)
+            render(doc.clickCh(row: UInt32(row), ch: UInt32(ch), extend: false))
+            return
+        }
+        // A plain click on a task item's box ticks it, and is consumed whole:
+        // the caret stays where it was, because ticking a box three paragraphs
+        // away should not take the cursor with it (core's `toggle_task_at`,
+        // which is why the click carries its own offset rather than going by
+        // the caret). Only the box's own glyphs answer — a click on the item's
+        // text places the caret like any other — and only the plain click, so
+        // a shift-click still extends the selection across it.
+        if event.clickCount == 1, !event.modifierFlags.contains(.shift),
+           !event.modifierFlags.contains(.command),
+           docView.view != "source", let box = layoutEngine.taskBox(at: p) {
+            render(doc.toggleTaskAt(offset: UInt64(box)))
+            return
+        }
+        // A plain click under the last block is on nothing: the caret goes onto
+        // an empty paragraph under it, opened if the document has none —
+        // wherever the pointer was horizontally — which is also the way out
+        // from under a fence Enter cannot leave. Only the plain click: a
+        // shift-click extends to the document's end through the ordinary path,
+        // and a double- or triple-click still selects on the last line. And
+        // only in the rich view: the source view is a text editor, where a
+        // click under the last line lands on it at the pointer's x.
+        if event.clickCount == 1, !event.modifierFlags.contains(.shift),
+           !event.modifierFlags.contains(.command),
+           docView.view != "source", layoutEngine.isPastEnd(p) {
+            render(doc.clickPastEnd())
+            return
+        }
+        let (row, ch) = hitRowCh(p)
+        // ⌘-click opens a link under the pointer (the native convention), leaving the
+        // caret there. A plain click still places the caret to edit the link text.
+        //
+        // A footnote gets the same gesture and is tried first — the two can't
+        // both answer (a reference is not a link node), so the order only decides
+        // which query runs, not which wins. Same modifier for both because to a
+        // reader they are one idea, "take me to where this points"; that a
+        // footnote's destination happens to be further down this page rather than
+        // in another document is leaf's distinction, not theirs.
+        if event.modifierFlags.contains(.command), event.clickCount == 1 {
+            render(doc.clickCh(row: UInt32(row), ch: UInt32(ch), extend: false))
+            if !followFootnoteAtCaret() { openLinkAtCaret() }
+            return
+        }
+        let extend = event.modifierFlags.contains(.shift)
+        // A plain click places the caret; a double-click selects a word — inside
+        // link text exactly as anywhere else. This is a text editor first: the
+        // common thing to do to a link you can see is edit its label, and a click
+        // that navigated instead made that the one span of text you couldn't put
+        // a caret in without leaving the document. Following is ⌘-click (above),
+        // the native convention, and the context menu's "Open Link".
+        switch event.clickCount {
+        case 2:  render(doc.selectWordCh(row: UInt32(row), ch: UInt32(ch)))
+        case 3:  render(doc.selectBlockCh(row: UInt32(row), ch: UInt32(ch)))
+        default:
+            // A press on the selection picks it up rather than collapsing it —
+            // the drag, if it comes, starts in `mouseDragged`; the caret, if it
+            // doesn't, is placed in `mouseUp`.
+            if !extend, hasSelection, selectionContains(p) {
+                dragCandidate = (p, event)
+                return
+            }
+            render(doc.clickCh(row: UInt32(row), ch: UInt32(ch), extend: extend))
+        }
+    }
+
+    public override func mouseUp(with event: NSEvent) {
+        if let candidate = blockDragCandidate {
+            // A press that went nowhere: a click, landing the caret on the row.
+            blockDragCandidate = nil
+            let (row, ch) = hitRowCh(candidate.point)
+            render(doc.clickCh(row: UInt32(row), ch: UInt32(ch), extend: false))
+            return
+        }
+        guard let candidate = dragCandidate else { return super.mouseUp(with: event) }
+        dragCandidate = nil
+        if docView.view != "source", layoutEngine.isPastEnd(candidate.point) {
+            render(doc.clickPastEnd())
+            return
+        }
+        let (row, ch) = hitRowCh(candidate.point)
+        render(doc.clickCh(row: UInt32(row), ch: UInt32(ch), extend: false))
+    }
+
+    /// Whether `p` (layout space) lies on the selected text.
+    private func selectionContains(_ p: CGPoint) -> Bool {
+        rangeRects(fromByte: selLowByte, toByte: selHighByte).contains { $0.contains(p) }
+    }
+
+    /// Open the link under the caret, if there is one. The host gets first
+    /// refusal (`onOpenLink`); otherwise it goes to the default app, as a URL
+    /// or as a file beside the document (`LinkDestination`). Used by ⌘-click
+    /// and the "Open Link" menu item — the two gestures that ask to *leave*,
+    /// rather than to edit.
+    @discardableResult
+    private func openLinkAtCaret() -> Bool {
+        guard let dest = targetAtCaret() else { return false }
+        // A bare `#v2` is a place in this document, so following it is a scroll
+        // rather than a departure — the host has nothing to resolve and the
+        // system has nothing to open.
+        if let landing = doc.selfLanding(of: dest) { reveal(offset: landing); return true }
+        if onOpenLink?(dest) == true { return true }
+        openWithSystem(dest)
+        return true
+    }
+
+    /// Hand a destination the host declined to the default app, or beep when
+    /// it names nothing that can be opened.
+    private func openWithSystem(_ destination: String) {
+        guard let url = LinkDestination.url(for: destination, relativeTo: documentDirectory),
+              LinkDestination.isOpenable(url) else {
+            NSSound.beep()
+            return
+        }
+        NSWorkspace.shared.open(url)
+    }
+
+    /// The link the caret stands in, honouring this view's wikilink setting.
+    private func targetAtCaret() -> String? {
+        doc.activatableTargetAtCaret(wikilinks: recognizesWikilinks)
+    }
+
+    @objc private func openLink(_ sender: Any?) { openLinkAtCaret() }
+
+    /// "Preview Link" — the menu's way to the same popover a resting pointer
+    /// raises, for a reader who arrived by right-click or by keyboard rather than
+    /// by hovering.
+    @objc private func previewLink(_ sender: Any?) {
+        let rc = doc.posForOffset(off: doc.caretOffset())
+        guard let caret = layoutEngine.rect(row: Int(rc.row), ch: Int(rc.ch)) else { return }
+        peekOffset = doc.caretOffset()
+        showLinkPeek(at: doc.caretOffset(), anchor: caret.insetBy(dx: -6, dy: 0))
+    }
+
+    @objc private func editLink(_ sender: Any?) {
+        // The parsed destination, not `targetAtCaret()`: a wikilink can be
+        // followed but has no node to repoint, and `linkActionsAtCaret` has
+        // already kept `.edit` off the menu for one.
+        guard let dest = doc.linkDestinationAtCaret() else { return }
+        onEditLink?(dest)
+    }
+
+    /// "Show Attachment" — hand the host the `src` the menu item was built for.
+    @objc private func showMedia(_ sender: Any?) {
+        guard let src = (sender as? NSMenuItem)?.representedObject as? String else { return }
+        onShowMedia?(src)
+    }
+
+    // MARK: footnotes
+
+    /// Follow the footnote under the caret — down to the note from a reference,
+    /// back up to the reference from a note — and say whether there was one.
+    ///
+    /// Both directions are one call because to the reader they are one gesture:
+    /// ⌘-click a footnote and you go to its other half, whichever half you were
+    /// standing on. `FootnoteJump` has already worked out which that is.
+    @discardableResult
+    private func followFootnoteAtCaret() -> Bool {
+        guard let jump = doc.footnoteJumpAtCaret() else { return false }
+        // The peek was about where the reader *was*.
+        dismissFootnotePeek()
+        render(doc.caretMoved(to: jump.offset))
+        return true
+    }
+
+    @objc private func followFootnote(_ sender: Any?) { followFootnoteAtCaret() }
+
+    // MARK: footnote peek (hover)
+
+    /// The popover a resting pointer raises over a footnote reference, and the
+    /// bookkeeping that decides when to raise and drop it.
+    ///
+    /// `peekAnchor` is the rect that raised the one currently up, in layout
+    /// space. The pointer staying inside it means "still the same reference", and
+    /// testing that rather than the byte offset is what stops a one-glyph label —
+    /// whose two ends are two different offsets — flickering the popover as the
+    /// pointer crosses it.
+    private lazy var footnotePeek: FootnotePeekPresenter = {
+        let presenter = FootnotePeekPresenter()
+        presenter.delegate = self
+        return presenter
+    }()
+
+    /// The peek a *citation inside a note* raises — a second popover over the
+    /// first, and the only stacking allowed anywhere here.
+    ///
+    /// A vault of scripture puts the interesting links exactly one level down: a
+    /// verse's footnote is a list of citations, and every one is a link into
+    /// another chapter. Refusing to stack meant the reader could see which
+    /// citations there were and never what they said without clicking through and
+    /// losing the note they were reading. One level answers that; `raisesNestedPeeks`
+    /// is what stops a second.
+    private lazy var nestedPeek: FootnotePeekPresenter = {
+        let presenter = FootnotePeekPresenter()
+        presenter.delegate = self
+        presenter.raisesNestedPeeks = false
+        return presenter
+    }()
+    private var peekAnchor: CGRect?
+    private var peekOffset: UInt32?
+    private var peekTimer: Timer?
+    private var peekTracking: NSTrackingArea?
+    /// Counts down to taking a peek away once the pointer has left the reference,
+    /// so the reader has time to travel into the popover. Cancelled when they
+    /// arrive; see `footnotePeek(_:pointerIsInside:)`.
+    private var peekCloseTimer: Timer?
+    /// Whether the pointer is inside the popover right now — the one state that
+    /// makes a peek unclosable, because closing it would be closing it under a
+    /// reader who is reading or selecting from it.
+    private var pointerInPeek = false
+
+    public override func updateTrackingAreas() {
+        super.updateTrackingAreas()
+        if let peekTracking { removeTrackingArea(peekTracking) }
+        // `.inVisibleRect` keeps the area in step with scrolling and resizing on
+        // its own, so the zero rect is never consulted.
+        let area = NSTrackingArea(
+            rect: .zero,
+            options: [.mouseMoved, .mouseEnteredAndExited, .activeInKeyWindow, .inVisibleRect],
+            owner: self, userInfo: nil)
+        addTrackingArea(area)
+        peekTracking = area
+    }
+
+    public override func mouseMoved(with event: NSEvent) {
+        let p = layoutPoint(convert(event.locationInWindow, from: nil))
+        // Still over the reference the popover is about: leave it up, and cancel
+        // any close the pointer's last excursion started.
+        if let peekAnchor, peekAnchor.insetBy(dx: -6, dy: -2).contains(p) {
+            peekCloseTimer?.invalidate()
+            peekCloseTimer = nil
+            return
+        }
+
+        let (row, ch) = hitRowCh(p)
+        let off = doc.offsetForPos(row: UInt32(row), ch: UInt32(ch))
+        guard off != peekOffset else { return }
+        // Off the reference and onto something else. A peek that is up gets a
+        // moment first: the pointer may be on its way *into* it, and the path
+        // from a reference to the popover below it crosses ordinary prose.
+        if footnotePeek.isShowing {
+            scheduleFootnotePeekClose()
+        } else {
+            dismissFootnotePeek()
+        }
+        peekOffset = off
+
+        // Asked only once the pointer has rested. `footnotePeekContent` walks the
+        // document's nodes — far too much work to repeat for every point a
+        // pointer sweeps across a paragraph — and a popover that appeared the
+        // instant the pointer touched a reference would strobe along the line
+        // anyway. This is the delay a tooltip has, for the reason a tooltip has
+        // it. The rest starts over at each new offset, so the countdown for one
+        // the pointer has already left is cancelled here — with a peek up, the
+        // branch above schedules a close and nothing else stops it.
+        peekTimer?.invalidate()
+        peekTimer = Timer.scheduledTimer(withTimeInterval: 0.4, repeats: false) { [weak self] _ in
+            self?.showFootnotePeek(at: off, row: row, ch: ch)
+        }
+    }
+
+    public override func mouseExited(with event: NSEvent) {
+        // The pointer may have left this view *into* the popover, which sits over
+        // it in a window of its own — so this is a candidate for closing, not a
+        // close. The popover says whether the reader arrived.
+        peekOffset = nil
+        if footnotePeek.isShowing {
+            scheduleFootnotePeekClose()
+        } else {
+            dismissFootnotePeek()
+        }
+    }
+
+    /// Take the peek down shortly, unless the reader turns out to be in it.
+    ///
+    /// The delay is what makes a peek usable at all: with an immediate close the
+    /// popover vanished the moment the pointer left the `[1]`, so there was no
+    /// way to reach it — and a note you can't reach is a note you can't select,
+    /// copy, or follow a link out of.
+    private func scheduleFootnotePeekClose() {
+        guard peekCloseTimer == nil else { return }
+        peekCloseTimer = Timer.scheduledTimer(withTimeInterval: 0.35, repeats: false) { [weak self] _ in
+            guard let self else { return }
+            self.peekCloseTimer = nil
+            guard !self.pointerInPeek else { return }
+            self.dismissFootnotePeek()
+        }
+    }
+
+    private func showFootnotePeek(at off: UInt32, row: Int, ch: Int) {
+        peekTimer = nil
+        guard let caret = layoutEngine.rect(row: row, ch: ch) else { return }
+        // A caret rect is a hairline; widened so the popover's arrow points at the
+        // reference rather than balancing on its edge.
+        let anchor = caret.insetBy(dx: -6, dy: 0)
+        // `docView` is the frame on screen, so the note is drawn from the rows
+        // the page below is already drawing it from — the popover and the
+        // document can't disagree about the same note.
+        if let content = doc.footnotePeekContent(at: off, in: docView, theme: theme) {
+            peekAnchor = anchor
+            footnotePeek.show(content, from: viewRect(anchor), in: self)
+            return
+        }
+        showLinkPeek(at: off, anchor: anchor)
+    }
+
+    /// Show what the link at `off` points *at*, the way a footnote reference
+    /// shows its note.
+    ///
+    /// Two sources, and only the first is leaf's. A `#v2` names a place in this
+    /// document, which is already laid out on screen. Anything else names a file,
+    /// and reading a file is the host's — `onPeekLink` fetches, and the answer
+    /// comes back whenever it comes back.
+    private func showLinkPeek(at off: UInt32, anchor: CGRect) {
+        guard let destination = doc.linkDestinationAt(off: off) else { return }
+        if destination.hasPrefix("#") {
+            let locator = String(destination.dropFirst())
+            guard let content = FootnotePeekContent(
+                peeking: locator, of: doc, in: docView, theme: theme) else { return }
+            peekAnchor = anchor
+            footnotePeek.show(content, from: viewRect(anchor), in: self)
+            return
+        }
+        fetchLinkPeek(destination, at: off, anchor: anchor)
+    }
+
+    /// Ask the host for the file `destination` names and peek at it when the
+    /// answer comes. `otherwise` runs if the host could not read it, and the
+    /// question is still the one being asked.
+    private func fetchLinkPeek(_ destination: String, at off: UInt32, anchor: CGRect,
+                               otherwise: (() -> Void)? = nil) {
+        guard let onPeekLink else { return }
+        onPeekLink(destination) { [weak self] fetched in
+            // The pointer may have moved on, or moved on and come back to a
+            // different link, while the host was reading a file. Answering the
+            // old question over the new one is worse than not answering.
+            guard let self, self.peekOffset == off else { return }
+            guard let fetched, let content = FootnotePeekContent(peeking: fetched, theme: self.theme)
+            else { otherwise?(); return }
+            self.peekAnchor = anchor
+            self.footnotePeek.show(content, from: self.viewRect(anchor), in: self)
+        }
+    }
+
+    /// Take the peek down and forget what it was about. Called for everything
+    /// that makes it stale — the pointer leaving, a click, a keystroke, a
+    /// relayout — since an answer about a place the reader has left is worse than
+    /// no answer.
+    private func dismissFootnotePeek() {
+        peekTimer?.invalidate()
+        peekTimer = nil
+        peekCloseTimer?.invalidate()
+        peekCloseTimer = nil
+        pointerInPeek = false
+        peekAnchor = nil
+        // The nested one first, and always: it is anchored inside the note's
+        // window, so a note taken down under it would leave a popover pointing
+        // at nothing.
+        nestedPeek.hide()
+        footnotePeek.hide()
+    }
+
+    // MARK: a peek the reader is using
+
+    /// The pointer arrived in (or left) the popover.
+    ///
+    /// Arriving cancels the pending close, which is what lets a reader move from
+    /// the reference into the note and stay there — reading it, selecting a
+    /// sentence, following a link. Leaving starts the countdown again rather than
+    /// closing outright, for the same reason arriving needed a grace period: the
+    /// pointer may be crossing back to the reference.
+    func footnotePeek(_ presenter: FootnotePeekPresenter, pointerIsInside inside: Bool) {
+        // The nested peek is a thing to read, not to travel into: it holds no
+        // links (a foreign document's are inert) and nothing to select that the
+        // note above it doesn't already offer. So the pointer's comings and
+        // goings in it say nothing about whether the *note* should stay up, and
+        // reading them as the note's own would take the note down the moment the
+        // second popover appeared under the pointer.
+        guard presenter !== nestedPeek else { return }
+        pointerInPeek = inside
+        if inside {
+            peekCloseTimer?.invalidate()
+            peekCloseTimer = nil
+            // A rest started on the way in is about a place the pointer only
+            // crossed. Left to fire, a crossing of the reference's own glyphs
+            // re-raised the note as a new popover under the reader, and
+            // anything they were resting on in the old one went with it.
+            peekTimer?.invalidate()
+            peekTimer = nil
+        } else {
+            scheduleFootnotePeekClose()
+        }
+    }
+
+    /// A citation inside a note has been rested on: show what it points at, over
+    /// the note, without disturbing it.
+    ///
+    /// Same two sources as a hover in the document itself — a `#v2` is a place in
+    /// this document and needs no host, anything else is a file only the host can
+    /// read. Unlike that one it anchors to a rect inside the *popover's* text
+    /// view, which is a real view in a real window and can carry a popover of its
+    /// own.
+    func footnotePeek(_ presenter: FootnotePeekPresenter,
+                      wantsPeekOf destination: String?, from rect: CGRect, in view: NSView) {
+        nestedPeek.hide()
+        guard let destination else { return }
+        if destination.hasPrefix("#") {
+            let content = FootnotePeekContent(peeking: String(destination.dropFirst()),
+                                              of: doc, in: docView, theme: theme)
+            guard let content else { return }
+            nestedPeek.show(content, from: rect, in: view)
+            return
+        }
+        guard let onPeekLink else { return }
+        onPeekLink(destination) { [weak self, weak view] fetched in
+            guard let self, let view, let fetched,
+                  // The note itself may have gone while the host was reading a
+                  // file — and a second popover outliving the first would be left
+                  // pointing at a window that isn't there. *This* note, not
+                  // merely a note: one re-raised in the meantime is a new popover
+                  // around a new text view, and `view` is still the old one.
+                  self.footnotePeek.contains(view),
+                  let content = FootnotePeekContent(peeking: fetched, theme: self.theme)
+            else { return }
+            self.nestedPeek.show(content, from: rect, in: view)
+        }
+    }
+
+    /// The reader clicked something followable inside the note.
+    ///
+    /// Either way the peek is over: it was about the reference they have now
+    /// left, and leaving it up over a document that has just scrolled somewhere
+    /// else would point at the wrong words.
+    func footnotePeek(_ presenter: FootnotePeekPresenter, didFollow target: FootnotePeekTarget) {
+        switch target.kind {
+        case .link(let destination):
+            dismissFootnotePeek()
+            // A `#v2` in a note names a place in the document the note belongs
+            // to, so it navigates here rather than going out to the host.
+            if let landing = doc.selfLanding(of: destination) { reveal(offset: landing); return }
+            // The same division the document draws: the host gets first refusal,
+            // because a note's `./sibling.md` means what it means everywhere else
+            // in this document.
+            if onOpenLink?(destination) == true { return }
+            openWithSystem(destination)
+        case .footnote(let offset):
+            // Navigate rather than stack a second popover: the note it names is a
+            // place in this document, and `render` scrolls the caret into view,
+            // so the reader lands looking at it.
+            dismissFootnotePeek()
+            render(doc.caretMoved(to: offset))
+            followFootnoteAtCaret()
+        }
+    }
+
+    @objc private func copyLink(_ sender: Any?) {
+        guard let dest = targetAtCaret() else { return }
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(dest, forType: .string)
+    }
+
+    public override func mouseDragged(with event: NSEvent) {
+        let p = layoutPoint(convert(event.locationInWindow, from: nil))
+        if let candidate = blockDragCandidate {
+            guard hypot(p.x - candidate.point.x, p.y - candidate.point.y) > 3 else { return }
+            blockDragCandidate = nil
+            beginDraggingBlock(from: candidate.from, rows: candidate.rows, with: candidate.event, at: candidate.point)
+            return
+        }
+        if let candidate = dragCandidate {
+            // A few points of slop, so a press that wobbles is still a click.
+            guard hypot(p.x - candidate.point.x, p.y - candidate.point.y) > 3 else { return }
+            dragCandidate = nil
+            beginDraggingSelection(with: candidate.event)
+            return
+        }
+        let (row, ch) = hitRowCh(p)
+        render(doc.clickCh(row: UInt32(row), ch: UInt32(ch), extend: true))
+    }
+
+    // MARK: drag & drop (source) — the selection, picked up
+
+    /// Start dragging the selected text: its plain and HTML flavours on the
+    /// pasteboard, under an image of the text itself, as every text view does.
+    private func beginDraggingSelection(with event: NSEvent) {
+        guard let text = doc.selectedText() else { return }
+        let item = NSPasteboardItem()
+        item.setString(text, forType: .string)
+        if let html = doc.selectionHtml() { item.setString(html, forType: .html) }
+        let boxes = rangeRects(fromByte: selLowByte, toByte: selHighByte)
+        guard let first = boxes.first else { return }
+        let frame = viewRect(boxes.dropFirst().reduce(first) { $0.union($1) })
+        let dragging = NSDraggingItem(pasteboardWriter: item)
+        dragging.setDraggingFrame(frame, contents: dragImage(of: frame))
+        beginDraggingSession(with: [dragging], event: event, source: self)
+    }
+
+    // MARK: drag & drop (source) — a block, picked up
+
+    /// The block a press at `p` (layout space) would pick up, or nil when the
+    /// press is on text — an image box, or the margin to the left of a row's
+    /// column, the two places a press is not asking for a caret. The block is
+    /// core's: an offset inside it and the rows it covers.
+    private func blockDragCandidate(at p: CGPoint) -> (from: Int, rows: RowRange)? {
+        let onPicture = layoutEngine.mediaBox(at: p)?.kind == .image
+        let margin = layoutEngine.rows.contains { rl in
+            rl.lineBoxes.contains { $0.minY <= p.y && p.y < $0.maxY && p.x < $0.minX }
+        }
+        guard onPicture || margin else { return nil }
+        let (row, _) = layoutEngine.hit(p)
+        guard let range = doc.blockRangeAt(row: UInt32(row), ch: 0) else { return nil }
+        return (Int(range.start), doc.rowRangeFor(start: range.start, end: range.end))
+    }
+
+    /// Start carrying a block: its source on the pasteboard, so a drop
+    /// elsewhere gets the text, under an image of the block as drawn. Within
+    /// this view the drop is a `moveBlock`, not a paste — `performDragOperation`
+    /// tells the two apart by `blockDrag`. Picked up by a picture that has
+    /// drawn, it carries the picture's file too (`pictureDragWriter`).
+    private func beginDraggingBlock(from: Int, rows: RowRange, with event: NSEvent, at point: CGPoint) {
+        let source = doc.source()
+        guard let range = doc.blockRangeAt(row: rows.first, ch: 0) else { return }
+        let bytes = Array(source.utf8)
+        let lo = min(Int(range.start), bytes.count), hi = min(Int(range.end), bytes.count)
+        let text = String(decoding: bytes[lo..<hi], as: UTF8.self)
+        let item: NSPasteboardWriting
+        if let picture = layoutEngine.mediaBox(at: point), let writer = pictureDragWriter(for: picture, text: text) {
+            item = writer
+        } else {
+            let plain = NSPasteboardItem()
+            plain.setString(text, forType: .string)
+            item = plain
+        }
+        let boxes = (Int(rows.first)...Int(rows.last)).compactMap { layoutEngine.rows.indices.contains($0) ? layoutEngine.rows[$0] : nil }
+            .flatMap(\.lineBoxes)
+        guard let first = boxes.first else { return }
+        let frame = viewRect(boxes.dropFirst().reduce(first) { $0.union($1) })
+        let dragging = NSDraggingItem(pasteboardWriter: item)
+        dragging.setDraggingFrame(frame, contents: dragImage(of: frame))
+        blockDrag = (from, rows)
+        beginDraggingSession(with: [dragging], event: event, source: self)
+    }
+
+    /// What a picture picked up hands a receiver outside the document: its
+    /// file where it has one, a promise of one where its bytes are in the
+    /// markup, and the block's `text` either way. Nil for anything that has
+    /// not drawn a picture — a chip with nothing behind it is not a file to
+    /// give anybody — and for video and audio, whose box is a poster or a
+    /// strip rather than the thing itself.
+    func pictureDragWriter(for picture: MediaView, text: String) -> NSPasteboardWriting? {
+        guard picture.kind == .image, mediaStore.still(for: picture) != nil else { return nil }
+        if let file = mediaStore.playableURL(for: picture.src), file.isFileURL,
+           FileManager.default.fileExists(atPath: file.path) {
+            let item = NSPasteboardItem()
+            item.setString(file.absoluteString, forType: .fileURL)
+            item.setString(text, forType: .string)
+            return item
+        }
+        guard let data = MediaStore.decodeDataURI(picture.src) else { return nil }
+        let base = picture.alt.trimmingCharacters(in: .whitespacesAndNewlines)
+            .replacingOccurrences(of: "/", with: "-").replacingOccurrences(of: ":", with: "-")
+        guard let (type, name) = PictureFilePromise.describe(data, named: base.isEmpty ? "Picture" : base)
+        else { return nil }
+        let promise = PictureFilePromise(data: data, fileName: name)
+        let provider = PictureFilePromiseProvider(fileType: type.identifier, delegate: promise)
+        provider.promise = promise
+        provider.text = text
+        return provider
+    }
+
+    public func draggingSession(_ session: NSDraggingSession, endedAt screenPoint: NSPoint, operation: NSDragOperation) {
+        blockDrag = nil
+        dropTarget = nil
+    }
+
+    /// The rendered row under `p` (layout space), `rows.count` for a point
+    /// under everything, or nil beside the rows — what a block drop is aimed at.
+    private func dropRow(at p: CGPoint) -> Int? {
+        for (i, rl) in layoutEngine.rows.enumerated() where rl.height > 0 {
+            if rl.lineBoxes.contains(where: { $0.minY <= p.y && p.y < $0.maxY }) { return i }
+        }
+        return layoutEngine.isPastEnd(p) ? layoutEngine.rows.count : nil
+    }
+
+    /// The line a block drop would land on: above the target row, or under
+    /// the last row for a drop below everything, across the text column.
+    private func drawDropIndicator(in ctx: CGContext) {
+        guard let target = dropTarget else { return }
+        let rows = layoutEngine.rows
+        let y: CGFloat
+        let column: (x: CGFloat, width: CGFloat)
+        if Int(target.row) < rows.count {
+            let rl = rows[Int(target.row)]
+            y = rl.lineBoxes.first?.minY ?? rl.top
+            column = (rl.originX, rl.columnWidth)
+        } else if let last = rows.last(where: { $0.height > 0 }) {
+            y = last.lineBoxes.last?.maxY ?? last.top + last.height
+            column = (last.originX, last.columnWidth)
+        } else {
+            return
+        }
+        ctx.setFillColor(theme.caretColor.cgColor)
+        ctx.fill(CGRect(x: column.x, y: y - 1, width: column.width, height: 2))
+    }
+
+    /// The selected text as it is drawn, for the drag to carry.
+    private func dragImage(of frame: CGRect) -> NSImage? {
+        guard let rep = bitmapImageRepForCachingDisplay(in: frame) else { return nil }
+        cacheDisplay(in: frame, to: rep)
+        let image = NSImage(size: frame.size)
+        image.addRepresentation(rep)
+        return image
+    }
+
+    public func draggingSession(_ session: NSDraggingSession, sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
+        // Within the app the text moves (⌥ copies); another app gets a copy.
+        switch context {
+        case .withinApplication: return isReadOnly ? .copy : [.move, .copy]
+        case .outsideApplication: return .copy
+        @unknown default: return .copy
+        }
+    }
+
+    // MARK: drag & drop (destination)
+
+    public override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        let op = dropOperation(for: sender)
+        guard op != [] else { return [] }
+        window?.makeFirstResponder(self)
+        previewDrop(sender)
+        return op
+    }
+
+    public override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        let op = dropOperation(for: sender)
+        if op != [] { previewDrop(sender) }   // track the drop point so the caret previews it
+        return op
+    }
+
+    public override func draggingExited(_ sender: NSDraggingInfo?) {
+        // The selection the drag came from was left standing for the preview;
+        // let it stand. Nothing to undo here. A carried block's indicator
+        // goes, though: out of the view there is nowhere for it to land.
+        dropTarget = nil
+    }
+
+    /// What a drop of `sender` would do here: nothing on a reader, nothing for
+    /// flavours neither the editor nor the host can use, a move for the view's
+    /// own selection (⌥ copies), a copy for everything else.
+    private func dropOperation(for sender: NSDraggingInfo) -> NSDragOperation {
+        guard !isReadOnly, hasUsableFlavor(sender.draggingPasteboard) else { return [] }
+        if blockDrag != nil, sender.draggingSource as AnyObject? === self {
+            // A carried block lands on a boundary, never at a point: the row
+            // under the pointer names it, and the indicator shows it.
+            let p = layoutPoint(convert(sender.draggingLocation, from: nil))
+            dropTarget = dropRow(at: p).flatMap { doc.dropTargetAt(row: UInt32($0)) }
+            return dropTarget == nil ? [] : .move
+        }
+        if sender.draggingSource as AnyObject? === self {
+            return sender.draggingSourceOperationMask.contains(.move) ? .move : .copy
+        }
+        return .copy
+    }
+
+    /// Text the editor pastes itself, or anything else when a host has said it
+    /// will look — the same rule `paste(_:)` and its validation follow.
+    private func hasUsableFlavor(_ pb: NSPasteboard) -> Bool {
+        if pb.string(forType: .string) != nil || pb.string(forType: .html) != nil { return true }
+        return onDrop != nil && pb.canReadObject(forClasses: [NSURL.self, NSImage.self])
+    }
+
+    /// Show where the drop would land. For the view's own selection the caret
+    /// is *not* moved: that would collapse the text being carried. The drop
+    /// point is read again at the drop.
+    private func previewDrop(_ sender: NSDraggingInfo) {
+        guard sender.draggingSource as AnyObject? !== self else { return }
+        moveCaretToDrop(sender)
+    }
+
+    public override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        closeWritingToolsGroupForUserEdit()
+        let pb = sender.draggingPasteboard
+        if let drag = blockDrag, sender.draggingSource as AnyObject? === self {
+            let target = dropTarget
+            blockDrag = nil
+            dropTarget = nil
+            guard let target else { return false }
+            render(doc.moveBlock(from: UInt32(drag.from), to: target.offset))
+            return true
+        }
+        let dropByte = dropOffset(sender)
+        if sender.draggingSource as AnyObject? === self {
+            return dropSelection(at: dropByte, move: sender.draggingSourceOperationMask.contains(.move), from: pb)
+        }
+        moveCaretToDrop(sender)
+        // The host first, for the flavours a text editor has no answer for — a
+        // picture, a file — and before the text ones, since a dragged file has
+        // a path as its text and the host's answer to it is the better one.
+        if let onDrop, pb.canReadObject(forClasses: [NSURL.self, NSImage.self]), onDrop(pb) { return true }
+        return insertDropped(pb)
+    }
+
+    /// Paste the pasteboard's text at the caret. Rich first, plain second.
+    private func insertDropped(_ pb: NSPasteboard) -> Bool {
+        if let html = pb.string(forType: .html) {
+            render(doc.pasteRich(html: html, text: pb.string(forType: .string) ?? ""))
+            return true
+        }
+        if let text = pb.string(forType: .string) {
+            render(doc.paste(text: text))
+            return true
+        }
+        return false
+    }
+
+    /// The view's own selection let go at `drop`: a move takes it out of where
+    /// it was, a copy leaves it. Both hold the selection until the last moment,
+    /// because it *is* the text being carried.
+    ///
+    /// A move is two edits, in the order that keeps the offsets honest. The
+    /// document's byte length before and after the first says exactly how far
+    /// the second's target shifted — pasting rich text may not insert as many
+    /// bytes as the pasteboard held, and deleting a selection in the WYSIWYG
+    /// view may take delimiters with it — so nothing here guesses at either.
+    private func dropSelection(at drop: Int, move: Bool, from pb: NSPasteboard) -> Bool {
+        let (low, high) = (selLowByte, selHighByte)
+        if move, drop >= low, drop <= high { return true }   // let go where it was picked up
+        let place = { (offset: Int) in
+            self.render(self.doc.setSelectionOffsets(anchor: UInt32(offset), focus: UInt32(offset)))
+        }
+        guard move else {
+            place(drop)
+            return insertDropped(pb)
+        }
+        let before = doc.source().utf8.count
+        if drop < low {
+            // Insert first, then delete the original from where it moved to.
+            place(drop)
+            guard insertDropped(pb) else { return false }
+            let delta = doc.source().utf8.count - before
+            render(doc.selectRange(start: UInt32(low + delta), end: UInt32(high + delta)))
+            render(doc.backspace())
+        } else {
+            // Delete first, then insert at the point the deletion pulled up.
+            render(doc.backspace())
+            let delta = doc.source().utf8.count - before
+            place(drop + delta)
+            guard insertDropped(pb) else { return false }
+        }
+        return true
+    }
+
+    /// The source offset under the drag's pointer.
+    private func dropOffset(_ sender: NSDraggingInfo) -> Int {
+        let p = layoutPoint(convert(sender.draggingLocation, from: nil))
+        let (row, ch) = hitRowCh(p)
+        return Int(doc.offsetForPos(row: UInt32(row), ch: UInt32(ch)))
+    }
+
+    private func moveCaretToDrop(_ sender: NSDraggingInfo) {
+        let p = layoutPoint(convert(sender.draggingLocation, from: nil))
+        let (row, ch) = hitRowCh(p)
+        render(doc.clickCh(row: UInt32(row), ch: UInt32(ch), extend: false))
+    }
+
+    // MARK: regions edited in place
+
+    /// The command as a key for the open region's session, or nil for one
+    /// that is not a region's.
+    private func regionInput(_ selector: Selector) -> RegionInput? {
+        switch selector {
+        case #selector(moveLeft(_:)): return .left
+        case #selector(moveRight(_:)): return .right
+        case #selector(moveUp(_:)): return .up
+        case #selector(moveDown(_:)): return .down
+        case #selector(moveLeftAndModifySelection(_:)): return .extendLeft
+        case #selector(moveRightAndModifySelection(_:)): return .extendRight
+        case #selector(moveUpAndModifySelection(_:)): return .extendUp
+        case #selector(moveDownAndModifySelection(_:)): return .extendDown
+        case #selector(moveWordLeft(_:)), #selector(moveWordBackward(_:)): return .wordLeft
+        case #selector(moveWordRight(_:)), #selector(moveWordForward(_:)): return .wordRight
+        case #selector(moveToLeftEndOfLine(_:)), #selector(moveToBeginningOfLine(_:)): return .lineStart
+        case #selector(moveToRightEndOfLine(_:)), #selector(moveToEndOfLine(_:)): return .lineEnd
+        case #selector(moveToBeginningOfDocument(_:)), #selector(scrollToBeginningOfDocument(_:)): return .home
+        case #selector(moveToEndOfDocument(_:)), #selector(scrollToEndOfDocument(_:)): return .end
+        case #selector(deleteBackward(_:)): return .backspace
+        case #selector(deleteForward(_:)): return .deleteForward
+        case #selector(cancelOperation(_:)): return .cancel
+        case #selector(insertNewline(_:)): return .newline
+        case #selector(insertTab(_:)), #selector(insertBacktab(_:)): return .tab
+        default: return nil
+        }
+    }
+
+    /// A command while a region is open goes to its session, which may take
+    /// it; any other command closes the region and runs. With none open, →
+    /// in front of a region or ← behind one opens it. Whether it was taken.
+    private func regionCommand(_ selector: Selector) -> Bool {
+        if regionSlot.isOpen {
+            if let input = regionInput(selector) { return regionSlot.input(input) }
+            regionSlot.close()
+            return false
+        }
+        let right = selector == #selector(moveRight(_:))
+        guard right || selector == #selector(moveLeft(_:)) else { return false }
+        return regionSlot.enter(right: right)
+    }
+
+    /// A plain click on a formula's picture or a region's drawing opens it, or
+    /// moves the caret in the one already open. A click anywhere else closes
+    /// the open one and is left to run. Whether the click was a region's.
+    private func regionClick(_ p: CGPoint, event: NSEvent) -> Bool {
+        let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        guard event.clickCount == 1, mods.isEmpty else {
+            regionSlot.close()
+            return false
+        }
+        return regionSlot.click(at: p, in: layoutEngine, theme: theme)
+    }
+
+    // MARK: keyboard — text + IME
+
+    public override func keyDown(with event: NSEvent) {
+        closeIdleWritingToolsGroup()
+        // Shift+Return is leaf's in-cell line break. AppKit's default key bindings
+        // don't distinguish it from a bare Return — both resolve to
+        // `insertNewline:` (only Ctrl+Return maps to `insertLineBreak:`) — so
+        // without catching it here it would drop to the next cell instead of
+        // breaking the line. Route it straight to the line-break command, which
+        // no-ops off a table (falling back to an ordinary newline). Skip while an
+        // IME composition is live so a Shift+Return that commits marked text still
+        // reaches the input system.
+        let mods = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
+        let isReturn = event.keyCode == 36 || event.keyCode == 76 // Return, keypad Enter
+        if markedByteRange == nil, isReturn, mods == .shift {
+            doCommand(by: #selector(insertLineBreak(_:)))
+            return
+        }
+        // ⌥↑ / ⌥↓ move the caret's *block* — the keyboard half of the block
+        // drag — rather than the caret to the paragraph's edge, which is what
+        // AppKit's bindings make of them. In the rich view only, where a block
+        // is a thing on screen; the source view keeps the system's meaning.
+        // The Format menu carries the same pair and answers first where there
+        // is one; this is the binding for a host without it.
+        let isArrowUp = event.keyCode == 126, isArrowDown = event.keyCode == 125
+        if markedByteRange == nil, mods == .option, isArrowUp || isArrowDown, docView.view != "source" {
+            render(isArrowUp ? doc.moveBlockUp() : doc.moveBlockDown())
+            return
+        }
+        if !(inputContext?.handleEvent(event) ?? false) { interpretKeyEvents([event]) }
+    }
+
+    public func insertText(_ string: Any, replacementRange: NSRange) {
+        closeWritingToolsGroupForUserEdit()
+        let text = (string as? String) ?? (string as? NSAttributedString)?.string ?? ""
+        // Typing into the open region is its session's; a composition or a
+        // named range closes it and lands as text.
+        if regionSlot.isOpen {
+            if markedByteRange == nil, replacementRange.location == NSNotFound, regionSlot.type(text) { return }
+            regionSlot.close()
+        }
+        // Committing an IME composition: replace the marked bytes with the final text.
+        if let m = markedByteRange {
+            markedByteRange = nil
+            render(doc.replaceRange(from: UInt32(m.location), to: UInt32(m.location + m.length), text: text))
+            return
+        }
+        // A range the system names — dictation correcting a word it already
+        // spoke, a text service rewriting a span — replaces exactly that, in the
+        // system's UTF-16 units. Everything else types over the selection.
+        if replacementRange.location != NSNotFound {
+            let (from, to) = byteBounds(replacementRange)
+            render(doc.replaceRange(from: UInt32(from), to: UInt32(to), text: text))
+            return
+        }
+        guard !text.isEmpty else { return }
+        render(doc.insert(text: text))
+        substituteAfterTyping(text)
+    }
+
+    public override func doCommand(by selector: Selector) {
+        if Self.editingCommands.contains(selector) { closeWritingToolsGroupForUserEdit() }
+        if regionCommand(selector) { return }
+        switch selector {
+        case #selector(moveLeft(_:)):                       render(doc.moveLeft(extend: false))
+        case #selector(moveRight(_:)):                      render(doc.moveRight(extend: false))
+        // ↑/↓ ride the pixel wrap, not core's paragraph rows (which the unwrapped map
+        // exposes) — computed from the visual geometry, then snapped by `clickCh`.
+        case #selector(moveUp(_:)):                         moveVertical(up: true, extend: false)
+        case #selector(moveDown(_:)):                       moveVertical(up: false, extend: false)
+        case #selector(moveLeftAndModifySelection(_:)):     render(doc.moveLeft(extend: true))
+        case #selector(moveRightAndModifySelection(_:)):    render(doc.moveRight(extend: true))
+        case #selector(moveUpAndModifySelection(_:)):       moveVertical(up: true, extend: true)
+        case #selector(moveDownAndModifySelection(_:)):     moveVertical(up: false, extend: true)
+        case #selector(moveWordLeft(_:)):                   render(doc.moveWordLeft(extend: false))
+        case #selector(moveWordRight(_:)):                  render(doc.moveWordRight(extend: false))
+        case #selector(moveWordLeftAndModifySelection(_:)): render(doc.moveWordLeft(extend: true))
+        case #selector(moveWordRightAndModifySelection(_:)):render(doc.moveWordRight(extend: true))
+        // Home/End go to the *visual* line's ends, not the whole paragraph's.
+        case #selector(moveToLeftEndOfLine(_:)),
+             #selector(moveToBeginningOfLine(_:)):          moveToVisualLineBoundary(toStart: true, extend: false)
+        case #selector(moveToLeftEndOfLineAndModifySelection(_:)),
+             #selector(moveToBeginningOfLineAndModifySelection(_:)): moveToVisualLineBoundary(toStart: true, extend: true)
+        case #selector(moveToRightEndOfLine(_:)),
+             #selector(moveToEndOfLine(_:)):                moveToVisualLineBoundary(toStart: false, extend: false)
+        case #selector(moveToRightEndOfLineAndModifySelection(_:)),
+             #selector(moveToEndOfLineAndModifySelection(_:)): moveToVisualLineBoundary(toStart: false, extend: true)
+        case #selector(moveToBeginningOfDocument(_:)):      render(doc.moveDocStart(extend: false))
+        case #selector(moveToEndOfDocument(_:)):            render(doc.moveDocEnd(extend: false))
+        case #selector(moveToBeginningOfDocumentAndModifySelection(_:)): render(doc.moveDocStart(extend: true))
+        case #selector(moveToEndOfDocumentAndModifySelection(_:)):       render(doc.moveDocEnd(extend: true))
+        // In a table these keys take on grid meanings (see the FFI's `cell_*`):
+        // Return drops a cell, Shift+Return breaks a line within one, Tab/Shift+Tab
+        // walk the cells. Each returns nil off the table, where the key keeps its
+        // ordinary job (newline, indent).
+        case #selector(insertNewline(_:)):
+            render(doc.cellReturn() ?? doc.newline())
+        case #selector(insertLineBreak(_:)):
+            render(doc.cellLineBreak() ?? doc.newline())
+        case #selector(insertTab(_:)):
+            render(doc.cellTab(forward: true) ?? doc.indent())
+        case #selector(insertBacktab(_:)):
+            render(doc.cellTab(forward: false) ?? doc.outdent())
+        case #selector(deleteBackward(_:)):                 render(doc.backspace())
+        case #selector(deleteForward(_:)):                  render(doc.deleteForward())
+        case #selector(deleteWordBackward(_:)):             render(doc.deleteWordBack())
+        case #selector(deleteWordForward(_:)):              render(doc.deleteWordForward())
+        default: super.doCommand(by: selector)
+        }
+    }
+
+    /// The key bindings `doCommand(by:)` answers with an edit, not a motion.
+    private static let editingCommands: Set<Selector> = [
+        #selector(insertNewline(_:)), #selector(insertLineBreak(_:)), #selector(insertTab(_:)),
+        #selector(insertBacktab(_:)), #selector(deleteBackward(_:)), #selector(deleteForward(_:)),
+        #selector(deleteWordBackward(_:)), #selector(deleteWordForward(_:)),
+        #selector(deleteToBeginningOfLine(_:)), #selector(deleteToEndOfLine(_:)),
+        #selector(deleteToBeginningOfParagraph(_:)), #selector(deleteToEndOfParagraph(_:)),
+        #selector(deleteToMark(_:)), #selector(yank(_:)), #selector(transpose(_:)),
+        #selector(insertNewlineIgnoringFieldEditor(_:)), #selector(insertTabIgnoringFieldEditor(_:)),
+        #selector(deleteBackwardByDecomposingPreviousCharacter(_:)),
+        #selector(uppercaseWord(_:)), #selector(lowercaseWord(_:)), #selector(capitalizeWord(_:)),
+    ]
+
+    // MARK: visual-line motion (the wrap is ours, so core can't do these)
+
+    /// Move the caret one *visual* line up/down, holding the pixel x it started from
+    /// so a run of ↑/↓ doesn't drift through shorter lines. Probes one line-height
+    /// past the caret and hit-tests, so it crosses block boundaries naturally.
+    private func moveVertical(up: Bool, extend: Bool) {
+        guard let caret = layoutEngine.caretRect(docView, theme: theme) else {
+            render(up ? doc.moveUp(extend: extend) : doc.moveDown(extend: extend))
+            return
+        }
+        // Probe from the caret's full *line band* — inside a table that clears the
+        // cell's vertical padding, which the thin caret rect doesn't, so a step
+        // actually crosses into the next line/cell instead of stalling. Hit-test
+        // the table-aware way (`hitRowCh`), or a probe into a table resolves to the
+        // collapsed picture row and teleports the caret to its top-left cell.
+        let band = layoutEngine.caretBand(src: Int(docView.caretSrc), row: Int(docView.caretRow))
+        let goalX = verticalGoalX ?? caret.minX
+        var probeY = up ? (band?.minY ?? caret.minY) - 1 : (band?.maxY ?? caret.maxY) + 1
+        var (row, ch) = hitRowCh(CGPoint(x: goalX, y: probeY))
+        // A block boundary is drawn as a short blank gap row (`blockGap`, half a
+        // line) that holds no caret. Probing one line past the caret lands *inside*
+        // that gap, where the hit-test snaps back and forth between the block above
+        // and below — so a step from a paragraph into the list or code block under
+        // it moves only sometimes. Step over any gap row(s) to the next row that can
+        // actually hold the caret; the bounded walk can't outrun the row count.
+        let rows = layoutEngine.rows
+        var guardCount = 0
+        while rows.indices.contains(row), rows[row].row.isBlockGap, guardCount < rows.count {
+            let r = rows[row]
+            probeY = up ? r.top - 1 : r.top + r.height + 1
+            (row, ch) = hitRowCh(CGPoint(x: goalX, y: probeY))
+            guardCount += 1
+        }
+        verticalGoalX = goalX
+        render(doc.clickCh(row: UInt32(row), ch: UInt32(ch), extend: extend), keepVerticalGoal: true)
+    }
+
+    /// Move to the start or end of the caret's *visual* line. At the end of a
+    /// soft-wrapped line, stop before the wrap whitespace so the caret stays on this
+    /// line rather than jumping to the next line's start.
+    private func moveToVisualLineBoundary(toStart: Bool, extend: Bool) {
+        let row = Int(docView.caretRow), ch = Int(docView.caretCh)
+        guard let vl = layoutEngine.visualLine(row: row, ch: ch) else {
+            render(toStart ? doc.moveHome(extend: extend) : doc.moveEnd(extend: extend))
+            return
+        }
+        var target = toStart ? vl.start : vl.end
+        if !toStart, vl.index < layoutEngine.rows[row].wrapped.count - 1,
+           layoutEngine.rows[row].wrapped[vl.index].attributed.string.hasSuffix(" ") {
+            target -= 1
+        }
+        render(doc.clickCh(row: UInt32(row), ch: UInt32(target), extend: extend))
+    }
+
+    // MARK: the rest of Cocoa's standard key bindings
+    //
+    // What `NSTextView` answers and this view did not: every selector below is
+    // one `NSStandardKeyBindingResponding` names, bound by the system's
+    // `StandardKeyBinding.dict` (⌘⌫, ⌃K, ⌃Y, ⌃T, ⌃A/⌃E, page keys…) or by the
+    // user's own `DefaultKeyBinding.dict`, and some reached from the Edit menu
+    // too (Transformations). They are overrides rather than cases in
+    // `doCommand(by:)`, so a key binding and a menu item are the same call:
+    // `doCommand`'s fallback, `super`, performs any method the view has and
+    // beeps only at what it truly lacks.
+    //
+    // "Line" is the visual line — the wrap is this view's, and it is what ⌘⌫
+    // deletes in every Mac text view — and "paragraph" is core's row, which in
+    // the unwrapped map is one block.
+
+    /// The source bytes of the caret's visual line, its end before a soft
+    /// wrap's trailing space (the way `moveToVisualLineBoundary` stops).
+    private func visualLineBytes() -> (start: Int, end: Int)? {
+        let row = Int(docView.caretRow), ch = Int(docView.caretCh)
+        guard let vl = layoutEngine.visualLine(row: row, ch: ch) else { return nil }
+        let rl = layoutEngine.rows[row]
+        var end = vl.end
+        if vl.index < rl.wrapped.count - 1, rl.wrapped[vl.index].attributed.string.hasSuffix(" ") { end -= 1 }
+        let start = max(vl.start, vl.index == 0 ? rl.row.prefixLength : vl.start)
+        return (Int(doc.offsetForPos(row: UInt32(row), ch: UInt32(start))),
+                Int(doc.offsetForPos(row: UInt32(row), ch: UInt32(end))))
+    }
+
+    /// The source bytes of the caret's paragraph — its row, past the row's
+    /// block decoration (a bullet, a quote's gutter), which is not text.
+    private func paragraphBytes(row: Int? = nil) -> (start: Int, end: Int)? {
+        let row = row ?? Int(docView.caretRow)
+        guard layoutEngine.rows.indices.contains(row) else { return nil }
+        let rl = layoutEngine.rows[row]
+        return (Int(doc.offsetForPos(row: UInt32(row), ch: UInt32(rl.row.prefixLength))),
+                Int(doc.offsetForPos(row: UInt32(row), ch: UInt32(rl.attributed.length))))
+    }
+
+    /// The text the deleting commands below put away for ⌃Y, shared by every
+    /// view in the app as `NSTextView`'s is. Visible text, not source: a kill
+    /// that starts inside `**bold**` would otherwise carry half a delimiter.
+    static var killBuffer = ""
+    /// The view that made the kill the buffer ends with, and the frame it left
+    /// behind. A kill made straight after another, with nothing in between,
+    /// adds to the buffer rather than replacing it — so ⌃K ⌃K ⌃K then ⌃Y gives
+    /// back all three, as in Emacs and `NSTextView`. Shared with the buffer:
+    /// a kill in another window comes in between, though this view's frame
+    /// never saw it.
+    private static weak var lastKillView: LeafTextView?
+    private static var lastKillFrame: UInt32?
+    /// Whether a kill now adds to the buffer rather than replacing it.
+    private var killChains: Bool { Self.lastKillView === self && Self.lastKillFrame == docView.frame }
+    /// Note this view's last kill as the buffer's latest, once it has rendered.
+    private func noteKill() { (Self.lastKillView, Self.lastKillFrame) = (self, docView.frame) }
+    /// The emacs mark — `setMark:` and the three commands that use it — with
+    /// the source it was set in, which `currentMark()` carries it forward from.
+    private var mark: (byte: Int, source: String)?
+
+    /// Delete `[from, to)` as one undo step and keep its text for ⌃Y. An
+    /// empty range is the edge case each caller answers its own way.
+    private func kill(from: Int, to: Int, forward: Bool) {
+        guard to > from, !isReadOnly else { return }
+        closeWritingToolsGroupForUserEdit()
+        let text = doc.textInRange(from: UInt32(from), to: UInt32(to))
+        Self.killBuffer = !killChains ? text : forward ? Self.killBuffer + text : text + Self.killBuffer
+        render(doc.replaceRange(from: UInt32(from), to: UInt32(to), text: ""))
+        noteKill()
+    }
+
+    /// Delete the selection (one undo step), if there is one, and say so —
+    /// what every `deleteTo…` does first, as in `NSTextView`.
+    private func deleteSelectionIfAny() -> Bool {
+        guard hasSelection else { return false }
+        closeWritingToolsGroupForUserEdit()
+        render(doc.backspace())
+        return true
+    }
+
+    public override func deleteToBeginningOfLine(_ sender: Any?) {
+        guard !deleteSelectionIfAny() else { return }
+        // At the line's start ⌘⌫ joins it to the line above, as Backspace does.
+        guard let line = visualLineBytes(), line.start < caretByte else { return doCommand(by: #selector(deleteBackward(_:))) }
+        kill(from: line.start, to: caretByte, forward: false)
+    }
+
+    public override func deleteToEndOfLine(_ sender: Any?) {
+        guard !deleteSelectionIfAny() else { return }
+        guard let line = visualLineBytes(), caretByte < line.end else { return doCommand(by: #selector(deleteForward(_:))) }
+        kill(from: caretByte, to: line.end, forward: true)
+    }
+
+    public override func deleteToBeginningOfParagraph(_ sender: Any?) {
+        guard !deleteSelectionIfAny() else { return }
+        guard let para = paragraphBytes(), para.start < caretByte else { return doCommand(by: #selector(deleteBackward(_:))) }
+        kill(from: para.start, to: caretByte, forward: false)
+    }
+
+    /// ⌃K. At the paragraph's end it takes the break, joining the next
+    /// paragraph on — so repeated ⌃K walks down a document as it does in Emacs.
+    public override func deleteToEndOfParagraph(_ sender: Any?) {
+        guard !deleteSelectionIfAny() else { return }
+        guard let para = paragraphBytes(), caretByte < para.end else {
+            guard !isReadOnly else { return }
+            let next = Int(doc.stepOffset(off: UInt32(caretByte), delta: 1))
+            guard next > caretByte else { return }
+            Self.killBuffer = (killChains ? Self.killBuffer : "") + "\n"
+            closeWritingToolsGroupForUserEdit()
+            render(doc.deleteForward())
+            noteKill()
+            return
+        }
+        kill(from: caretByte, to: para.end, forward: true)
+    }
+
+    public override func deleteToMark(_ sender: Any?) {
+        guard let mark = currentMark() else { return NSSound.beep() }
+        let (from, to) = (min(mark, caretByte), max(mark, caretByte))
+        kill(from: from, to: to, forward: mark > caretByte)
+        setMark(at: from)
+    }
+
+    /// ⌃Y — the kill buffer, typed over the selection as a plain paste.
+    public override func yank(_ sender: Any?) {
+        guard !isReadOnly, !Self.killBuffer.isEmpty else { return }
+        closeWritingToolsGroupForUserEdit()
+        render(doc.pasteRich(html: nil, text: Self.killBuffer))
+    }
+
+    public override func moveForward(_ sender: Any?) { render(doc.moveRight(extend: false)) }
+    public override func moveBackward(_ sender: Any?) { render(doc.moveLeft(extend: false)) }
+    public override func moveForwardAndModifySelection(_ sender: Any?) { render(doc.moveRight(extend: true)) }
+    public override func moveBackwardAndModifySelection(_ sender: Any?) { render(doc.moveLeft(extend: true)) }
+
+    /// ⌃A / ⌃E — the ends of the paragraph, however it wraps.
+    public override func moveToBeginningOfParagraph(_ sender: Any?) { moveToParagraphEdge(end: false, extend: false) }
+    public override func moveToEndOfParagraph(_ sender: Any?) { moveToParagraphEdge(end: true, extend: false) }
+    public override func moveToBeginningOfParagraphAndModifySelection(_ sender: Any?) {
+        moveToParagraphEdge(end: false, extend: true)
+    }
+    public override func moveToEndOfParagraphAndModifySelection(_ sender: Any?) {
+        moveToParagraphEdge(end: true, extend: true)
+    }
+
+    /// ⌥⇧↓ / ⌥⇧↑ — to the paragraph's edge, and from an edge on to the next
+    /// paragraph's, so a held chord walks paragraph by paragraph.
+    public override func moveParagraphForwardAndModifySelection(_ sender: Any?) {
+        moveToParagraphEdge(end: true, extend: true, onward: true)
+    }
+    public override func moveParagraphBackwardAndModifySelection(_ sender: Any?) {
+        moveToParagraphEdge(end: false, extend: true, onward: true)
+    }
+
+    private func moveToParagraphEdge(end: Bool, extend: Bool, onward: Bool = false) {
+        var row = Int(docView.caretRow)
+        guard var para = paragraphBytes(row: row) else {
+            return render(end ? doc.moveEnd(extend: extend) : doc.moveHome(extend: extend))
+        }
+        if onward, caretByte == (end ? para.end : para.start) {
+            // Already at this edge: the same edge of the next paragraph with
+            // text in it, past the half-line gaps between blocks.
+            let rows = layoutEngine.rows
+            repeat { row += end ? 1 : -1 } while rows.indices.contains(row) && rows[row].row.isBlockGap
+            guard rows.indices.contains(row), let next = paragraphBytes(row: row) else { return }
+            para = next
+        }
+        let target = UInt32(end ? para.end : para.start)
+        render(extend ? doc.setSelectionOffsets(anchor: UInt32(anchorByte), focus: target)
+                      : doc.setSelectionOffsets(anchor: target, focus: target))
+    }
+
+    /// ⌃T — swap the characters either side of the caret, or the two before
+    /// it at a paragraph's end, and step past them. Only where both are plain
+    /// source standing side by side: across hidden markup, swapping the
+    /// visible characters would mean rewriting the markup between them.
+    public override func transpose(_ sender: Any?) {
+        guard !isReadOnly, !hasSelection else { return NSSound.beep() }
+        var mid = caretByte
+        if let para = paragraphBytes(), mid >= para.end { mid = Int(doc.stepOffset(off: UInt32(mid), delta: -1)) }
+        let before = Int(doc.stepOffset(off: UInt32(mid), delta: -1))
+        let after = Int(doc.stepOffset(off: UInt32(mid), delta: 1))
+        let a = doc.textInRange(from: UInt32(before), to: UInt32(mid))
+        let b = doc.textInRange(from: UInt32(mid), to: UInt32(after))
+        guard before < mid, mid < after, a.count == 1, b.count == 1, a != "\n", b != "\n",
+              sourceBytes(before, after) == a + b
+        else { return NSSound.beep() }
+        closeWritingToolsGroupForUserEdit()
+        render(doc.replaceRange(from: UInt32(before), to: UInt32(after), text: b + a))
+    }
+
+    public override func insertNewlineIgnoringFieldEditor(_ sender: Any?) { doCommand(by: #selector(insertNewline(_:))) }
+    public override func insertTabIgnoringFieldEditor(_ sender: Any?) { doCommand(by: #selector(insertTab(_:))) }
+
+    /// ⌃⌫ — take the last mark off the character before the caret (`é`
+    /// becomes `e`), and delete it outright when it has none.
+    public override func deleteBackwardByDecomposingPreviousCharacter(_ sender: Any?) {
+        guard !deleteSelectionIfAny() else { return }
+        let before = Int(doc.stepOffset(off: UInt32(caretByte), delta: -1))
+        let char = doc.textInRange(from: UInt32(before), to: UInt32(caretByte))
+        let scalars = Array(char.decomposedStringWithCanonicalMapping.unicodeScalars)
+        guard !isReadOnly, before < caretByte, scalars.count > 1, sourceBytes(before, caretByte) == char else {
+            return doCommand(by: #selector(deleteBackward(_:)))
+        }
+        var rest = String.UnicodeScalarView()
+        rest.append(contentsOf: scalars.dropLast())
+        closeWritingToolsGroupForUserEdit()
+        render(doc.replaceRange(from: UInt32(before), to: UInt32(caretByte),
+                                text: String(rest).precomposedStringWithCanonicalMapping))
+    }
+
+    // Paging. `scroll…` moves the view and leaves the caret; `page…` moves the
+    // caret a screenful too, as Page Up/Down do with ⌥ in `NSTextView`.
+
+    /// A screenful, less a line of overlap so the reader keeps their place.
+    private var pageStep: CGFloat {
+        guard let clip = enclosingScrollView?.contentView else { return bounds.height }
+        let insets = clip.contentInsets
+        return max(theme.lineHeight * zoomScale,
+                   clip.bounds.height - insets.top - insets.bottom - theme.lineHeight * zoomScale)
+    }
+
+    private func scrollVertically(to y: CGFloat) {
+        guard let clip = enclosingScrollView?.contentView else { return }
+        clip.scroll(to: CGPoint(x: clip.bounds.origin.x, y: clampedScrollY(y, in: clip)))
+        enclosingScrollView?.reflectScrolledClipView(clip)
+    }
+
+    private func scrollVertically(by dy: CGFloat) {
+        guard let clip = enclosingScrollView?.contentView else { return }
+        scrollVertically(to: clip.bounds.origin.y + dy)
+    }
+
+    public override func scrollPageUp(_ sender: Any?) { scrollVertically(by: -pageStep) }
+    public override func scrollPageDown(_ sender: Any?) { scrollVertically(by: pageStep) }
+    public override func scrollLineUp(_ sender: Any?) { scrollVertically(by: -theme.lineHeight * zoomScale) }
+    public override func scrollLineDown(_ sender: Any?) { scrollVertically(by: theme.lineHeight * zoomScale) }
+    public override func scrollToBeginningOfDocument(_ sender: Any?) { scrollVertically(to: -.greatestFiniteMagnitude) }
+    public override func scrollToEndOfDocument(_ sender: Any?) { scrollVertically(to: .greatestFiniteMagnitude) }
+
+    public override func pageUp(_ sender: Any?) { movePage(down: false, extend: false) }
+    public override func pageDown(_ sender: Any?) { movePage(down: true, extend: false) }
+    public override func pageUpAndModifySelection(_ sender: Any?) { movePage(down: false, extend: true) }
+    public override func pageDownAndModifySelection(_ sender: Any?) { movePage(down: true, extend: true) }
+
+    /// Move the caret a screenful, holding its x as ↑/↓ do, and scroll the
+    /// view by the same amount so the caret keeps its place on screen.
+    private func movePage(down: Bool, extend: Bool) {
+        guard let caret = layoutEngine.caretRect(docView, theme: theme) else {
+            return render(down ? doc.moveDocEnd(extend: extend) : doc.moveDocStart(extend: extend))
+        }
+        let step = pageStep / zoomScale
+        let goalX = verticalGoalX ?? caret.minX
+        let y = caret.midY + (down ? step : -step)
+        scrollVertically(by: down ? pageStep : -pageStep)
+        verticalGoalX = goalX
+        if y < 0 { return render(doc.moveDocStart(extend: extend)) }
+        if y > layoutEngine.contentHeight { return render(doc.moveDocEnd(extend: extend)) }
+        let (row, ch) = hitRowCh(CGPoint(x: goalX, y: y))
+        render(doc.clickCh(row: UInt32(row), ch: UInt32(ch), extend: extend), keepVerticalGoal: true)
+    }
+
+    // The emacs mark.
+
+    public override func setMark(_ sender: Any?) { setMark(at: caretByte) }
+
+    private func setMark(at byte: Int) { mark = (byte, doc.source()) }
+
+    /// The mark in the document as it is now, on a caret stop. Core keeps no
+    /// offset but the selection's through an edit, so the mark is carried
+    /// through every edit since it was set — typed, undone, or the host's —
+    /// when it is used, by what they changed: the bytes before the first
+    /// difference and after the last are common to both sources. A mark in
+    /// the first stays, one in the second moves with it, and one in the text
+    /// an edit replaced goes to where the edit began, as an Emacs marker does
+    /// when its text is deleted. The snap then puts it on a stop, never inside
+    /// markup and never past the end.
+    func currentMark() -> Int? {
+        guard let mark else { return nil }
+        let now = doc.source()
+        var byte = mark.byte
+        let old = Array(mark.source.utf8), new = Array(now.utf8)
+        if old != new {
+            let shorter = min(old.count, new.count)
+            var prefix = 0
+            while prefix < shorter, old[prefix] == new[prefix] { prefix += 1 }
+            var suffix = 0
+            while suffix < shorter - prefix, old[old.count - 1 - suffix] == new[new.count - 1 - suffix] { suffix += 1 }
+            if byte > prefix {
+                byte = byte >= old.count - suffix ? byte + new.count - old.count : prefix
+            }
+        }
+        byte = Int(doc.snapOffset(off: UInt32(max(0, byte))))
+        self.mark = (byte, now)
+        return byte
+    }
+
+    public override func selectToMark(_ sender: Any?) {
+        guard let mark = currentMark() else { return NSSound.beep() }
+        render(doc.setSelectionOffsets(anchor: UInt32(mark), focus: UInt32(caretByte)))
+    }
+
+    public override func swapWithMark(_ sender: Any?) {
+        guard let mark = currentMark() else { return NSSound.beep() }
+        setMark(at: caretByte)
+        render(doc.setSelectionOffsets(anchor: UInt32(mark), focus: UInt32(mark)))
+    }
+
+    // Selection by unit — what a double- and triple-click select, by key.
+
+    public override func selectWord(_ sender: Any?) {
+        render(doc.selectWordCh(row: docView.caretRow, ch: docView.caretCh))
+    }
+
+    public override func selectLine(_ sender: Any?) {
+        guard let line = visualLineBytes() else { return }
+        render(doc.setSelectionOffsets(anchor: UInt32(line.start), focus: UInt32(line.end)))
+    }
+
+    public override func selectParagraph(_ sender: Any?) {
+        render(doc.selectBlockCh(row: docView.caretRow, ch: docView.caretCh))
+    }
+
+    // Edit ▸ Transformations, and the ⌥U/⌥L/⌥C of an emacs key binding.
+
+    public override func uppercaseWord(_ sender: Any?) { changeCase { $1.uppercased() } }
+    public override func lowercaseWord(_ sender: Any?) { changeCase { $1.lowercased() } }
+    public override func capitalizeWord(_ sender: Any?) {
+        changeCase { startsWord, char in startsWord ? char.uppercased() : char.lowercased() }
+    }
+
+    /// The range a case change works on: the selection, or the word the caret
+    /// is in, as `NSTextView` does it.
+    private func caseChangeBytes() -> (from: Int, to: Int)? {
+        if hasSelection { return (selLowByte, selHighByte) }
+        return doc.wordRangeAt(off: UInt32(caretByte)).map { (Int($0.start), Int($0.end)) }
+    }
+
+    /// Re-case the selection (or the caret's word) a character at a time,
+    /// rewriting only characters that change, each in its own source bytes —
+    /// so the markup around and between them, a link's destination included,
+    /// is never touched. `transform` is given whether the character starts a
+    /// word. One undo step, the selection kept over the same text.
+    private func changeCase(_ transform: (_ startsWord: Bool, _ char: String) -> String) {
+        guard !isReadOnly, let (from, to) = caseChangeBytes(), to > from else { return }
+        let text = doc.textInRange(from: UInt32(from), to: UInt32(to))
+        let base = Int(doc.utf16IndexForOffset(off: UInt32(from)))
+        let source = Array(doc.source().utf8)
+        var edits: [(at: Int, length: Int, text: String)] = []
+        var utf16 = 0
+        var previous: Character?
+        for char in text {
+            let width = String(char).utf16.count
+            defer { utf16 += width; previous = char }
+            let startsWord = previous.map { !($0.isLetter || $0.isNumber || $0 == "'" || $0 == "’") } ?? true
+            let original = String(char), changed = transform(startsWord, original)
+            guard changed != original else { continue }
+            let at = Int(doc.offsetForUtf16Index(index: UInt32(base + utf16)))
+            let bytes = Array(original.utf8)
+            // A character that is not spelled as itself in the source — an
+            // escape, an entity — is left as it is rather than guessed at.
+            guard at >= from, at + bytes.count <= source.count,
+                  Array(source[at..<(at + bytes.count)]) == bytes else { continue }
+            edits.append((at, bytes.count, changed))
+        }
+        guard !edits.isEmpty else { return }
+        closeWritingToolsGroupForUserEdit()
+        let (anchor, focus) = (anchorByte, caretByte)
+        doc.beginUndoGroup()
+        // Last first, so an edit that changes a length (ß to SS) moves nothing
+        // still to be edited.
+        for edit in edits.reversed() {
+            _ = doc.replaceRange(from: UInt32(edit.at), to: UInt32(edit.at + edit.length), text: edit.text)
+        }
+        doc.endUndoGroup()
+        func shifted(_ off: Int) -> Int {
+            off + edits.filter { $0.at < off }.reduce(0) { $0 + $1.text.utf8.count - $1.length }
+        }
+        render(doc.setSelectionOffsets(anchor: UInt32(shifted(anchor)), focus: UInt32(shifted(focus))))
+    }
+
+    /// The chords with no standard menu item to fire them. Undo, Redo, Select
+    /// All, Cut, Copy, and Paste are deliberately *not* here: every Edit menu
+    /// carries them as `undo:`/`redo:`/`selectAll:`/`cut:`/`copy:`/`paste:`
+    /// aimed at the first responder, and this view answers each of those — so
+    /// the menu item flashes, its title is the system's, and a host that
+    /// rebinds or removes one is obeyed. Catching the key here instead was what
+    /// left Edit ▸ Undo permanently disabled.
+    public override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        guard event.modifierFlags.contains(.command) else { return super.performKeyEquivalent(with: event) }
+        // The menu bar first. A host whose Format menu carries Bold at ⌘B (the
+        // `LeafEditorCommands` bundle does) should see that item flash and own
+        // the chord; the cases below are the fallback for a window with no such
+        // item, not a claim over one that has it.
+        if NSApp.mainMenu?.performKeyEquivalent(with: event) == true { return true }
+        let shift = event.modifierFlags.contains(.shift)
+        switch event.charactersIgnoringModifiers?.lowercased() {
+        case "b": render(doc.toggleBold()); return true
+        case "i": render(doc.toggleItalic()); return true
+        case "u": render(doc.toggleUnderline()); return true
+        case "e": render(doc.toggleView()); return true
+        case "v" where shift: pasteAsPlainText(nil); return true
+        default:  return super.performKeyEquivalent(with: event)
+        }
+    }
+
+    // MARK: Edit menu — history, and what the menu may enable
+
+    @objc public func undo(_ sender: Any?) { regionSlot.close(); historyManager.undo() }
+    @objc public func redo(_ sender: Any?) { regionSlot.close(); historyManager.redo() }
+
+    /// Edit ▸ Find ▸ Find…, Find Next, Find Previous, Use Selection for Find,
+    /// Find and Replace…: each item's tag is an `NSTextFinder.Action`.
+    public override func performTextFinderAction(_ sender: Any?) {
+        guard let tag = (sender as? NSMenuItem)?.tag ?? (sender as? NSControl)?.tag,
+              let action = NSTextFinder.Action(rawValue: tag) else { return }
+        runFinder(action)
+    }
+
+    private func runFinder(_ action: NSTextFinder.Action) {
+        textFinder.performAction(action)
+    }
+
+    /// The find bar's actions by name, for a menu built in SwiftUI (which sends
+    /// closures, not tagged `performTextFinderAction:` items) — see
+    /// `LeafEditorModel.find(_:)`.
+    public func performFind(_ action: NSTextFinder.Action) { runFinder(action) }
+    public func canPerformFind(_ action: NSTextFinder.Action) -> Bool { textFinder.validateAction(action) }
+
+    /// Edit ▸ Find ▸ Jump to Selection (⌘J): bring the caret's line to the
+    /// middle of the viewport.
+    public override func centerSelectionInVisibleArea(_ sender: Any?) {
+        scrollRangeToVisible(utf16Range(fromByte: selLowByte, toByte: selHighByte))
+    }
+
+    /// What the Edit menu (and any other `NSValidatedUserInterfaceItem`) asks
+    /// before enabling an item aimed at this view. Without this every item is
+    /// live — Cut with nothing selected, Paste over an empty clipboard — which
+    /// is the one thing a native text view never does.
+    public func validateUserInterfaceItem(_ item: NSValidatedUserInterfaceItem) -> Bool {
+        switch item.action {
+        case #selector(undo(_:)): return docView.canUndo
+        case #selector(redo(_:)): return docView.canRedo
+        case #selector(copy(_:)): return regionSlot.isOpen ? regionSlot.copyText != nil : hasSelection
+        case #selector(cut(_:)):
+            return (regionSlot.isOpen ? regionSlot.copyText != nil : hasSelection) && !isReadOnly
+        case #selector(paste(_:)):
+            guard !isReadOnly else { return false }
+            let pb = NSPasteboard.general
+            // A host that claims pastes makes an image-only clipboard pasteable;
+            // see `paste(_:)`.
+            return pb.string(forType: .string) != nil || pb.string(forType: .html) != nil
+                || (onPaste != nil && pb.canReadObject(forClasses: [NSImage.self, NSURL.self]))
+        case #selector(pasteAsPlainText(_:)):
+            return !isReadOnly && NSPasteboard.general.string(forType: .string) != nil
+        case #selector(selectAll(_:)): return true
+        case #selector(performTextFinderAction(_:)):
+            guard let tag = (item as? NSMenuItem)?.tag, let action = NSTextFinder.Action(rawValue: tag) else { return false }
+            return textFinder.validateAction(action)
+        case #selector(centerSelectionInVisibleArea(_:)): return true
+        case #selector(toggleContinuousSpellChecking(_:)):
+            (item as? NSMenuItem)?.state = isContinuousSpellCheckingEnabled ? .on : .off
+            return true
+        case #selector(toggleAutomaticSpellingCorrection(_:)):
+            return validateSubstitution(item, on: isAutomaticSpellingCorrectionEnabled)
+        case #selector(toggleAutomaticTextReplacement(_:)):
+            return validateSubstitution(item, on: isAutomaticTextReplacementEnabled)
+        case #selector(toggleAutomaticQuoteSubstitution(_:)):
+            return validateSubstitution(item, on: isAutomaticQuoteSubstitutionEnabled)
+        case #selector(toggleAutomaticDashSubstitution(_:)):
+            return validateSubstitution(item, on: isAutomaticDashSubstitutionEnabled)
+        case #selector(printView(_:)), #selector(printDocument(_:)): return !docView.rows.isEmpty
+        // Edit ▸ Transformations: something to re-case, in a document that can change.
+        case #selector(uppercaseWord(_:)), #selector(lowercaseWord(_:)), #selector(capitalizeWord(_:)):
+            return !isReadOnly && caseChangeBytes() != nil
+        case #selector(yank(_:)): return !isReadOnly && !Self.killBuffer.isEmpty
+        // Edit ▸ Speech: something to say, and something being said.
+        case #selector(startSpeaking(_:)): return hasSelection || doc.docEndOffset() > 0
+        case #selector(stopSpeaking(_:)): return Self.isSpeaking
+        case #selector(orderFrontSubstitutionsPanel(_:)): return true
+        case #selector(selectToMark(_:)), #selector(swapWithMark(_:)), #selector(deleteToMark(_:)):
+            return mark != nil && (item.action != #selector(deleteToMark(_:)) || !isReadOnly)
+        // Anything else is enabled by whether the view answers it at all — what
+        // AppKit does for a responder with no validation of its own.
+        default: return item.action.map { responds(to: $0) } ?? false
+        }
+    }
+
+    // MARK: rich clipboard
+
+    @objc public func copy(_ sender: Any?) {
+        // The open formula copies its own selection, as TeX.
+        if let text = regionSlot.copyText {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+            return
+        }
+        guard let text = doc.selectedText() else { return }
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(text, forType: .string)
+        if let html = doc.selectionHtml() { pb.setString(html, forType: .html) }
+    }
+
+    @objc public func cut(_ sender: Any?) {
+        if let text = regionSlot.cut() {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
+            return
+        }
+        closeWritingToolsGroupForUserEdit()
+        copy(sender)
+        if doc.selectedText() != nil { render(doc.backspace()) }
+    }
+
+    @objc public func paste(_ sender: Any?) {
+        // Asked before the text flavors, and before the guard below: a clipboard
+        // holding only an image has no text at all, so by the time this method
+        // decided there was nothing to paste, the host would never hear about the
+        // one thing that was there. See `LeafEditorModel.onPaste`.
+        if regionSlot.isOpen, let text = NSPasteboard.general.string(forType: .string),
+           regionSlot.paste(text) { return }
+        if onPaste?() == true { return }
+        closeWritingToolsGroupForUserEdit()
+        let pb = NSPasteboard.general
+        let html = pb.string(forType: .html)
+        let text = pb.string(forType: .string) ?? ""
+        guard html != nil || !text.isEmpty else { return }
+        render(doc.pasteRich(html: html, text: text))
+    }
+
+    /// ⇧⌘V — the plain-flavor escape hatch: insert the pasteboard's text as leaf
+    /// *source*, ignoring any rich HTML flavor (mirrors leaf-gpui's ⇧⌘V and
+    /// leaf-tui's ⌥V). The Edit menu's "Paste and Match Style" routes here too.
+    @objc public func pasteAsPlainText(_ sender: Any?) {
+        guard let text = NSPasteboard.general.string(forType: .string), !text.isEmpty else { return }
+        closeWritingToolsGroupForUserEdit()
+        render(doc.paste(text: text))
+    }
+
+    @objc public override func selectAll(_ sender: Any?) {
+        // The open formula selects itself; anything else closes and selects all.
+        if regionSlot.isOpen, regionSlot.input(.selectAll) { return }
+        render(doc.selectAll())
+    }
+
+    // MARK: contextual menu + macOS text services
+
+    public override func menu(for event: NSEvent) -> NSMenu? {
+        window?.makeFirstResponder(self)
+        // Right-clicking outside the selection moves the caret there first, like a
+        // native text view; a click inside an existing selection keeps it.
+        if !hasSelection {
+            let p = layoutPoint(convert(event.locationInWindow, from: nil))
+            let (row, ch) = hitRowCh(p)
+            render(doc.clickCh(row: UInt32(row), ch: UInt32(ch), extend: false))
+        }
+
+        let menu = NSMenu()
+        let point = layoutPoint(convert(event.locationInWindow, from: nil))
+        let hit = layoutEngine.hit(point)
+        let clickOffset = doc.offsetForPos(row: UInt32(hit.row), ch: UInt32(hit.ch))
+        let clickUTF16 = Int(doc.utf16IndexForOffset(off: clickOffset))
+        if docView.view != "source", !isReadOnly, let misspelling = misspelling(at: clickUTF16) {
+            addSpellingItems(for: misspelling, to: menu)
+            menu.addItem(.separator())
+        }
+        // A footnote under the click leads the menu, for the reason a link does:
+        // since a plain click no longer follows anything, the menu and ⌘-click
+        // are the only ways to get there. At most one entry, and never alongside
+        // a link's — the caret is either on a reference, in a note, or in neither.
+        let footnotes = doc.footnoteActionsAtCaret()
+        for action in footnotes {
+            switch action {
+            case .goToNote:
+                menu.addItem(withTitle: loc("menu.goToNote", "Go to Note"),
+                             action: #selector(followFootnote(_:)), keyEquivalent: "")
+            case .backToReference:
+                menu.addItem(withTitle: loc("menu.backToReference", "Back to Reference"),
+                             action: #selector(followFootnote(_:)), keyEquivalent: "")
+            }
+        }
+        // A link under the click (the caret was just placed there) leads the menu.
+        // Since a plain click no longer follows, this — with ⌘-click — is how a
+        // reader gets to the destination at all, so it stays first.
+        let links = doc.linkActionsAtCaret(wikilinks: recognizesWikilinks, canEdit: onEditLink != nil,
+                                           canPeek: onPeekLink != nil)
+        for action in links {
+            switch action {
+            case .peek:
+                menu.addItem(withTitle: loc("menu.previewLink", "Preview Link"), action: #selector(previewLink(_:)), keyEquivalent: "")
+            case .open:
+                menu.addItem(withTitle: loc("menu.openLink", "Open Link"), action: #selector(openLink(_:)), keyEquivalent: "")
+            case .edit:
+                menu.addItem(withTitle: loc("menu.editLink", "Edit Link…"), action: #selector(editLink(_:)), keyEquivalent: "")
+            case .copy:
+                menu.addItem(withTitle: loc("menu.copyLink", "Copy Link"), action: #selector(copyLink(_:)), keyEquivalent: "")
+            }
+        }
+        // The attachment under the click. Hit-tested rather than read off the
+        // caret alone: a click inside a block box does not necessarily leave the
+        // caret inside the image's span, and a video or audio box has no image
+        // node under it at all. `showableMediaSource` states that order.
+        let media = showableMediaSource(box: layoutEngine.mediaBox(at: point)?.src,
+                                        caret: doc.mediaSourceAtCaret(),
+                                        canShow: onShowMedia != nil)
+        if let media {
+            let item = menu.addItem(withTitle: loc("menu.showMedia", "Show Attachment"),
+                                    action: #selector(showMedia(_:)), keyEquivalent: "")
+            // Which attachment travels on the item rather than in a field of the
+            // view: the menu outlives the event that built it, and the caret can
+            // move under it (a Services item, another window) before it is picked.
+            item.representedObject = media
+            item.target = self
+        }
+        // A date, an address, a number or a bare URL in the prose under the
+        // click: its one action, where nothing above already claimed the spot.
+        let detected = links.isEmpty && footnotes.isEmpty
+            ? detectedData(under: point).flatMap(dataDetectorItem) : nil
+        if let detected { menu.addItem(detected) }
+        if !links.isEmpty || !footnotes.isEmpty || media != nil || detected != nil {
+            menu.addItem(.separator())
+        }
+        if hasSelection {
+            menu.addItem(withTitle: loc("menu.cut", "Cut"), action: #selector(cut(_:)), keyEquivalent: "")
+            menu.addItem(withTitle: loc("menu.copy", "Copy"), action: #selector(copy(_:)), keyEquivalent: "")
+        }
+        menu.addItem(withTitle: loc("menu.paste", "Paste"), action: #selector(paste(_:)), keyEquivalent: "")
+        menu.addItem(withTitle: loc("menu.pasteMatchStyle", "Paste and Match Style"), action: #selector(pasteAsPlainText(_:)), keyEquivalent: "")
+        menu.addItem(withTitle: loc("menu.selectAll", "Select All"), action: #selector(selectAll(_:)), keyEquivalent: "")
+        // Writing Tools, as a native text view's menu has it: the system's own
+        // items, which reach the coordinator through the responder chain.
+        if #available(macOS 15.2, *), !isReadOnly, NSWritingToolsCoordinator.isWritingToolsAvailable {
+            menu.addItem(.separator())
+            for item in NSMenuItem.writingToolsItems { menu.addItem(item) }
+        }
+        if hasSelection, let text = doc.selectedText(), !text.isEmpty {
+            menu.addItem(.separator())
+            let shown = text.count > 24 ? text.prefix(24) + "…" : Substring(text)
+            menu.addItem(withTitle: String(format: loc("menu.lookUp", "Look Up “%@”"), String(shown)),
+                         action: #selector(lookUpSelection(_:)), keyEquivalent: "")
+            menu.addItem(withTitle: loc("menu.share", "Share…"), action: #selector(shareSelection(_:)), keyEquivalent: "")
+        } else if let word = word(under: point),
+                  case let text = doc.textInRange(from: UInt32(word.from), to: UInt32(word.to)), !text.isEmpty {
+            // With nothing selected a native text view still offers the word
+            // under the click, without selecting it first — when the click is
+            // on it, as a force click must be.
+            menu.addItem(.separator())
+            let item = menu.addItem(withTitle: String(format: loc("menu.lookUp", "Look Up “%@”"), text),
+                                    action: #selector(lookUpSelection(_:)), keyEquivalent: "")
+            item.representedObject = NSValue(range: NSRange(location: word.from, length: word.to - word.from))
+        }
+        return menu
+    }
+
+    /// Add the system dictionary's guesses and its per-user/per-document actions,
+    /// in the same leading position they occupy in an `NSTextView` menu.
+    private func addSpellingItems(for range: NSRange, to menu: NSMenu) {
+        let text = fullText()
+        let ns = text as NSString
+        guard range.location >= 0, NSMaxRange(range) <= ns.length else { return }
+        let word = ns.substring(with: range)
+        let guesses = NSSpellChecker.shared.guesses(
+            forWordRange: range, in: text, language: nil,
+            inSpellDocumentWithTag: spellDocumentTag) ?? []
+        if guesses.isEmpty {
+            let none = menu.addItem(withTitle: loc("menu.noGuesses", "No Guesses Found"),
+                                    action: nil, keyEquivalent: "")
+            none.isEnabled = false
+        } else {
+            for guess in guesses.prefix(6) {
+                let item = menu.addItem(withTitle: guess,
+                                        action: #selector(replaceMisspelling(_:)), keyEquivalent: "")
+                item.target = self
+                item.representedObject = SpellCorrection(
+                    range: range, original: word, replacement: guess)
+            }
+        }
+        menu.addItem(.separator())
+        let ignore = menu.addItem(withTitle: loc("menu.ignoreSpelling", "Ignore Spelling"),
+                                  action: #selector(ignoreMisspelling(_:)), keyEquivalent: "")
+        ignore.target = self
+        ignore.representedObject = SpellCorrection(range: range, original: word, replacement: "")
+        let learn = menu.addItem(withTitle: loc("menu.learnSpelling", "Learn Spelling"),
+                                 action: #selector(learnMisspelling(_:)), keyEquivalent: "")
+        learn.target = self
+        learn.representedObject = SpellCorrection(range: range, original: word, replacement: "")
+    }
+
+    @objc private func replaceMisspelling(_ sender: NSMenuItem) {
+        guard !isReadOnly,
+              let correction = sender.representedObject as? SpellCorrection,
+              spellingStillMatches(correction)
+        else { return }
+        let (from, to) = byteBounds(correction.range)
+        render(doc.replaceRange(from: UInt32(from), to: UInt32(to), text: correction.replacement))
+    }
+
+    @objc private func ignoreMisspelling(_ sender: NSMenuItem) {
+        guard let correction = sender.representedObject as? SpellCorrection,
+              spellingStillMatches(correction)
+        else { return }
+        NSSpellChecker.shared.ignoreWord(
+            correction.original, inSpellDocumentWithTag: spellDocumentTag)
+        scheduleSpellCheck()
+    }
+
+    @objc private func learnMisspelling(_ sender: NSMenuItem) {
+        guard let correction = sender.representedObject as? SpellCorrection,
+              spellingStillMatches(correction)
+        else { return }
+        NSSpellChecker.shared.learnWord(correction.original)
+        scheduleSpellCheck()
+    }
+
+    private func spellingStillMatches(_ correction: SpellCorrection) -> Bool {
+        let text = fullText() as NSString
+        return correction.range.location >= 0
+            && NSMaxRange(correction.range) <= text.length
+            && text.substring(with: correction.range) == correction.original
+    }
+
+    /// The context menu's "Look Up": the selection, or — with none — the word
+    /// the menu was raised over, which the item carries.
+    @objc private func lookUpSelection(_ sender: Any?) {
+        if let word = (sender as? NSMenuItem)?.representedObject as? NSValue {
+            let range = word.rangeValue
+            lookUp(fromByte: range.location, toByte: NSMaxRange(range))
+            return
+        }
+        guard hasSelection else { return }
+        lookUp(fromByte: selLowByte, toByte: selHighByte)
+    }
+
+    // MARK: Look Up — force click, three-finger tap, and the menu's item
+
+    /// A force click (or a three-finger tap, or ⌃⌘D's mouse-driven cousin)
+    /// asks what is under the pointer. What a native text view answers, in its
+    /// order: the selection when the point is on it; a footnote or a link's
+    /// own preview, as Safari and Mail peek a link rather than define its
+    /// words; a date, an address or a number the data detectors know; and
+    /// otherwise the word, in the system's Look Up panel.
+    public override func quickLook(with event: NSEvent) {
+        lookUpUnderPointer(event)
+    }
+
+    /// A force click, answered here because AppKit does not answer it: it
+    /// sends `quickLook(with:)` to a custom view for a three-finger tap, but
+    /// a force click on one reaches it only as pressure, its stage rising to
+    /// 2 — so the step up to 2 is looked up as the tap would be. Only when the
+    /// reader's Look Up gesture is the force click (Trackpad settings' "Look
+    /// up & data detectors", on unless turned off), so that a reader who
+    /// chose the tap does not get both.
+    public override func pressureChange(with event: NSEvent) {
+        let stage = event.stage
+        defer { pressureStage = stage }
+        guard stage == 2, pressureStage < 2,
+              UserDefaults.standard.object(forKey: "com.apple.trackpad.forceClick") as? Bool ?? true
+        else { return super.pressureChange(with: event) }
+        lookUpUnderPointer(event)
+    }
+
+    /// What `quickLook(with:)` and a force click both do with the point
+    /// `event` is at.
+    private func lookUpUnderPointer(_ event: NSEvent) {
+        let p = layoutPoint(convert(event.locationInWindow, from: nil))
+        if hasSelection, selectionContains(p) {
+            lookUp(fromByte: selLowByte, toByte: selHighByte)
+            return
+        }
+        let (row, ch) = hitRowCh(p)
+        let off = doc.offsetForPos(row: UInt32(row), ch: UInt32(ch))
+        // Should the host find it cannot read the link's file after all, the
+        // point is looked up as if there had been no link — unless the
+        // document has changed under it while the host was reading.
+        let frame = docView.frame
+        let otherwise = { [weak self] in
+            guard let self, self.docView.frame == frame else { return }
+            self.lookUp(under: p, event: event)
+        }
+        if peekUnderPoint(off, row: row, ch: ch, otherwise: otherwise) { return }
+        lookUp(under: p, event: event)
+    }
+
+    /// Look up what is under layout point `p`: an address, a phone number or
+    /// a bare URL whole, so the system's highlight covers the phrase and what
+    /// it finds is about the phrase; otherwise the word; and with neither, the
+    /// event goes on. A date is looked up a word at a time, like any other
+    /// prose: given "5 October at 3pm" whole, Look Up searches and never
+    /// comes back.
+    private func lookUp(under p: CGPoint, event: NSEvent) {
+        if let found = detectedData(under: p), found.result.resultType != .date {
+            lookUp(fromByte: found.from, toByte: found.to)
+        } else if let word = word(under: p) {
+            lookUp(fromByte: word.from, toByte: word.to)
+        } else {
+            super.quickLook(with: event)
+        }
+    }
+
+    /// What a force click at `off` would peek at.
+    enum ForceClickPeek {
+        /// Shown now: the note a footnote reference opens, or the place a `#v2`
+        /// names in this document.
+        case content(FootnotePeekContent)
+        /// Another file, which only the host can read, and only its answer —
+        /// whenever that comes — says whether it could.
+        case host(String)
+    }
+
+    /// The peek a force click at `off` would raise, or nil for none: so a link
+    /// nothing can preview — a `#v99` naming no block, another file with no
+    /// host to read it — is left to Look Up on its words, which is more use
+    /// than nothing at all. The note a reference opens, not merely "a
+    /// footnote is here": the note's own definition has nothing to peek at,
+    /// and its words are as worth looking up as any other.
+    func forceClickPeek(at off: UInt32) -> ForceClickPeek? {
+        if let note = doc.footnotePeekContent(at: off, in: docView, theme: theme) { return .content(note) }
+        guard let destination = doc.linkDestinationAt(off: off) else { return nil }
+        if destination.hasPrefix("#") {
+            return FootnotePeekContent(peeking: String(destination.dropFirst()), of: doc, in: docView, theme: theme)
+                .map { .content($0) }
+        }
+        return onPeekLink != nil ? .host(destination) : nil
+    }
+
+    /// Raise the peek `forceClickPeek` finds at `off`, and say whether there
+    /// was one. Another file's is claimed before the host has answered; if it
+    /// answers that it cannot read it, `otherwise` stands in for the Look Up
+    /// the event would have had.
+    private func peekUnderPoint(_ off: UInt32, row: Int, ch: Int, otherwise: @escaping () -> Void) -> Bool {
+        guard let peek = forceClickPeek(at: off), let caret = layoutEngine.rect(row: row, ch: ch) else { return false }
+        dismissFootnotePeek()
+        // The offset the peek is about, for the same staleness check a hover's
+        // answer goes through when the host fetches asynchronously.
+        peekOffset = off
+        // Widened, as a hover's is, so the arrow points at the reference.
+        let anchor = caret.insetBy(dx: -6, dy: 0)
+        switch peek {
+        case .content(let content):
+            peekAnchor = anchor
+            footnotePeek.show(content, from: viewRect(anchor), in: self)
+        case .host(let destination):
+            fetchLinkPeek(destination, at: off, anchor: anchor, otherwise: otherwise)
+        }
+        return true
+    }
+
+    /// Whether layout point `p` is on the glyphs of `[from, to)`, give or take
+    /// the two points either side a pointer is allowed to miss by. The
+    /// hit-test clamps a point past a line's end onto its last stop, and what
+    /// ends at that stop is not what a click in the margin is asking about.
+    private func isOnGlyphs(_ p: CGPoint, from: Int, to: Int) -> Bool {
+        rangeRects(fromByte: from, toByte: to).contains { $0.insetBy(dx: -2, dy: 0).contains(p) }
+    }
+
+    /// The word whose glyphs are under layout point `p`, as source bytes.
+    func word(under p: CGPoint) -> (from: Int, to: Int)? {
+        let (row, ch) = hitRowCh(p)
+        guard let word = doc.wordRangeAt(off: doc.offsetForPos(row: UInt32(row), ch: UInt32(ch))),
+              isOnGlyphs(p, from: Int(word.start), to: Int(word.end)) else { return nil }
+        return (Int(word.start), Int(word.end))
+    }
+
+    /// The detectors' match whose glyphs are under layout point `p`.
+    func detectedData(under p: CGPoint) -> DetectedData? {
+        let (row, ch) = hitRowCh(p)
+        guard let found = detectedData(atByte: Int(doc.offsetForPos(row: UInt32(row), ch: UInt32(ch))), row: row),
+              isOnGlyphs(p, from: found.from, to: found.to) else { return nil }
+        return found
+    }
+
+    // MARK: data detectors — dates, addresses, numbers and URLs in plain text
+    //
+    // What `NSTextView` finds with the system's data detectors, found the same
+    // way: `NSDataDetector` over the paragraph under the pointer. The detectors'
+    // own popovers (the Calendar and Maps cards a force click raises in Mail)
+    // are private API, so this does the two things a public client can: a
+    // force click looks the whole phrase up (a date's word, since Look Up
+    // cannot answer a date), and the context menu carries the one action each
+    // kind of thing has — Call, Show in Maps, Open, Add to Calendar — each
+    // handed to the app the system has for it.
+
+    /// A detector's match under a point, as source bytes, with what it found.
+    final class DetectedData: NSObject {
+        let from: Int, to: Int
+        let text: String
+        let result: NSTextCheckingResult
+        init(from: Int, to: Int, text: String, result: NSTextCheckingResult) {
+            (self.from, self.to, self.text, self.result) = (from, to, text, result)
+        }
+    }
+
+    private static let dataDetector = try? NSDataDetector(
+        types: NSTextCheckingResult.CheckingType([.date, .address, .phoneNumber, .link]).rawValue)
+
+    /// The detector's match at source offset `off` on visual row `row`, if
+    /// any — the one holding the character at `off`, or the one ending there,
+    /// as a word is found at a point.
+    func detectedData(atByte off: Int, row: Int) -> DetectedData? {
+        guard let detector = Self.dataDetector, docView.view != "source",
+              let para = paragraphBytes(row: row), para.end > para.start else { return nil }
+        let text = doc.textInRange(from: UInt32(para.start), to: UInt32(para.end))
+        let base = Int(doc.utf16IndexForOffset(off: UInt32(para.start)))
+        let at = Int(doc.utf16IndexForOffset(off: UInt32(off))) - base
+        let ns = text as NSString
+        let hit = detector.matches(in: text, range: NSRange(location: 0, length: ns.length)).first {
+            NSLocationInRange(at, $0.range) || (at > 0 && NSLocationInRange(at - 1, $0.range))
+        }
+        guard let hit else { return nil }
+        let (from, to) = byteBounds(NSRange(location: base + hit.range.location, length: hit.range.length))
+        return DetectedData(from: from, to: to, text: ns.substring(with: hit.range), result: hit)
+    }
+
+    /// The menu item a match offers, or nil for a kind with nothing to do.
+    private func dataDetectorItem(_ found: DetectedData) -> NSMenuItem? {
+        let title: String
+        switch found.result.resultType {
+        case .phoneNumber: title = String(format: loc("menu.call", "Call “%@”"), found.text)
+        case .address: title = loc("menu.showInMaps", "Show in Maps")
+        case .date: title = loc("menu.addToCalendar", "Add to Calendar…")
+        case .link:
+            guard let url = found.result.url else { return nil }
+            title = url.scheme == "mailto" ? loc("menu.newEmail", "New Email") : loc("menu.openURL", "Open URL")
+        default: return nil
+        }
+        let item = NSMenuItem(title: title, action: #selector(performDataDetectorAction(_:)), keyEquivalent: "")
+        item.target = self
+        item.representedObject = found
+        return item
+    }
+
+    @objc private func performDataDetectorAction(_ sender: NSMenuItem) {
+        guard let found = sender.representedObject as? DetectedData,
+              let action = Self.dataDetectorAction(for: found.result, text: found.text) else { return NSSound.beep() }
+        switch action {
+        case .open(let url):
+            NSWorkspace.shared.open(url)
+        case .addEvent(let ics):
+            guard let file = Self.writeCalendarEvent(ics) else { return NSSound.beep() }
+            NSWorkspace.shared.open(file)
+        }
+    }
+
+    /// What a match's action hands on: a URL to open, or a date's event,
+    /// which becomes a file only when the action is actually taken.
+    enum DataDetectorAction: Equatable {
+        case open(URL)
+        /// One event as iCalendar text, for Calendar to offer to add.
+        case addEvent(String)
+    }
+
+    /// Where a match's action goes: `tel:` for a number (FaceTime, or the
+    /// paired iPhone), Apple Maps for an address, the URL itself, and for a
+    /// date a one-event calendar file, which Calendar opens as an event to
+    /// add. Static and pure, so a test can read it.
+    static func dataDetectorAction(for result: NSTextCheckingResult, text: String) -> DataDetectorAction? {
+        switch result.resultType {
+        case .phoneNumber:
+            let digits = (result.phoneNumber ?? text).filter { $0.isNumber || $0 == "+" }
+            guard !digits.isEmpty, let url = URL(string: "tel:" + digits) else { return nil }
+            return .open(url)
+        case .address:
+            var maps = URLComponents(string: "https://maps.apple.com/")
+            maps?.queryItems = [URLQueryItem(name: "q", value: text.replacingOccurrences(of: "\n", with: ", "))]
+            return maps?.url.map { .open($0) }
+        case .link:
+            return result.url.map { .open($0) }
+        case .date:
+            guard let date = result.date else { return nil }
+            return .addEvent(calendarEvent(starting: date, lasting: result.duration, title: text))
+        default:
+            return nil
+        }
+    }
+
+    /// Where the events Calendar is handed are written: one directory for the
+    /// process, in its temporary directory.
+    static let calendarEventDirectory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("Leaf-Events-\(ProcessInfo.processInfo.processIdentifier)", isDirectory: true)
+
+    /// Write `ics` as a file Calendar can open, in `directory` — emptied
+    /// first, so it never holds more than the one event last handed over.
+    static func writeCalendarEvent(_ ics: String, in directory: URL = calendarEventDirectory) -> URL? {
+        let files = FileManager.default
+        try? files.removeItem(at: directory)
+        guard (try? files.createDirectory(at: directory, withIntermediateDirectories: true)) != nil else { return nil }
+        let file = directory.appendingPathComponent("Event-\(UUID().uuidString)").appendingPathExtension("ics")
+        guard (try? ics.write(to: file, atomically: true, encoding: .utf8)) != nil else { return nil }
+        return file
+    }
+
+    /// One event as iCalendar text: what Calendar opens to offer "add this".
+    /// An hour long when the text gave no end, as Calendar's own default is.
+    static func calendarEvent(starting start: Date, lasting duration: TimeInterval, title: String) -> String {
+        let stamp = DateFormatter()
+        stamp.locale = Locale(identifier: "en_US_POSIX")
+        stamp.timeZone = TimeZone(identifier: "UTC")
+        stamp.dateFormat = "yyyyMMdd'T'HHmmss'Z'"
+        let end = start.addingTimeInterval(duration > 0 ? duration : 3600)
+        let summary = title.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: ",", with: "\\,")
+            .replacingOccurrences(of: ";", with: "\\;").replacingOccurrences(of: "\n", with: "\\n")
+        return [
+            "BEGIN:VCALENDAR", "VERSION:2.0", "PRODID:-//Diaryx//Leaf//EN",
+            "BEGIN:VEVENT", "UID:\(UUID().uuidString)", "DTSTAMP:\(stamp.string(from: Date()))",
+            "DTSTART:\(stamp.string(from: start))", "DTEND:\(stamp.string(from: end))",
+            "SUMMARY:\(summary)", "END:VEVENT", "END:VCALENDAR", "",
+        ].joined(separator: "\r\n")
+    }
+
+    /// Show the system's Look Up panel for the source bytes `[from, to)`, its
+    /// yellow highlight laid exactly over the words as they are drawn.
+    private func lookUp(fromByte from: Int, toByte to: Int) {
+        guard let (text, baseline) = lookUpPresentation(fromByte: from, toByte: to) else { return }
+        showDefinition(for: text, at: baseline)
+    }
+
+    /// What `showDefinition(for:at:)` is handed for `[from, to)`: the text as the
+    /// rows draw it — their fonts, sizes and colours, scaled to the zoom — and
+    /// the baseline origin of its first character in this view's coordinates.
+    ///
+    /// The system draws its highlight by setting that string itself at that
+    /// point, so a plain string at a guessed point is a yellow box in the
+    /// system font, a line too low, beside the word it is about: it has to be
+    /// the drawn run's own attributes on the drawn line's own baseline.
+    func lookUpPresentation(fromByte from: Int, toByte to: Int) -> (text: NSAttributedString, baseline: CGPoint)? {
+        guard to > from else { return nil }
+        let text = NSMutableAttributedString(attributedString: drawnText(fromByte: from, toByte: to))
+        let origin: CGPoint
+        if text.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            // Nothing drawn to borrow from: the visible text in the body face,
+            // at the top-left of the range's first box.
+            let plain = doc.textInRange(from: UInt32(from), to: UInt32(to))
+            guard !plain.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  let box = rangeRects(fromByte: from, toByte: to).first else { return nil }
+            let font = theme.proportionalFont(size: theme.fontSize, bold: false, italic: false)
+            text.setAttributedString(NSAttributedString(string: plain, attributes: [.font: font]))
+            origin = CGPoint(x: box.minX, y: box.minY + font.ascender)
+        } else {
+            let s = doc.posForOffset(off: UInt32(from))
+            guard let baseline = layoutEngine.baselineOrigin(row: Int(s.row), ch: Int(s.ch)) else { return nil }
+            origin = baseline
+        }
+        return (scaledForZoom(text), CGPoint(x: origin.x * zoomScale, y: origin.y * zoomScale))
+    }
+
+    /// The source bytes `[from, to)` as the rows draw them — their own
+    /// attributed text, in layout points, the rows joined by a newline as the
+    /// visible text joins blocks and each row's block decoration (a bullet, a
+    /// quote's gutter) left out, since it is not text. Empty when the range
+    /// starts on a row drawn as something other than its glyphs: a table, a
+    /// picture, a formula, a host's view.
+    func drawnText(fromByte from: Int, toByte to: Int) -> NSAttributedString {
+        let text = NSMutableAttributedString()
+        guard to > from else { return text }
+        let s = doc.posForOffset(off: UInt32(from)), e = doc.posForOffset(off: UInt32(to))
+        let rows = layoutEngine.rows
+        let first = Int(s.row), last = min(Int(e.row), rows.count - 1)
+        guard rows.indices.contains(first), rows[first].drawsItsGlyphs else { return text }
+        for row in first...max(first, last) where !rows[row].row.isBlockGap {
+            let rl = rows[row]
+            guard rl.drawsItsGlyphs else { break }
+            let lo = row == first ? Int(s.ch) : rl.row.prefixLength
+            let hi = row == Int(e.row) ? min(Int(e.ch), rl.attributed.length) : rl.attributed.length
+            if text.length > 0 {
+                text.append(NSAttributedString(string: "\n", attributes: text.attributes(at: text.length - 1, effectiveRange: nil)))
+            }
+            if lo < hi { text.append(rl.attributed.attributedSubstring(from: NSRange(location: lo, length: hi - lo))) }
+        }
+        return text
+    }
+
+    /// `text` at the size it is on screen: the layout's points times the zoom,
+    /// which `draw` applies to the context and the system's overlay never sees.
+    private func scaledForZoom(_ text: NSAttributedString) -> NSAttributedString {
+        guard zoomScale != 1 else { return text }
+        let scaled = NSMutableAttributedString(attributedString: text)
+        let whole = NSRange(location: 0, length: scaled.length)
+        scaled.enumerateAttribute(.font, in: whole) { value, range, _ in
+            guard let font = value as? NSFont,
+                  let resized = NSFont(descriptor: font.fontDescriptor, size: font.pointSize * zoomScale) else { return }
+            scaled.addAttribute(.font, value: resized, range: range)
+        }
+        for key in [NSAttributedString.Key.baselineOffset, .kern] {
+            scaled.enumerateAttribute(key, in: whole) { value, range, _ in
+                guard let n = value as? CGFloat else { return }
+                scaled.addAttribute(key, value: n * zoomScale, range: range)
+            }
+        }
+        return scaled
+    }
+
+    @objc private func shareSelection(_ sender: Any?) {
+        guard let text = doc.selectedText(), !text.isEmpty else { return }
+        let rc = doc.posForOffset(off: UInt32(selLowByte))
+        let anchor = layoutEngine.rect(row: Int(rc.row), ch: Int(rc.ch)) ?? .zero
+        NSSharingServicePicker(items: [text]).show(relativeTo: anchor, of: self, preferredEdge: .minY)
+    }
+
+    /// Advertise the selection to the Services system: we can *send* a string when
+    /// there's a selection and *receive* one to replace it. Pairs with the
+    /// `NSServicesMenuRequestor` methods below.
+    public override func validRequestor(forSendType sendType: NSPasteboard.PasteboardType?,
+                                        returnType: NSPasteboard.PasteboardType?) -> Any? {
+        let sendOK = sendType == nil || (sendType == .string && hasSelection)
+        let returnOK = returnType == nil || returnType == .string
+        if sendOK, returnOK { return self }
+        return super.validRequestor(forSendType: sendType, returnType: returnType)
+    }
+
+    public func writeSelection(to pboard: NSPasteboard, types: [NSPasteboard.PasteboardType]) -> Bool {
+        guard hasSelection, types.contains(.string), let text = doc.selectedText() else { return false }
+        pboard.clearContents()
+        return pboard.setString(text, forType: .string)
+    }
+
+    public func readSelection(from pboard: NSPasteboard) -> Bool {
+        guard let text = pboard.string(forType: .string) else { return false }
+        render(doc.pasteRich(html: nil, text: text))
+        return true
+    }
+
+    // MARK: NSTextFinderClient — what the find bar searches, selects, and draws
+    //
+    // The finder's string is `fullText()`, and every range it hands back is an
+    // `NSRange` into it — the same UTF-16 space `NSTextInputClient` speaks, so
+    // the same two conversions carry it to and from core's byte offsets.
+
+    public var string: String { fullText() }
+    public var isSelectable: Bool { true }
+    public var allowsMultipleSelection: Bool { false }
+    public var isEditable: Bool { !isReadOnly }
+
+    public var firstSelectedRange: NSRange { utf16Range(fromByte: selLowByte, toByte: selHighByte) }
+
+    public var selectedRanges: [NSValue] {
+        get { [NSValue(range: firstSelectedRange)] }
+        set {
+            guard let range = newValue.first?.rangeValue else { return }
+            let (from, to) = doc.matchBounds(range)
+            // The exact bytes, snapping neither end: a match inside `**word**`
+            // is the word, not one stop short of it, nor its closing `**`.
+            render(doc.selectRange(start: UInt32(from), end: UInt32(to)))
+        }
+    }
+
+    public func scrollRangeToVisible(_ range: NSRange) {
+        let (from, to) = byteBounds(range)
+        let boxes = rangeRects(fromByte: from, toByte: to)
+        guard let first = boxes.first else { return }
+        let union = boxes.dropFirst().reduce(first) { $0.union($1) }
+        // Centre the match rather than just bringing it to the edge — where a
+        // reader's eye goes when the bar says "1 of 12". Centred in what the
+        // bar leaves visible, which is the clip less its insets: the top inset
+        // is the bar itself, and a match centred against the full clip height
+        // sits a half-bar too high — on the first line, under the bar.
+        if let clip = enclosingScrollView?.contentView {
+            let target = viewRect(union)
+            let insets = clip.contentInsets
+            let visibleHeight = clip.bounds.height - insets.top - insets.bottom
+            let y = clampedScrollY(target.midY - visibleHeight / 2 - insets.top, in: clip)
+            clip.scroll(to: CGPoint(x: clip.bounds.origin.x, y: y))
+            enclosingScrollView?.reflectScrolledClipView(clip)
+        } else {
+            scrollToVisible(viewRect(union))
+        }
+    }
+
+    /// The one view the whole string is drawn in — this one. The finder dims it
+    /// during an incremental search and lights the matches it finds within it;
+    /// without this answer it draws neither.
+    public func contentView(at index: Int, effectiveCharacterRange outRange: NSRangePointer) -> NSView {
+        outRange.pointee = NSRange(location: 0, length: (fullText() as NSString).length)
+        return self
+    }
+
+    public func rects(forCharacterRange range: NSRange) -> [NSValue]? {
+        let (from, to) = byteBounds(range)
+        return rangeRects(fromByte: from, toByte: to).map { NSValue(rect: viewRect($0)) }
+    }
+
+    public var visibleCharacterRanges: [NSValue] {
+        let visible = layoutRect(enclosingScrollView?.contentView.bounds ?? bounds)
+        let top = layoutEngine.hit(CGPoint(x: visible.minX, y: visible.minY))
+        let bottom = layoutEngine.hit(CGPoint(x: visible.maxX, y: visible.maxY))
+        let from = Int(doc.offsetForPos(row: UInt32(top.row), ch: UInt32(top.ch)))
+        let to = Int(doc.offsetForPos(row: UInt32(bottom.row), ch: UInt32(bottom.ch)))
+        return [NSValue(range: utf16Range(fromByte: min(from, to), toByte: max(from, to)))]
+    }
+
+    /// The matched text, drawn on the finder's overlay above the dimmed page:
+    /// the rows' own lines, clipped to the match's boxes, under the same zoom the
+    /// page is drawn at.
+    public func drawCharacters(in range: NSRange, forContentView view: NSView) {
+        guard let ctx = NSGraphicsContext.current?.cgContext else { return }
+        let (from, to) = byteBounds(range)
+        drawTextLines(clippedTo: rangeRects(fromByte: from, toByte: to), in: ctx)
+    }
+
+    /// The rows' own lines, clipped to `boxes` (layout coordinates), drawn into
+    /// `ctx` in view coordinates under the page's zoom — only the words, with
+    /// no page, selection, or chrome. What the find bar lights a match with,
+    /// and what Writing Tools animates a preview of.
+    func drawTextLines(clippedTo boxes: [CGRect], in ctx: CGContext) {
+        guard let first = boxes.first else { return }
+        let union = boxes.dropFirst().reduce(first) { $0.union($1) }
+        ctx.saveGState()
+        defer { ctx.restoreGState() }
+        ctx.scaleBy(x: zoomScale, y: zoomScale)
+        ctx.clip(to: boxes)
+        for rl in layoutEngine.rows where rl.table == nil && rl.media == nil && rl.picture == nil {
+            for (i, wl) in rl.wrapped.enumerated() {
+                let o = rl.lineOrigin(i)
+                guard o.y < union.maxY, o.y + rl.lineHeight(i) > union.minY else { continue }
+                wl.attributed.draw(with: CGRect(x: o.x + wl.offset, y: o.y,
+                                                width: rl.columnWidth - wl.indent, height: rl.lineHeight(i)),
+                                   options: [.usesLineFragmentOrigin])
+            }
+        }
+    }
+
+    /// `drawTextLines(clippedTo:)` into an image with a transparent background,
+    /// at the screen's scale, and the frame it covers in view coordinates.
+    func snapshotText(clippedTo boxes: [CGRect]) -> (image: CGImage, frame: CGRect)? {
+        guard let first = boxes.first else { return nil }
+        let frame = viewRect(boxes.dropFirst().reduce(first) { $0.union($1) }).integral
+        let scale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
+        let width = Int((frame.width * scale).rounded(.up)), height = Int((frame.height * scale).rounded(.up))
+        guard width > 0, height > 0,
+              let space = CGColorSpace(name: CGColorSpace.sRGB),
+              let ctx = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+                                  space: space, bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)
+        else { return nil }
+        // Top-left origin, as the view has, over the frame's corner.
+        ctx.translateBy(x: 0, y: CGFloat(height))
+        ctx.scaleBy(x: scale, y: -scale)
+        ctx.translateBy(x: -frame.minX, y: -frame.minY)
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: true)
+        effectiveAppearance.performAsCurrentDrawingAppearance {
+            drawTextLines(clippedTo: boxes, in: ctx)
+        }
+        NSGraphicsContext.restoreGraphicsState()
+        return ctx.makeImage().map { ($0, frame) }
+    }
+
+    /// The boxes the session's animation effects cover now, in layout coordinates.
+    func writingToolsEffectRects() -> (hidden: [CGRect], dimmed: [CGRect]) {
+        writingTools.effectRects(doc: doc, layout: layoutEngine)
+    }
+
+    /// The finder brackets every replacement it makes — one, or a Replace All's
+    /// whole run of `replaceCharacters(in:with:)` — between this and
+    /// `didReplaceCharacters()`, so the bracket is a core undo group: ⌘Z after
+    /// a Replace All puts every match back at once.
+    public func shouldReplaceCharacters(inRanges ranges: [NSValue], with strings: [String]) -> Bool {
+        guard !isReadOnly else { return false }
+        // A bracket the finder never closed is closed here, not nested into.
+        if finderUndoGroupOpen { doc.endUndoGroup() }
+        doc.beginUndoGroup()
+        finderUndoGroupOpen = true
+        return true
+    }
+
+    public func replaceCharacters(in range: NSRange, with string: String) {
+        // The match's own bytes — see `matchBounds` — so replacing a word at
+        // the end of a bold span leaves the span's closing delimiter.
+        let (from, to) = doc.matchBounds(range)
+        render(doc.replaceRange(from: UInt32(from), to: UInt32(to), text: string))
+    }
+
+    public func didReplaceCharacters() {
+        guard finderUndoGroupOpen else { return }
+        finderUndoGroupOpen = false
+        doc.endUndoGroup()
+    }
+
+    /// The boxes a byte range occupies, in layout coordinates — see
+    /// `EditorLayout.rangeRects(fromByte:toByte:in:)`, which the iOS find panel
+    /// draws its matches from too.
+    private func rangeRects(fromByte from: Int, toByte to: Int) -> [CGRect] {
+        layoutEngine.rangeRects(fromByte: from, toByte: to, in: doc)
+    }
+
+    // MARK: accessibility — expose the document as a native text area
+    //
+    // VoiceOver reads a text area by asking for ranges in the UTF-16 space of
+    // its value (`fullText()`), and by *line*: read this line, move to the
+    // next, what line is the caret on, where on screen is this range. A line
+    // here is a visual line — what the reader sees, the wrap this view made —
+    // so every line question goes through one table of them, below, and the
+    // answers agree with each other: the range of line `n` holds exactly the
+    // indices `accessibilityLine(for:)` calls line `n`.
+
+    public override func isAccessibilityElement() -> Bool { true }
+    public override func accessibilityRole() -> NSAccessibility.Role? { .textArea }
+    public override func accessibilityValue() -> Any? { accessibilityText as String }
+    public override func accessibilityNumberOfCharacters() -> Int { accessibilityText.length }
+
+    /// `fullText()` for the questions below. VoiceOver asks one per step of a
+    /// read-through — a line's range, its string, its frame — and building the
+    /// whole text across the binding for each made reading a document through
+    /// quadratic, so it is kept until the next layout or edit, as the lines are.
+    var accessibilityText: NSString {
+        if let cached = accessibilityTextCache { return cached }
+        let text = fullText() as NSString
+        accessibilityTextCache = text
+        return text
+    }
+
+    /// The caret's visual line, found by where the caret is *drawn*: at a soft
+    /// wrap one index is both the end of a line and the start of the next, and
+    /// the caret's row and column say which of the two it is on.
+    public override func accessibilityInsertionPointLineNumber() -> Int {
+        let row = Int(docView.caretRow)
+        if let vl = layoutEngine.visualLine(row: row, ch: Int(docView.caretCh)),
+           let n = accessibilityLines.firstIndex(where: { $0.row == row && $0.index == vl.index }) {
+            return n
+        }
+        return accessibilityLine(for: accessibilitySelectedTextRange().location)
+    }
+
+    public override func accessibilitySelectedText() -> String? {
+        // An open region is what is selected: its session's value.
+        if let value = regionSlot.accessibilityValue { return value }
+        return doc.textInRange(from: UInt32(selLowByte), to: UInt32(selHighByte))
+    }
+
+    public override func accessibilitySelectedTextRange() -> NSRange {
+        utf16Range(fromByte: selLowByte, toByte: selHighByte)
+    }
+
+    public override func setAccessibilitySelectedTextRange(_ range: NSRange) {
+        // The range is UTF-16 into the *visible* text; a byte count of that
+        // text's prefix is not a source offset once any markup is hidden, so it
+        // goes through core's mapping like every other system range.
+        guard range.location >= 0 else { return }
+        let (from, to) = byteBounds(range)
+        render(doc.setSelectionOffsets(anchor: UInt32(from), focus: UInt32(to)))
+    }
+
+    public override func accessibilityString(for range: NSRange) -> String? {
+        let full = accessibilityText
+        guard range.location >= 0, range.location + range.length <= full.length else { return nil }
+        return full.substring(with: range)
+    }
+
+    /// One visual line: its range of `fullText()`, and the row and wrapped
+    /// line it is drawn as.
+    struct AccessibilityLine: Equatable {
+        let range: NSRange
+        let row: Int
+        let index: Int
+    }
+
+    /// Every visual line, top to bottom, partitioning `fullText()`: each starts
+    /// where the one before it ends, the first at 0 and the last running to
+    /// the end, so every index — a block gap's `\n` included — is on exactly
+    /// one line. Built on first use after each layout (`layoutEngine`'s
+    /// `didSet` drops it) with one crossing of the binding for all its offsets.
+    var accessibilityLines: [AccessibilityLine] {
+        if let cached = accessibilityLineCache { return cached }
+        var offsets: [UInt32] = []
+        var places: [(row: Int, index: Int)] = []
+        for (r, rl) in layoutEngine.rows.enumerated() where !rl.row.isBlockGap {
+            for (i, wl) in rl.wrapped.enumerated() {
+                offsets.append(doc.offsetForPos(row: UInt32(r), ch: UInt32(i == 0 ? 0 : wl.start)))
+                places.append((r, i))
+            }
+        }
+        let starts = doc.utf16IndicesForOffsets(offs: offsets).map(Int.init)
+        let length = accessibilityText.length
+        var lines: [AccessibilityLine] = []
+        for (k, start) in starts.enumerated() {
+            // A line whose start is not past the last one's adds nothing — a
+            // row drawn as a picture can map onto the same index as its
+            // neighbour — and would be a line no index could ever be on.
+            let begin = lines.isEmpty ? 0 : start
+            if let last = lines.last, begin <= last.range.location { continue }
+            if let last = lines.popLast() {
+                lines.append(AccessibilityLine(range: NSRange(location: last.range.location, length: begin - last.range.location),
+                                               row: last.row, index: last.index))
+            }
+            lines.append(AccessibilityLine(range: NSRange(location: min(begin, length), length: 0),
+                                           row: places[k].row, index: places[k].index))
+        }
+        if let last = lines.popLast() {
+            lines.append(AccessibilityLine(range: NSRange(location: last.range.location,
+                                                          length: max(0, length - last.range.location)),
+                                           row: last.row, index: last.index))
+        }
+        accessibilityLineCache = lines
+        return lines
+    }
+
+    public override func accessibilityLine(for index: Int) -> Int {
+        let lines = accessibilityLines
+        guard !lines.isEmpty else { return 0 }
+        // The last line that starts at or before the index.
+        var lo = 0, hi = lines.count - 1
+        while lo < hi {
+            let mid = (lo + hi + 1) / 2
+            if lines[mid].range.location <= index { lo = mid } else { hi = mid - 1 }
+        }
+        return lo
+    }
+
+    public override func accessibilityRange(forLine line: Int) -> NSRange {
+        let lines = accessibilityLines
+        guard lines.indices.contains(line) else { return NSRange(location: NSNotFound, length: 0) }
+        return lines[line].range
+    }
+
+    /// The composed character at `index` — a whole emoji, a letter with its
+    /// marks — which is what VoiceOver steps by.
+    public override func accessibilityRange(for index: Int) -> NSRange {
+        let full = accessibilityText
+        guard index >= 0, index < full.length else { return NSRange(location: NSNotFound, length: 0) }
+        return full.rangeOfComposedCharacterSequence(at: index)
+    }
+
+    /// The character under a point on screen — what a pointer hovering with
+    /// VoiceOver's cursor, or Hover Text, asks about.
+    public override func accessibilityRange(for point: NSPoint) -> NSRange {
+        let index = characterIndex(for: point)
+        guard index != NSNotFound else { return NSRange(location: NSNotFound, length: 0) }
+        let full = accessibilityText
+        guard full.length > 0 else { return NSRange(location: 0, length: 0) }
+        return full.rangeOfComposedCharacterSequence(at: min(index, full.length - 1))
+    }
+
+    /// Where `range` is on screen — VoiceOver's cursor is drawn around it. The
+    /// union of the boxes the range is drawn in, or the caret's box for an
+    /// empty range.
+    public override func accessibilityFrame(for range: NSRange) -> NSRect {
+        let (from, to) = byteBounds(range)
+        let boxes = to > from ? rangeRects(fromByte: from, toByte: to) : []
+        // An empty range is drawn as nothing at all, and `.zero` sends
+        // VoiceOver's cursor and Zoom to the corner of the screen.
+        guard let first = boxes.first else {
+            let s = doc.posForOffset(off: UInt32(from))
+            guard let caret = layoutEngine.rect(row: Int(s.row), ch: Int(s.ch)) else { return .zero }
+            return screenRect(fromView: viewRect(caret))
+        }
+        return screenRect(fromView: viewRect(boxes.dropFirst().reduce(first) { $0.union($1) }))
+    }
+
+    /// A rect in this view's coordinates on the screen, as the accessibility
+    /// and text-input APIs speak. A view not yet in a window answers in its
+    /// own coordinates, which is all it has.
+    private func screenRect(fromView rect: CGRect) -> CGRect {
+        guard let window else { return rect }
+        return window.convertToScreen(convert(rect, to: nil))
+    }
+
+    public override func accessibilityVisibleCharacterRange() -> NSRange {
+        visibleCharacterRanges.first?.rangeValue ?? NSRange(location: 0, length: 0)
+    }
+
+    /// `range` with what VoiceOver can say about its look — font, colour,
+    /// underline, strikethrough — in the accessibility attributes it reads.
+    /// From the rows as drawn when they spell exactly the range's text; plain
+    /// text otherwise (a table, a picture's placeholder), never a string that
+    /// is not the range's.
+    public override func accessibilityAttributedString(for range: NSRange) -> NSAttributedString? {
+        guard let plain = accessibilityString(for: range) else { return nil }
+        let (from, to) = byteBounds(range)
+        let drawn = drawnText(fromByte: from, toByte: to)
+        guard drawn.string == plain else { return NSAttributedString(string: plain) }
+        let out = NSMutableAttributedString(string: plain)
+        drawn.enumerateAttributes(in: NSRange(location: 0, length: drawn.length)) { attrs, sub, _ in
+            out.addAttributes(Self.accessibilityAttributes(attrs), range: sub)
+        }
+        return out
+    }
+
+    /// The run of one style around `index` — where VoiceOver's "next style
+    /// change" goes. Read off the drawn text of the index's line; a line the
+    /// rows do not spell character for character is one run.
+    public override func accessibilityStyleRange(for index: Int) -> NSRange {
+        let line = accessibilityRange(forLine: accessibilityLine(for: index))
+        guard line.location != NSNotFound, line.length > 0 else { return line }
+        let (from, to) = byteBounds(line)
+        let drawn = drawnText(fromByte: from, toByte: to)
+        let local = index - line.location
+        guard drawn.string == accessibilityString(for: line),
+              local >= 0, local < drawn.length else { return line }
+        var effective = NSRange()
+        _ = drawn.attribute(.font, at: local, longestEffectiveRange: &effective,
+                            in: NSRange(location: 0, length: drawn.length))
+        return NSRange(location: line.location + effective.location, length: effective.length)
+    }
+
+    /// AppKit's drawing attributes as the accessibility ones VoiceOver reads.
+    static func accessibilityAttributes(_ attrs: [NSAttributedString.Key: Any]) -> [NSAttributedString.Key: Any] {
+        var out: [NSAttributedString.Key: Any] = [:]
+        if let font = attrs[.font] as? NSFont {
+            let description: [NSAccessibility.FontAttributeKey: Any] = [
+                .fontName: font.fontName,
+                .fontFamily: font.familyName ?? font.fontName,
+                .visibleName: font.displayName ?? font.fontName,
+                .fontSize: font.pointSize,
+            ]
+            out[.accessibilityFont] = description
+        }
+        if let color = attrs[.foregroundColor] as? NSColor { out[.accessibilityForegroundColor] = color.cgColor }
+        if let color = attrs[.backgroundColor] as? NSColor { out[.accessibilityBackgroundColor] = color.cgColor }
+        if let style = attrs[.underlineStyle] as? Int, style != 0 { out[.accessibilityUnderline] = true }
+        if let style = attrs[.strikethroughStyle] as? Int, style != 0 { out[.accessibilityStrikethrough] = true }
+        if let offset = attrs[.baselineOffset] as? CGFloat, offset != 0 {
+            out[.accessibilitySuperscript] = offset > 0 ? 1 : -1
+        }
+        return out
+    }
+
+    /// Tell an assistive app what changed, once per change: the value when the
+    /// text did, the selection when it moved. Called at the end of every
+    /// `render`, which most frames reach with neither.
+    private func postAccessibilityChanges(textChanged: Bool) {
+        let selection = (doc.anchorOffset(), doc.caretOffset())
+        let moved = lastAccessibilitySelection.map { $0 != selection } ?? true
+        lastAccessibilitySelection = selection
+        if textChanged { NSAccessibility.post(element: self, notification: .valueChanged) }
+        if moved || textChanged { NSAccessibility.post(element: self, notification: .selectedTextChanged) }
+    }
+
+    // MARK: focus + caret blink
+
+    public override func becomeFirstResponder() -> Bool { isFocused = true; resetBlink(); needsDisplay = true; return true }
+    public override func resignFirstResponder() -> Bool {
+        isFocused = false
+        blinkTimer?.invalidate()
+        needsDisplay = true
+        return true
+    }
+
+    /// Show the caret solid and start its blink over — after every frame, so
+    /// it holds still while the reader types or moves it, as `NSTextView`'s
+    /// does. Under Reduce Motion it stays solid; in a window that isn't key
+    /// `draw` hides it, so there is nothing to blink.
+    private func resetBlink() {
+        blinkTimer?.invalidate()
+        blinkTimer = nil
+        let wasVisible = caretVisible
+        caretVisible = true
+        if !wasVisible, let r = shownCaretRect { setNeedsDisplay(viewRect(r)) }
+        guard isFocused, window?.isKeyWindow == true,
+              !NSWorkspace.shared.accessibilityDisplayShouldReduceMotion else { return }
+        scheduleBlink()
+    }
+
+    /// The next turn of the caret on or off, after the time the user's
+    /// `NSTextInsertionPointBlinkPeriodOn`/`Off` defaults give that phase —
+    /// AppKit's own (in milliseconds), a half-second each when unset.
+    private func scheduleBlink() {
+        let defaults = UserDefaults.standard
+        func period(_ key: String) -> TimeInterval {
+            let ms = defaults.double(forKey: key)
+            return ms > 0 ? ms / 1000 : 0.5
+        }
+        let wait = caretVisible ? period("NSTextInsertionPointBlinkPeriodOn")
+                                : period("NSTextInsertionPointBlinkPeriodOff")
+        let timer = Timer(timeInterval: wait, repeats: false) { [weak self] _ in
+            guard let self else { return }
+            self.caretVisible.toggle()
+            if let r = self.shownCaretRect {
+                // A little wider than the bar, so its antialiased edges go too.
+                self.setNeedsDisplay(self.viewRect(r).insetBy(dx: -1, dy: 0))
+            }
+            self.scheduleBlink()
+        }
+        // `.common`, so it keeps blinking while a menu or a drag tracks.
+        RunLoop.main.add(timer, forMode: .common)
+        blinkTimer = timer
+    }
+
+    /// A formula's picture is set in the ink the layout resolved (see `render`),
+    /// so a switch between light and dark is a relayout, not just a repaint —
+    /// the shaped rows hold the old ink's pictures.
+    public override func viewDidChangeEffectiveAppearance() {
+        super.viewDidChangeEffectiveAppearance()
+        shapeCache.removeAll(keepingCapacity: true)
+        relayoutForWidth(force: true)
+    }
+
+    // MARK: window key state — selection emphasis + caret track the key window
+
+    public override func viewDidMoveToWindow() {
+        super.viewDidMoveToWindow()
+        let nc = NotificationCenter.default
+        nc.removeObserver(self, name: NSWindow.didBecomeKeyNotification, object: nil)
+        nc.removeObserver(self, name: NSWindow.didResignKeyNotification, object: nil)
+        nc.removeObserver(self, name: NSView.frameDidChangeNotification, object: nil)
+        nc.removeObserver(self, name: NSView.boundsDidChangeNotification, object: nil)
+        guard let window else { return }
+        // Paginated, the frame is the stack's own width rather than the clip
+        // view's, so `layout()` no longer fires on a window resize — and where the
+        // stack centres is decided by exactly that width. Watch the viewport
+        // instead. (Continuously this is redundant with the autoresized frame's
+        // own `layout()`, and both paths guard on the width actually changing.)
+        clipInsetObservation = nil
+        if let clip = enclosingScrollView?.contentView {
+            clip.postsFrameChangedNotifications = true
+            nc.addObserver(self, selector: #selector(viewportResized),
+                           name: NSView.frameDidChangeNotification, object: clip)
+            // Scrolled, the sheet in view may be another (`sheet`).
+            clip.postsBoundsChangedNotifications = true
+            nc.addObserver(self, selector: #selector(clipScrolled),
+                           name: NSView.boundsDidChangeNotification, object: clip)
+            clipTopInset = clip.contentInsets.top
+            clipInsetObservation = clip.observe(\.contentInsets) { [weak self] clip, _ in
+                self?.clipInsetsChanged(clip)
+            }
+        }
+        // The find bar slides in at the top of the scroll view, as it does over
+        // every scrolling text view on the platform.
+        textFinder.findBarContainer = enclosingScrollView
+        // Advertise the selection to the app-wide Services menu (Edit ▸ Services).
+        NSApp.registerServicesMenuSendTypes([.string], returnTypes: [.string])
+        // Accept text/rich content dropped into the editor.
+        registerForDraggedTypes([.string, .html, .fileURL, .tiff, .png])
+        nc.addObserver(self, selector: #selector(keyStateChanged), name: NSWindow.didBecomeKeyNotification, object: window)
+        nc.addObserver(self, selector: #selector(keyStateChanged), name: NSWindow.didResignKeyNotification, object: window)
+    }
+
+    @objc private func keyStateChanged() { resetBlink(); needsDisplay = true }
+
+    @objc private func viewportResized() {
+        // A fit is a function of the viewport, so it goes first: the relayout
+        // that follows is at the width the new scale leaves.
+        refitZoom()
+        relayoutForWidth(force: false)
+        applyContentSize()
+    }
+
+    /// The clip view's top inset as last seen, so a change arrives as a
+    /// difference; and the observation that reports one.
+    private var clipTopInset: CGFloat = 0
+    private var clipInsetObservation: NSKeyValueObservation?
+
+    /// The find bar slides in *over* the top of the scroll view, not above it:
+    /// AppKit leaves the clip view at the scroll view's full height and widens
+    /// the clip's own `contentInsets.top` by the bar's height (the scroll
+    /// view's `contentInsets` stays zero — the automatic inset lands one level
+    /// down). That lets the document scroll up to `-inset`, but nothing
+    /// scrolls it there, so a document at its top keeps its first line where
+    /// it was, under the bar, until the reader scrolls. Shift the content by
+    /// the inset's change instead — what was under the top edge slides down
+    /// with the bar, and back up when it goes — which is where an
+    /// `NSTextView` used to leave it when the bar still made room for itself.
+    /// The finder's dimming overlay tracks the clip's bounds, so it stays over
+    /// the whole visible document; moving the clip's frame or the scroll
+    /// view's insets, both tried, put it a bar's height off.
+    private func clipInsetsChanged(_ clip: NSClipView) {
+        let top = clip.contentInsets.top
+        let delta = top - clipTopInset
+        clipTopInset = top
+        guard abs(delta) > 0.5 else { return }
+        let y = clampedScrollY(clip.bounds.origin.y - delta, in: clip)
+        clip.scroll(to: CGPoint(x: clip.bounds.origin.x, y: y))
+        enclosingScrollView?.reflectScrolledClipView(clip)
+    }
+
+    /// `y` held to the positions the clip view will scroll to: from the top
+    /// inset above the document (the room the find bar takes) to the last
+    /// screenful. A clamp at zero is a scroll under the bar.
+    private func clampedScrollY(_ y: CGFloat, in clip: NSClipView) -> CGFloat {
+        let insets = clip.contentInsets
+        let lowest = -insets.top
+        let highest = max(lowest, bounds.height - clip.bounds.height + insets.bottom)
+        return min(max(lowest, y), highest)
+    }
+
+    deinit {
+        spellCheckWork?.cancel()
+        NSSpellChecker.shared.closeSpellDocument(withTag: spellDocumentTag)
+        NotificationCenter.default.removeObserver(self)
+    }
+
+    // MARK: selection offsets
+    //
+    // Two index spaces meet here. leaf-core's handle is the **source byte offset**
+    // — the same one the iOS `UITextInput` peer wraps in its opaque positions. But
+    // an `NSRange` handed to or from `NSTextInputClient` and `NSAccessibility` is,
+    // by AppKit's contract, in **UTF-16 units of the text as the system sees it**:
+    // `fullText()`, the visible text with delimiters hidden. The two are not one
+    // scale apart (hidden markup, block gaps spelled as one `\n`, characters
+    // outside the BMP), and the system does arithmetic in its own units — Look Up
+    // asks for the word around `characterIndex(for:)` by counting UTF-16 code
+    // units, dictation replaces a range it measured off `attributedSubstring` —
+    // so every range crosses through core's `utf16IndexForOffset` /
+    // `offsetForUtf16Index` at the boundary. Inside the view, offsets stay bytes.
+
+    private var caretByte: Int { Int(doc.caretOffset()) }
+    private var anchorByte: Int { Int(doc.anchorOffset()) }
+    private var selLowByte: Int { min(anchorByte, caretByte) }
+    private var selHighByte: Int { max(anchorByte, caretByte) }
+    private var hasSelection: Bool { docView.hasSelection }
+
+    // The crossing itself is `LeafDoc`'s (TextSearch.swift), shared with the
+    // iOS view's find panel; these name it the way this file reads it.
+
+    /// The document's whole plain text — the string the system's UTF-16 ranges index.
+    private func fullText() -> String { doc.visibleText() }
+
+    /// A source byte range as the system's UTF-16 `NSRange` into `fullText()`.
+    private func utf16Range(fromByte: Int, toByte: Int) -> NSRange {
+        doc.utf16Range(fromByte: fromByte, toByte: toByte)
+    }
+
+    /// The system's UTF-16 `NSRange` as source byte bounds, both ends caret stops.
+    private func byteBounds(_ range: NSRange) -> (from: Int, to: Int) { doc.byteBounds(range) }
+
+    // MARK: NSSpellChecker
+
+    /// Debounce edits and let the system checker do its work out of process. A
+    /// generation makes an older callback harmless after another edit or a switch
+    /// to source view.
+    private func scheduleSpellCheck() {
+        spellCheckWork?.cancel()
+        spellCheckGeneration += 1
+        misspelledRanges.removeAll()
+        misspelledRects.removeAll()
+        needsDisplay = true
+        guard checksSpelling else { return }
+        let generation = spellCheckGeneration
+        let work = DispatchWorkItem { [weak self] in
+            self?.requestSpellCheck(generation: generation)
+        }
+        spellCheckWork = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.2, execute: work)
+    }
+
+    private func requestSpellCheck(generation: Int) {
+        let text = spellCheckingText()
+        let range = NSRange(location: 0, length: (text as NSString).length)
+        guard range.length > 0 else { return }
+        NSSpellChecker.shared.requestChecking(
+            of: text,
+            range: range,
+            types: NSTextCheckingResult.CheckingType.spelling.rawValue,
+            options: nil,
+            inSpellDocumentWithTag: spellDocumentTag
+        ) { [weak self] _, results, _, _ in
+            DispatchQueue.main.async {
+                guard let self,
+                      generation == self.spellCheckGeneration,
+                      self.checksSpelling
+                else { return }
+                self.misspelledRanges = results
+                    .filter { $0.resultType.contains(.spelling) }
+                    .map(\.range)
+                    .filter { !self.isHyphenatedCompound($0, in: text) }
+                self.misspelledRects = self.mapMisspellings()
+                self.needsDisplay = true
+            }
+        }
+    }
+
+    /// Return the reported misspelling under a contextual click. If the debounced
+    /// pass has not returned yet, synchronously ask for only as many words as it
+    /// takes to reach the click so a freshly typed word still gets suggestions.
+    private func misspelling(at utf16Index: Int) -> NSRange? {
+        if let range = misspelledRanges.first(where: {
+            utf16Index >= $0.location && utf16Index <= NSMaxRange($0)
+        }) {
+            return range
+        }
+        let text = spellCheckingText()
+        let length = (text as NSString).length
+        guard length > 0 else { return nil }
+        var start = 0
+        while start < length {
+            let range = nextMisspelling(in: text, startingAt: start)
+            guard range.location != NSNotFound else { return nil }
+            if utf16Index >= range.location && utf16Index <= NSMaxRange(range) {
+                return range
+            }
+            if range.location > utf16Index { return nil }
+            start = max(start + 1, NSMaxRange(range))
+        }
+        return nil
+    }
+
+    /// Standard Edit-menu action: enable/disable checking while typing.
+    @objc public func toggleContinuousSpellChecking(_ sender: Any?) {
+        isContinuousSpellCheckingEnabled.toggle()
+    }
+
+    // MARK: automatic substitution
+
+    /// Edit ▸ Spelling and Grammar ▸ Correct Spelling Automatically, under
+    /// `NSTextView`'s selector so a host's nib-built menu reaches it too.
+    @objc public func toggleAutomaticSpellingCorrection(_ sender: Any?) {
+        isAutomaticSpellingCorrectionEnabled.toggle()
+    }
+    /// Edit ▸ Substitutions ▸ Text Replacement.
+    @objc public func toggleAutomaticTextReplacement(_ sender: Any?) {
+        isAutomaticTextReplacementEnabled.toggle()
+    }
+    /// Edit ▸ Substitutions ▸ Smart Quotes.
+    @objc public func toggleAutomaticQuoteSubstitution(_ sender: Any?) {
+        isAutomaticQuoteSubstitutionEnabled.toggle()
+    }
+    /// Edit ▸ Substitutions ▸ Smart Dashes.
+    @objc public func toggleAutomaticDashSubstitution(_ sender: Any?) {
+        isAutomaticDashSubstitutionEnabled.toggle()
+    }
+
+    /// A substitution toggle's checkmark, and whether it can be changed here:
+    /// not in the source view, where nothing is substituted, nor on a reader.
+    private func validateSubstitution(_ item: NSValidatedUserInterfaceItem, on: Bool) -> Bool {
+        (item as? NSMenuItem)?.state = on ? .on : .off
+        return substitutionsApply
+    }
+
+    /// Whether anything is substituted here at all: the rendered view of an
+    /// editable document. In the source view a straight quote or a `--` is
+    /// markup, and a word is whatever the markup needs it to be — the rule the
+    /// iOS view's text input traits keep too.
+    var substitutionsApply: Bool { docView.view != "source" && !isReadOnly }
+
+    /// Edit ▸ Substitutions ▸ Show Substitutions — the system's panel. Its
+    /// checkboxes send the same `toggleAutomatic…` actions the menu items do,
+    /// to whatever is first responder, so they reach this view's settings.
+    @objc public func orderFrontSubstitutionsPanel(_ sender: Any?) {
+        NSSpellChecker.shared.substitutionsPanel.orderFront(sender)
+    }
+
+    // MARK: Edit ▸ Speech
+
+    /// The voice every editor in the app speaks with. One, as `NSTextView`'s
+    /// is, so Stop Speaking stops whatever any of them started, and starting
+    /// in a second window cuts off the first rather than talking over it.
+    ///
+    /// `AVSpeechSynthesizer` rather than the `NSSpeechSynthesizer` the text
+    /// system used to speak through, which is deprecated; with
+    /// `prefersAssistiveTechnologySettings` it speaks in the voice and at the
+    /// rate the user chose under Accessibility ▸ Spoken Content, as Speech
+    /// does in every other app.
+    private static let speech = AVSpeechSynthesizer()
+
+    /// Start Speaking: the selection, or the whole document when nothing is
+    /// selected — the visible text, so the markup is never read out.
+    @objc public func startSpeaking(_ sender: Any?) {
+        let text = textToSpeak()
+        guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return NSSound.beep() }
+        Self.speech.stopSpeaking(at: .immediate)
+        let utterance = AVSpeechUtterance(string: text)
+        if #available(macOS 14, *) { utterance.prefersAssistiveTechnologySettings = true }
+        Self.speech.speak(utterance)
+    }
+
+    /// What Start Speaking says from here.
+    func textToSpeak() -> String { hasSelection ? (doc.selectedText() ?? "") : fullText() }
+
+    @objc public func stopSpeaking(_ sender: Any?) { Self.speech.stopSpeaking(at: .immediate) }
+
+    /// Whether the app's voice is speaking — what enables Stop Speaking.
+    static var isSpeaking: Bool { speech.isSpeaking }
+
+    @objc private func systemSubstitutionSettingChanged(_ note: Notification) {
+        switch note.name {
+        case NSSpellChecker.didChangeAutomaticSpellingCorrectionNotification:
+            isAutomaticSpellingCorrectionEnabled = NSSpellChecker.isAutomaticSpellingCorrectionEnabled
+        case NSSpellChecker.didChangeAutomaticTextReplacementNotification:
+            isAutomaticTextReplacementEnabled = NSSpellChecker.isAutomaticTextReplacementEnabled
+        case NSSpellChecker.didChangeAutomaticQuoteSubstitutionNotification:
+            isAutomaticQuoteSubstitutionEnabled = NSSpellChecker.isAutomaticQuoteSubstitutionEnabled
+        case NSSpellChecker.didChangeAutomaticDashSubstitutionNotification:
+            isAutomaticDashSubstitutionEnabled = NSSpellChecker.isAutomaticDashSubstitutionEnabled
+        default: break
+        }
+    }
+
+    /// One substitution the checker proposed for what was just typed, in
+    /// `fullText()`'s UTF-16 units.
+    struct Substitution: Equatable {
+        let range: NSRange
+        let replacement: String
+        /// A spelling correction, which gets the underline and the reversion.
+        let isCorrection: Bool
+    }
+
+    /// What the system would substitute now that `typed` has been typed at
+    /// the caret, over `text` as `spellCheckingText()` masks it (so nothing in
+    /// code is touched) — the whole of `fullText()`, or, with `origin`, the
+    /// stretch of it that starts there, which is what typing hands it: the
+    /// caret's block up to the caret, `substitutionContext()`. `caret` and
+    /// the ranges found are `fullText()`'s either way. Only the substitutions
+    /// the keystroke itself completes, the way `NSTextView` makes them:
+    ///
+    /// - a straight quote is curled as it is typed, by what stands before it;
+    /// - a `--` becomes a dash once the character after it is typed, and that
+    ///   character is not another hyphen, so `---` is left for the rule it is;
+    /// - a word is corrected, or a text replacement expanded, as the character
+    ///   that ends it is typed — a space or punctuation, not an apostrophe or
+    ///   a hyphen inside it.
+    ///
+    /// Anything the checker reports elsewhere in the paragraph is left alone: a
+    /// quote someone straightened again, or a misspelling they walked past.
+    func substitutions(afterTyping typed: String, in text: String, origin: Int = 0, caret: Int) -> [Substitution] {
+        let found = substitutions(afterTyping: typed, inStretch: text, caret: caret - origin)
+        guard origin != 0 else { return found }
+        lastSubstitutionCheck?.location += origin
+        return found.map {
+            Substitution(range: NSRange(location: $0.range.location + origin, length: $0.range.length),
+                         replacement: $0.replacement, isCorrection: $0.isCorrection)
+        }
+    }
+
+    private func substitutions(afterTyping typed: String, inStretch text: String, caret: Int) -> [Substitution] {
+        let ns = text as NSString
+        let typedLength = (typed as NSString).length
+        guard typedLength > 0, caret >= typedLength, caret <= ns.length else { return [] }
+        let typedStart = caret - typedLength
+        let typedRange = NSRange(location: typedStart, length: typedLength)
+        let endsWord = Self.endsWord(typed)
+        let checker = NSSpellChecker.shared
+        let language = checker.language()
+        let correcting = endsWord && isAutomaticSpellingCorrectionEnabled
+            && !checker.preventsAutocorrection(before: typed, language: language)
+        var types: NSTextCheckingResult.CheckingType = []
+        if isAutomaticQuoteSubstitutionEnabled { types.insert(.quote) }
+        if isAutomaticDashSubstitutionEnabled { types.insert(.dash) }
+        if endsWord && isAutomaticTextReplacementEnabled { types.insert(.replacement) }
+        if correcting { types.formUnion([.spelling, .correction]) }
+        guard !types.isEmpty else { return [] }
+
+        let paragraph = ns.paragraphRange(for: NSRange(location: typedStart, length: 0))
+        let checked = NSRange(location: paragraph.location, length: caret - paragraph.location)
+        lastSubstitutionCheck = checked
+        let results = checker.check(text, range: checked, types: types.rawValue, options: nil,
+                                    inSpellDocumentWithTag: spellDocumentTag,
+                                    orthography: nil, wordCount: nil)
+        let firstTyped = typed.first
+        var found: [Substitution] = []
+        // A text replacement is what the user asked for by name, so it wins over
+        // a correction proposed for the same word.
+        var wordTaken = false
+        for result in results where result.resultType == .replacement || result.resultType == .quote
+            || result.resultType == .dash {
+            let r = result.range
+            guard let replacement = result.replacementString, !replacement.isEmpty else { continue }
+            switch result.resultType {
+            case .quote:
+                guard NSIntersectionRange(r, typedRange).length > 0 else { continue }
+            case .dash:
+                // Two hyphens exactly: a third either side is a rule, or
+                // someone's ASCII art, and not a dash.
+                guard NSMaxRange(r) == typedStart, firstTyped != "-", ns.substring(with: r) == "--",
+                      r.location == 0 || ns.substring(with: NSRange(location: r.location - 1, length: 1)) != "-"
+                else { continue }
+            case .replacement:
+                guard NSMaxRange(r) == typedStart else { continue }
+                wordTaken = true
+            default: continue
+            }
+            found.append(Substitution(range: r, replacement: replacement, isCorrection: false))
+        }
+        if correcting, !wordTaken {
+            // The checker reports a word it would correct as a correction where
+            // the system's own setting is on, and as a plain misspelling where
+            // it is off; the correction for the latter is asked of it by word.
+            for result in results where NSMaxRange(result.range) == typedStart {
+                let word = result.range
+                let replacement: String?
+                if result.resultType == .correction {
+                    replacement = result.replacementString
+                } else if result.resultType == .spelling, !isHyphenatedCompound(word, in: text) {
+                    replacement = checker.correction(forWordRange: word, in: text, language: language,
+                                                     inSpellDocumentWithTag: spellDocumentTag)
+                } else {
+                    continue
+                }
+                guard let replacement, !replacement.isEmpty,
+                      replacement != ns.substring(with: word) else { continue }
+                found.append(Substitution(range: word, replacement: replacement, isCorrection: true))
+                break
+            }
+        }
+        return found.sorted { $0.range.location > $1.range.location }
+    }
+
+    /// Whether typing `typed` ends the word before it: a space or punctuation,
+    /// not an apostrophe or a hyphen, which a word goes on through.
+    static func endsWord(_ typed: String) -> Bool {
+        typed.first.map { c in
+            (c.isWhitespace || c.isPunctuation || c.isSymbol) && !"'’-‐".contains(c)
+        } ?? false
+    }
+
+    /// Make the substitutions the keystroke `typed` completes — see
+    /// `substitutions(afterTyping:in:caret:)` — through core's `substitute`,
+    /// which leaves the caret where the typing left it. All of one
+    /// keystroke's substitutions are one undo step, and a step apart from the
+    /// typing: ⌘Z puts back exactly what was typed, as it does in `NSTextView`.
+    private func substituteAfterTyping(_ typed: String) {
+        guard substitutionsApply, markedByteRange == nil, !hasSelection else { return }
+        // Most keystrokes are letters, which complete nothing; only a quote or
+        // the end of a word is worth the document's text.
+        let mayQuote = isAutomaticQuoteSubstitutionEnabled && typed.contains(where: { $0 == "\"" || $0 == "'" })
+        let mayWord = Self.endsWord(typed)
+            && (isAutomaticTextReplacementEnabled || isAutomaticSpellingCorrectionEnabled)
+        // A dash completes on whatever follows the `--`, a letter included: a
+        // look at the few characters behind the caret, not at the document.
+        let mayDash = isAutomaticDashSubstitutionEnabled && typed.first != "-" && {
+            let back = Int32(typed.count + 2)
+            let from = doc.stepOffset(off: UInt32(caretByte), delta: -back)
+            return doc.textInRange(from: from, to: UInt32(caretByte)).contains("--")
+        }()
+        guard mayQuote || mayWord || mayDash else { return }
+        let caret = utf16Range(fromByte: caretByte, toByte: caretByte).location
+        // The caret's block, up to the caret, and not the document: a keystroke
+        // completes nothing outside it.
+        let context = substitutionContext()
+        let found = substitutions(afterTyping: typed, in: context.text, origin: context.origin, caret: caret)
+        guard !found.isEmpty else { return }
+        let checked = context.text as NSString
+        doc.beginUndoGroup()
+        defer { doc.endUndoGroup() }
+        for sub in found {
+            // The exact bytes the checker's characters are, snapping neither
+            // end — and only if they are those characters. A range that crosses
+            // hidden markup, or text core spelled with an escape, is not one
+            // this can replace without breaking what it stands in.
+            let (from, to) = doc.matchBounds(sub.range)
+            let original = checked.substring(with: NSRange(location: sub.range.location - context.origin,
+                                                           length: sub.range.length))
+            guard from < to, sourceBytes(from, to) == original,
+                  doc.textInRange(from: UInt32(from), to: UInt32(to)) == original else { continue }
+            render(doc.substitute(from: UInt32(from), to: UInt32(to), text: sub.replacement))
+            if sub.isCorrection {
+                let now = utf16Range(fromByte: from, toByte: from + sub.replacement.utf8.count)
+                autocorrections.removeAll { NSIntersectionRange($0.range, now).length > 0 }
+                autocorrections.append(Autocorrection(range: now, original: original,
+                                                      replacement: sub.replacement))
+            }
+        }
+        refreshAutocorrections(textChanged: false)
+    }
+
+    /// The source text of `[from, to)`, or nil when that is not a range of it.
+    private func sourceBytes(_ from: Int, _ to: Int) -> String? {
+        let bytes = Array(doc.source().utf8)
+        guard from >= 0, from <= to, to <= bytes.count else { return nil }
+        return String(decoding: bytes[from..<to], as: UTF8.self)
+    }
+
+    /// Keep only the corrections the text still holds, and map them onto the
+    /// layout. A correction an edit before it has moved is dropped with the
+    /// ones an edit has changed: its range no longer reads as the correction.
+    private func refreshAutocorrections(textChanged: Bool) {
+        guard !autocorrections.isEmpty || !autocorrectionRects.isEmpty else { return }
+        if textChanged {
+            NSSpellChecker.shared.dismissCorrectionIndicator(for: self)
+            offeredReversion = nil
+        }
+        let text = fullText() as NSString
+        autocorrections.removeAll {
+            !substitutionsApply || NSMaxRange($0.range) > text.length
+                || text.substring(with: $0.range) != $0.replacement
+        }
+        autocorrectionRects = autocorrections.flatMap { c -> [CGRect] in
+            let (from, to) = byteBounds(c.range)
+            return rangeRects(fromByte: from, toByte: to).filter { $0.width > 0 }
+        }
+        needsDisplay = true
+    }
+
+    /// The blue underline `NSTextView` draws under a word it corrected.
+    private func drawAutocorrections(in ctx: CGContext, dirtyRect band: CGRect) {
+        guard !autocorrectionRects.isEmpty, substitutionsApply else { return }
+        ctx.saveGState()
+        defer { ctx.restoreGState() }
+        ctx.setStrokeColor(NSColor.systemBlue.withAlphaComponent(0.8).cgColor)
+        ctx.setLineWidth(1)
+        for rect in autocorrectionRects where rect.maxY > band.minY && rect.minY < band.maxY {
+            ctx.move(to: CGPoint(x: rect.minX, y: rect.maxY - 1))
+            ctx.addLine(to: CGPoint(x: rect.maxX, y: rect.maxY - 1))
+        }
+        ctx.strokePath()
+    }
+
+    /// The correction the caret stands in or at the end of, if any.
+    func autocorrectionAtCaret() -> Autocorrection? {
+        guard substitutionsApply, !hasSelection else { return nil }
+        let caret = utf16Range(fromByte: caretByte, toByte: caretByte).location
+        return autocorrections.last { caret >= $0.range.location && caret <= NSMaxRange($0.range) }
+    }
+
+    /// When the caret comes to rest on a corrected word, offer the original
+    /// back through the system's reversion indicator — what `NSTextView` does.
+    private func offerReversionAtCaret() {
+        guard let correction = autocorrectionAtCaret() else {
+            if offeredReversion != nil {
+                offeredReversion = nil
+                NSSpellChecker.shared.dismissCorrectionIndicator(for: self)
+            }
+            return
+        }
+        guard correction != offeredReversion, window != nil else { return }
+        offeredReversion = correction
+        let (from, to) = byteBounds(correction.range)
+        let boxes = rangeRects(fromByte: from, toByte: to)
+        guard let first = boxes.first else { return }
+        let rect = viewRect(boxes.dropFirst().reduce(first) { $0.union($1) })
+        NSSpellChecker.shared.showCorrectionIndicator(
+            of: .reversion, primaryString: correction.original,
+            alternativeStrings: [], forStringIn: rect, view: self
+        ) { [weak self] accepted in
+            guard let accepted else { return }
+            DispatchQueue.main.async { self?.revert(correction, to: accepted) }
+        }
+    }
+
+    /// Put a correction's original back, as its own undo step, and tell the
+    /// checker the user did — it learns from a reverted correction.
+    func revert(_ correction: Autocorrection, to original: String) {
+        guard let live = autocorrections.first(where: { $0 == correction }) else { return }
+        let (from, to) = doc.matchBounds(live.range)
+        guard sourceBytes(from, to) == live.replacement else { return }
+        autocorrections.removeAll { $0 == live }
+        offeredReversion = nil
+        render(doc.substitute(from: UInt32(from), to: UInt32(to), text: original))
+        guard recordsCorrectionResponses else { return }
+        NSSpellChecker.shared.record(
+            .reverted, toCorrection: live.replacement, forWord: live.original,
+            language: NSSpellChecker.shared.language(), inSpellDocumentWithTag: spellDocumentTag)
+    }
+
+    /// Standard Edit-menu action: select the next misspelling, wrapping once.
+    @objc public func checkSpelling(_ sender: Any?) {
+        let text = spellCheckingText()
+        let length = (text as NSString).length
+        guard docView.view != "source", !isReadOnly, length > 0 else { return }
+        var range = nextMisspelling(
+            in: text, startingAt: min(NSMaxRange(selectedRange()), length))
+        if range.location == NSNotFound {
+            range = nextMisspelling(in: text, startingAt: 0)
+        }
+        guard range.location != NSNotFound else { NSSound.beep(); return }
+        let (from, to) = byteBounds(range)
+        render(doc.selectRange(start: UInt32(from), end: UInt32(to)))
+        NSSpellChecker.shared.updateSpellingPanel(
+            withMisspelledWord: (fullText() as NSString).substring(with: range))
+    }
+
+    /// Build the string handed to `NSSpellChecker` in the same UTF-16 coordinate
+    /// space as `fullText()`, but with non-prose glyphs replaced by spaces. Runs
+    /// give us the semantic distinction the flattened plain text has lost:
+    /// fenced and inline code never reach the checker, nor do list/quote chrome.
+    /// Structural table cells are copied over their box-picture rows so their
+    /// words retain the source offsets used for drawing corrections.
+    ///
+    /// Every prose run's place in that space is asked of core in one crossing
+    /// (`utf16IndicesForOffsets`), not one per run: a long document has
+    /// thousands of runs, and a call across the binding for each was most of
+    /// what an edit cost once the typing settled.
+    internal func spellCheckingText() -> String {
+        let visible = fullText() as NSString
+        return masked(proseRuns(in: 0..<docView.rows.count), origin: 0, length: visible.length)
+    }
+
+    /// `spellCheckingText()` for the caret's block alone, up to the caret —
+    /// the stretch a keystroke's substitutions are looked for in: `origin` is
+    /// where it starts in `fullText()`, and `text` is it masked as
+    /// `spellCheckingText()` masks it. The block is the caret's row, or the
+    /// whole table the caret is in; nothing of the rest of the document is read.
+    internal func substitutionContext() -> (origin: Int, text: String) {
+        let caret = caretByte
+        var rows = Int(docView.caretRow)..<Int(docView.caretRow) + 1
+        if let table = docView.tables.first(where: { Int($0.startRow)..<Int($0.endRow) ~= rows.lowerBound }) {
+            rows = Int(table.startRow)..<Int(table.endRow)
+        }
+        guard rows.lowerBound >= 0, rows.upperBound <= docView.rows.count else { return (0, "") }
+        // Where the block's text starts: its first run that is text, and not a
+        // bullet or a quote bar, which stand on markup the text does not show.
+        let chrome: Set<String> = ["list", "list-indent", "quote", "rule"]
+        let runs = rows.flatMap { docView.rows[$0].runs }
+            + docView.tables.filter { Int($0.startRow) == rows.lowerBound }
+                .flatMap { $0.grid.flatMap { $0.cells.flatMap { $0.lines.flatMap(\.runs) } } }
+        let start = min(runs.filter { !chrome.contains($0.role) }.map { Int($0.src) }.min() ?? caret, caret)
+        let origin = utf16Range(fromByte: start, toByte: start).location
+        let length = utf16Range(fromByte: caret, toByte: caret).location - origin
+        guard length > 0 else { return (origin, "") }
+        let text = masked(proseRuns(in: rows).filter { Int($0.src) < caret }, origin: origin, length: length,
+                          cut: true)
+        return (origin, text)
+    }
+
+    /// The runs of `rows` the checker reads: prose, and not code, list or
+    /// quote chrome, or a rule — with a table's cells in place of its picture
+    /// rows, and nothing of a directive's or a picture's.
+    private func proseRuns(in rows: Range<Int>) -> [Run] {
+        var prose: [Run] = []
+        func collect(_ run: Run) {
+            guard run.role != "code",
+                  run.role != "list",
+                  run.role != "list-indent",
+                  run.role != "quote",
+                  run.role != "rule",
+                  !run.text.isEmpty
+            else { return }
+            prose.append(run)
+        }
+
+        var replacedRows = IndexSet()
+        for table in docView.tables {
+            let span = Int(table.startRow)..<Int(table.endRow)
+            replacedRows.insert(integersIn: span)
+            guard span.overlaps(rows) else { continue }
+            for row in table.grid {
+                for cell in row.cells {
+                    for line in cell.lines {
+                        for run in line.runs { collect(run) }
+                    }
+                }
+            }
+        }
+        for directive in docView.directives {
+            replacedRows.insert(integersIn: Int(directive.startRow)..<Int(directive.endRow))
+        }
+        for media in docView.media {
+            replacedRows.insert(integersIn: Int(media.startRow)..<Int(media.endRow))
+        }
+        for index in rows where !replacedRows.contains(index) {
+            let row = docView.rows[index]
+            guard !row.code, !row.decoration else { continue }
+            for run in row.runs { collect(run) }
+        }
+        return prose
+    }
+
+    /// `length` spaces standing for the stretch of `fullText()` from `origin`,
+    /// with each of `prose` written over its place in it — every prose run's
+    /// place asked of core in one crossing (`utf16IndicesForOffsets`), not one
+    /// per run: a long document has thousands of runs, and a call across the
+    /// binding for each was most of what an edit cost once the typing
+    /// settled. A run that reaches past the stretch is dropped, or with `cut`
+    /// written up to its end — the caret, where a run the caret stands in
+    /// goes on after it.
+    private func masked(_ prose: [Run], origin: Int, length: Int, cut: Bool = false) -> String {
+        let masked = NSMutableString(string: String(repeating: " ", count: length))
+        let locations = doc.utf16IndicesForOffsets(offs: prose.map(\.src))
+        for (run, location) in zip(prose, locations) {
+            let location = Int(location) - origin
+            let text = run.text as NSString
+            let fits = min(text.length, length - location)
+            guard location >= 0, fits > 0, cut || fits == text.length else { continue }
+            masked.replaceCharacters(in: NSRange(location: location, length: fits),
+                                     with: text.substring(to: fits))
+        }
+        return masked as String
+    }
+
+    /// Apple's checker treats some ordinary editorial compounds (for example
+    /// “round-trippable”) as misspellings. A hyphen joins the token deliberately,
+    /// so do not underline either the whole compound or one component of it.
+    internal func isHyphenatedCompound(_ range: NSRange, in text: String) -> Bool {
+        let ns = text as NSString
+        guard range.location != NSNotFound, NSMaxRange(range) <= ns.length else { return false }
+        let tokenCharacters = CharacterSet.letters
+            .union(.init(charactersIn: "-‐‑‒–—'’"))
+        var start = range.location
+        var end = NSMaxRange(range)
+        while start > 0,
+              ns.substring(with: NSRange(location: start - 1, length: 1))
+                .rangeOfCharacter(from: tokenCharacters) != nil {
+            start -= 1
+        }
+        while end < ns.length,
+              ns.substring(with: NSRange(location: end, length: 1))
+                .rangeOfCharacter(from: tokenCharacters) != nil {
+            end += 1
+        }
+        return ns.substring(with: NSRange(location: start, length: end - start))
+            .rangeOfCharacter(from: .init(charactersIn: "-‐‑‒–—")) != nil
+    }
+
+    /// The synchronous checker powers “Check Document Now” and a contextual
+    /// click before the debounced pass completes. Apply the same compound-word
+    /// policy as the asynchronous pass instead of letting those entry points
+    /// disagree about what is misspelled.
+    private func nextMisspelling(in text: String, startingAt initialStart: Int) -> NSRange {
+        let length = (text as NSString).length
+        var start = initialStart
+        while start < length {
+            var wordCount = 0
+            let range = NSSpellChecker.shared.checkSpelling(
+                of: text, startingAt: start, language: nil, wrap: false,
+                inSpellDocumentWithTag: spellDocumentTag, wordCount: &wordCount)
+            guard range.location != NSNotFound else { return range }
+            if !isHyphenatedCompound(range, in: text) { return range }
+            start = max(start + 1, NSMaxRange(range))
+        }
+        return NSRange(location: NSNotFound, length: 0)
+    }
+
+    // MARK: NSTextInputClient — real selection, geometry, and hit-testing
+    //
+    // With these reporting the true selection, macOS's system text services light up:
+    // Look Up, the Services menu, dictation, and IME candidate placement all target
+    // the real range. Marked text (the inline IME composition) is inserted as it's
+    // composed and drawn with a composing underline; `insertText` commits it.
+
+    public func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
+        closeWritingToolsGroupForUserEdit()
+        let text = (string as? String) ?? (string as? NSAttributedString)?.string ?? ""
+        // A composition in an open region leaf draws is shown by leaf and
+        // reaches the session only once committed.
+        if regionSlot.composes {
+            regionSlot.setMarked(text, selected: selectedRange)
+            return
+        }
+        // Bytes to replace: the existing composition, else the proposed replacement,
+        // else the current selection.
+        let start: Int, end: Int
+        if let m = markedByteRange {
+            start = m.location; end = m.location + m.length
+        } else if replacementRange.location != NSNotFound {
+            (start, end) = byteBounds(replacementRange)
+        } else {
+            start = selLowByte; end = selHighByte
+        }
+        render(doc.replaceRange(from: UInt32(max(0, start)), to: UInt32(max(start, end)), text: text))
+        markedClauses = []
+        if text.isEmpty {
+            markedByteRange = nil
+        } else {
+            markedByteRange = NSRange(location: start, length: text.utf8.count)
+            if let attributed = string as? NSAttributedString {
+                markedClauses = Self.clauses(of: attributed, selectedRange: selectedRange, at: start)
+            }
+            // Place the caret within the composition per the IME's selected range.
+            let ns = text as NSString
+            let uptoUTF16 = min(max(0, selectedRange.location + selectedRange.length), ns.length)
+            let caret = start + ns.substring(to: uptoUTF16).utf8.count
+            render(doc.setSelectionOffsets(anchor: UInt32(caret), focus: UInt32(caret)))
+        }
+        needsDisplay = true
+    }
+
+    public func unmarkText() {
+        // A composition in an open region is the region's: committed, as the
+        // focus moving commits one.
+        if regionSlot.marked != nil { return regionSlot.commitMarked() }
+        markedByteRange = nil
+        needsDisplay = true
+    }
+
+    /// Whether an underline style draws heavier than a single line. The style
+    /// is a bitmask: its low byte is the line (single, thick, double), and the
+    /// bits above it a pattern and `byWord`, which say how the line is drawn,
+    /// not how heavy it is.
+    private static func isThick(_ style: Int) -> Bool { style & 0xFF > NSUnderlineStyle.single.rawValue }
+
+    /// The clauses an input method marked in `string`, as source byte ranges
+    /// from `start`. A clause is a run of one `.markedClauseSegment`, or of one
+    /// underline style where the method sends only those; the selected one is
+    /// the one it underlined thick, or failing that the one holding the
+    /// method's selection.
+    static func clauses(of string: NSAttributedString, selectedRange: NSRange,
+                        at start: Int) -> [(range: NSRange, selected: Bool)] {
+        let whole = NSRange(location: 0, length: string.length)
+        var runs: [(range: NSRange, thick: Bool?)] = []
+        var segmented = false
+        string.enumerateAttribute(.markedClauseSegment, in: whole) { value, range, _ in
+            if value != nil { segmented = true }
+            runs.append((range, nil))
+        }
+        if !segmented {
+            runs = []
+            string.enumerateAttribute(.underlineStyle, in: whole) { value, range, _ in
+                runs.append((range, (value as? Int).map(Self.isThick)))
+            }
+        } else {
+            runs = runs.map { run in
+                let style = string.attribute(.underlineStyle, at: run.range.location, effectiveRange: nil) as? Int
+                return (run.range, style.map(Self.isThick))
+            }
+        }
+        guard runs.count > 1 || runs.first?.thick == true else { return [] }
+        let anyThick = runs.contains { $0.thick == true }
+        let ns = string.string as NSString
+        return runs.map { run in
+            let selected = anyThick ? run.thick == true : NSLocationInRange(selectedRange.location, run.range)
+            let from = start + ns.substring(to: run.range.location).utf8.count
+            let length = ns.substring(with: run.range).utf8.count
+            return (NSRange(location: from, length: length), selected)
+        }
+    }
+    public func hasMarkedText() -> Bool { markedByteRange != nil || regionSlot.marked != nil }
+    public func markedRange() -> NSRange {
+        // An open region's composition stands at core's caret, in front of
+        // the region, and holds no bytes of the document.
+        if let m = regionSlot.marked {
+            return NSRange(location: utf16Range(fromByte: selLowByte, toByte: selLowByte).location,
+                           length: (m.text as NSString).length)
+        }
+        guard let m = markedByteRange else { return NSRange(location: NSNotFound, length: 0) }
+        return utf16Range(fromByte: m.location, toByte: m.location + m.length)
+    }
+    /// What an input method may mark its composition with: the underline it
+    /// wants and the clause boundaries, which `drawMarkedUnderline` honours.
+    public func validAttributesForMarkedText() -> [NSAttributedString.Key] {
+        [.underlineStyle, .underlineColor, .markedClauseSegment]
+    }
+
+    public func selectedRange() -> NSRange {
+        if let m = regionSlot.marked {
+            let at = utf16Range(fromByte: selLowByte, toByte: selLowByte).location
+            return NSRange(location: at + m.selected.location, length: m.selected.length)
+        }
+        return utf16Range(fromByte: selLowByte, toByte: selHighByte)
+    }
+
+    public func attributedSubstring(forProposedRange range: NSRange, actualRange: NSRangePointer?) -> NSAttributedString? {
+        let (from, to) = byteBounds(range)
+        let text = doc.textInRange(from: UInt32(from), to: UInt32(to))
+        // Report the range actually served in the system's units — the proposed
+        // one may have started inside a surrogate pair or run past the end.
+        actualRange?.pointee = NSRange(location: Int(doc.utf16IndexForOffset(off: UInt32(from))),
+                                       length: text.utf16.count)
+        // As drawn, so an input method's candidate window and Look Up's
+        // ⌃⌘D set the text in the font it is shown in. The drawn rows spell
+        // the visible text except where a block draws as something else; there
+        // the body font is the honest answer, and the string must stay the
+        // range's either way.
+        let drawn = drawnText(fromByte: from, toByte: to)
+        if drawn.string == text { return drawn }
+        return NSAttributedString(string: text, attributes: [
+            .font: theme.proportionalFont(size: theme.fontSize, bold: false, italic: false),
+        ])
+    }
+
+    public func characterIndex(for point: NSPoint) -> Int {
+        guard let window else { return NSNotFound }
+        let local = layoutPoint(convert(window.convertPoint(fromScreen: point), from: nil))
+        let (row, ch) = layoutEngine.hit(local)
+        return Int(doc.utf16IndexForOffset(off: doc.offsetForPos(row: UInt32(row), ch: UInt32(ch))))
+    }
+
+    /// The box the range's *first line* occupies — the whole of it, not one
+    /// character's — with `actualRange` cut back to what is on that line. An
+    /// input method sets its candidate window under it, and dictation and
+    /// the Character Viewer anchor there; a range that wraps is answered one
+    /// line at a time, as the protocol asks, and the caller comes back for
+    /// the rest.
+    public func firstRect(forCharacterRange range: NSRange, actualRange: NSRangePointer?) -> NSRect {
+        // In an open region leaf draws, the input method's window goes at its
+        // caret.
+        if regionSlot.composes, let caret = regionSlot.caretRect() {
+            actualRange?.pointee = range
+            return screenRect(fromView: viewRect(caret))
+        }
+        let (from, to) = byteBounds(range)
+        let s = doc.posForOffset(off: UInt32(from))
+        guard to > from, let line = layoutEngine.visualLine(row: Int(s.row), ch: Int(s.ch)),
+              let first = rangeRects(fromByte: from, toByte: to).first
+        else {
+            actualRange?.pointee = NSRange(location: range.location, length: 0)
+            guard let caret = layoutEngine.rect(row: Int(s.row), ch: Int(s.ch)) else { return .zero }
+            return screenRect(fromView: viewRect(caret))
+        }
+        let lineEnd = Int(doc.offsetForPos(row: s.row, ch: UInt32(line.end)))
+        let end = lineEnd > from ? min(to, lineEnd) : to
+        actualRange?.pointee = utf16Range(fromByte: from, toByte: end)
+        return screenRect(fromView: viewRect(first))
+    }
+
+    /// The selection's visible part, on screen — where macOS 14 puts the
+    /// input-source indicator and the dictation glyph. The caret's box for a
+    /// bare caret.
+    public func unionRectInVisibleSelectedRange() -> NSRect {
+        let visible = layoutRect(visibleRect)
+        let boxes = rangeRects(fromByte: selLowByte, toByte: selHighByte)
+            .map { $0.intersection(visible) }.filter { !$0.isNull && !$0.isEmpty }
+        guard let first = boxes.first else {
+            guard let caret = layoutEngine.caretRect(docView, theme: theme) else { return .zero }
+            return screenRect(fromView: viewRect(caret))
+        }
+        return screenRect(fromView: viewRect(boxes.dropFirst().reduce(first) { $0.union($1) }))
+    }
+
+    /// What of the document is on screen, on screen.
+    public func documentVisibleRect() -> NSRect { screenRect(fromView: visibleRect) }
+
+    // MARK: host access
+
+    public func sourceText() -> String { doc.source() }
+    public func markSaved() { render(doc.markSaved()) }
+    /// `markSaved` for a write that took a while: `saved` is the
+    /// `sourceText()` read before writing, and what was typed since stays
+    /// unsaved.
+    public func markSaved(as saved: String) { render(doc.markSavedAs(saved: saved)) }
+    public func command(_ op: (LeafDoc) -> DocView) { render(op(doc)) }
+}
+
+// MARK: - Writing Tools, inline
+//
+// A coordinator on macOS 15.2 and later gives the view the experience a
+// native text view has: a rewrite animating in place over the rows,
+// proofreading marks in the text to review one by one. Below 15.2 the view is
+// still an `NSServicesMenuRequestor`, and Writing Tools works through its
+// panel, as it always has.
+//
+// The text Writing Tools reads is the visible text (see WritingTools.swift);
+// its geometry is `EditorLayout.rangeRects`, as find's is; a rewrite goes back
+// through `replaceRange`; and a session is one undo step, a core undo group
+// held open from the moment the coordinator leaves `inactive` until it returns.
+
+extension LeafTextView {
+    func openWritingToolsGroup() { writingTools.openGroup(doc) }
+    func closeWritingToolsGroup() { writingTools.closeGroup(doc) }
+
+    /// Close a session's group that its end never closed, at the user's next
+    /// key or click. Nothing while Writing Tools is still at work: a key may be
+    /// an arrow, which leaves the session be.
+    func closeIdleWritingToolsGroup() {
+        guard writingTools.groupOpen else { return }
+        if #available(macOS 15.2, *), let coordinator = writingToolsCoordinator,
+           coordinator.state != .inactive {
+            return
+        }
+        closeWritingToolsGroup()
+    }
+
+    /// Close the session's group before an edit the user makes — typing, a
+    /// deletion, a paste, a drop, an IME step — whether or not Writing Tools
+    /// is still at work. The edit is the user's own undo step, never folded
+    /// into the rewrite's, so ⌘Z takes it back alone; and it ends the session
+    /// as it lands (`writingToolsTextMoved`), whose ranges it has moved.
+    func closeWritingToolsGroupForUserEdit() {
+        closeWritingToolsGroup()
+    }
+}
+
+@available(macOS 15.2, *)
+extension LeafTextView {
+    func installWritingToolsCoordinator() {
+        let delegate = LeafWritingToolsDelegate(view: self)
+        let coordinator = NSWritingToolsCoordinator(delegate: delegate)
+        coordinator.decorationContainerView = self
+        coordinator.effectContainerView = self
+        // Words, not attributes: a rewrite is applied as plain text through
+        // core, which keeps the markup around it.
+        coordinator.preferredResultOptions = [.plainText]
+        writingToolsDelegate = delegate
+        writingToolsCoordinator = coordinator
+        updateWritingToolsBehavior()
+    }
+
+    /// The whole inline experience on an editable document, and none on a reader.
+    func updateWritingToolsBehavior() {
+        writingToolsCoordinator?.preferredBehavior = isReadOnly ? NSWritingToolsBehavior.none : .complete
+    }
+
+    /// The text changed or moved under a session. An edit Writing Tools did
+    /// not make — typing, an undo — ends the session: the ranges it holds no
+    /// longer say where anything is. A reflow only moves its geometry.
+    func writingToolsTextMoved(edited: Bool) {
+        guard let coordinator = writingToolsCoordinator, coordinator.state != .inactive else { return }
+        if edited {
+            coordinator.stopWritingTools()
+        } else {
+            for id in writingTools.origins.keys { coordinator.updateForReflowedTextInContextWithIdentifier(id) }
+        }
+    }
+
+    // MARK: the delegate's answers
+
+    /// One context: the visible text for `scope` (see `WritingToolsText.span`),
+    /// whose origin is kept to map its ranges back.
+    func writingToolsContexts(for scope: NSWritingToolsCoordinator.ContextScope) -> [NSWritingToolsCoordinator.Context] {
+        let text = fullText()
+        let kind: WritingToolsText.Scope = switch scope {
+        case .userSelection: .selection
+        case .visibleArea: .visible
+        default: .document
+        }
+        let selection = utf16Range(fromByte: selLowByte, toByte: selHighByte)
+        let visible = visibleCharacterRanges.first?.rangeValue ?? NSRange(location: 0, length: 0)
+        let span = WritingToolsText.span(for: kind, in: text, selection: selection, visible: visible)
+        let string = (text as NSString).substring(with: NSRange(location: span.origin, length: span.length))
+        let font = NSFont(name: theme.bodyFontName, size: theme.fontSize) ?? .systemFont(ofSize: theme.fontSize)
+        let context = NSWritingToolsCoordinator.Context(
+            attributedString: NSAttributedString(string: string, attributes: [.font: font]), range: span.range)
+        writingTools.origins = [context.identifier: span.origin]
+        return [context]
+    }
+
+    /// Apply a replacement through core, and answer with what went in — or
+    /// nil, for a rewrite refused because it would take the markup of the
+    /// blocks it spans with it (see `writingToolsEdits`).
+    func writingToolsReplace(_ range: NSRange, in context: NSWritingToolsCoordinator.Context,
+                             with text: NSAttributedString) -> NSAttributedString? {
+        guard !isReadOnly, let origin = writingTools.origins[context.identifier] else { return nil }
+        openWritingToolsGroup()
+        writingTools.applying = true
+        defer { writingTools.applying = false }
+        guard let result = doc.applyWritingTools(range, origin: origin, text: text.string) else { return nil }
+        render(result.view)
+        return result.applied == text.string ? text : NSAttributedString(string: result.applied)
+    }
+
+    func writingToolsSelect(_ ranges: [NSValue], in context: NSWritingToolsCoordinator.Context) {
+        guard let origin = writingTools.origins[context.identifier], let range = ranges.first?.rangeValue else { return }
+        let (from, to) = doc.writingToolsBytes(range, origin: origin)
+        render(doc.selectRange(start: UInt32(from), end: UInt32(max(from, to))))
+    }
+
+    /// The boxes a range of a context occupies, in layout coordinates.
+    func writingToolsBoxes(_ range: NSRange, in context: NSWritingToolsCoordinator.Context) -> [CGRect] {
+        guard let origin = writingTools.origins[context.identifier] else { return [] }
+        let (from, to) = byteBounds(WritingToolsText.visibleRange(range, origin: origin))
+        return rangeRects(fromByte: from, toByte: to).filter { $0.width > 0 }
+    }
+
+    /// The paths around a suggestion, in this view's coordinates — it is the
+    /// coordinator's decoration container.
+    func writingToolsBoundingPaths(_ range: NSRange, in context: NSWritingToolsCoordinator.Context) -> [NSBezierPath] {
+        writingToolsBoxes(range, in: context).map { NSBezierPath(rect: viewRect($0)) }
+    }
+
+    /// A proofreading mark's underline: a thin bar along the foot of each box.
+    func writingToolsUnderlinePaths(_ range: NSRange, in context: NSWritingToolsCoordinator.Context) -> [NSBezierPath] {
+        writingToolsBoxes(range, in: context).map {
+            let r = viewRect($0)
+            return NSBezierPath(rect: CGRect(x: r.minX, y: r.maxY - 2, width: r.width, height: 1.5))
+        }
+    }
+
+    private func writingToolsEffectKey(_ animation: NSWritingToolsCoordinator.TextAnimation, _ range: NSRange,
+                                       _ context: NSWritingToolsCoordinator.Context) -> String {
+        WritingToolsSession.effectKey(animation.rawValue, range, context.identifier)
+    }
+
+    /// Hide the text an animation plays over, or grey it while Writing Tools
+    /// waits, until `writingToolsFinish` shows it again.
+    func writingToolsPrepare(_ animation: NSWritingToolsCoordinator.TextAnimation, for range: NSRange,
+                             in context: NSWritingToolsCoordinator.Context) {
+        guard let origin = writingTools.origins[context.identifier] else { return }
+        var visible = WritingToolsText.visibleRange(range, origin: origin)
+        if animation == .translate {
+            // Everything after the insertion point makes room for what comes.
+            visible.length = max(0, (fullText() as NSString).length - visible.location)
+        }
+        writingTools.effects[writingToolsEffectKey(animation, range, context)] =
+            (visible, animation == .anticipateInactive)
+        needsDisplay = true
+    }
+
+    func writingToolsFinish(_ animation: NSWritingToolsCoordinator.TextAnimation, for range: NSRange,
+                            in context: NSWritingToolsCoordinator.Context) {
+        writingTools.effects[writingToolsEffectKey(animation, range, context)] = nil
+        needsDisplay = true
+    }
+
+    /// The range's words as an image, placed over them, with their line boxes.
+    func writingToolsPreviews(of range: NSRange, in context: NSWritingToolsCoordinator.Context) -> [NSTextPreview]? {
+        let boxes = writingToolsBoxes(range, in: context)
+        guard let (image, frame) = snapshotText(clippedTo: boxes) else { return nil }
+        return [NSTextPreview(snapshotImage: image, presentationFrame: frame,
+                              candidateRects: boxes.map { NSValue(rect: viewRect($0)) })]
+    }
+
+    /// The words inside `rect` (view coordinates) as an image.
+    func writingToolsPreview(for rect: NSRect) -> NSTextPreview? {
+        guard let (image, frame) = snapshotText(clippedTo: [layoutRect(rect)]) else { return nil }
+        return NSTextPreview(snapshotImage: image, presentationFrame: frame, candidateRects: [NSValue(rect: frame)])
+    }
+
+    /// A session is one undo step: the group opens as the coordinator leaves
+    /// `inactive` and closes as it comes back — accepting every suggestion,
+    /// or a rewrite, is then one ⌘Z.
+    func writingToolsWillChange(to state: NSWritingToolsCoordinator.State) {
+        if state == .inactive {
+            closeWritingToolsGroup()
+            writingTools.effects.removeAll()
+            needsDisplay = true
+        } else if !isReadOnly {
+            openWritingToolsGroup()
+        }
+    }
+}
+
+/// The coordinator's delegate: every answer comes from the view. A class of
+/// its own rather than the view's conformance, since the protocol is newer
+/// than the package's floor. The coordinator calls it on the main thread.
+@available(macOS 15.2, *)
+final class LeafWritingToolsDelegate: NSObject, NSWritingToolsCoordinator.Delegate {
+    typealias Coordinator = NSWritingToolsCoordinator
+
+    weak var view: LeafTextView?
+
+    init(view: LeafTextView) { self.view = view }
+
+    private func onView<T>(_ fallback: T, _ body: @MainActor (LeafTextView) -> T) -> T {
+        MainActor.assumeIsolated { view.map(body) ?? fallback }
+    }
+
+    func writingToolsCoordinator(_ writingToolsCoordinator: Coordinator, requestsContextsFor scope: Coordinator.ContextScope,
+                                 completion: @escaping @Sendable ([Coordinator.Context]) -> Void) {
+        completion(onView([]) { $0.writingToolsContexts(for: scope) })
+    }
+
+    func writingToolsCoordinator(_ writingToolsCoordinator: Coordinator, replace range: NSRange, in context: Coordinator.Context,
+                                 proposedText replacementText: NSAttributedString, reason: Coordinator.TextReplacementReason,
+                                 animationParameters: Coordinator.AnimationParameters?,
+                                 completion: @escaping @Sendable (NSAttributedString?) -> Void) {
+        completion(onView(nil) { $0.writingToolsReplace(range, in: context, with: replacementText) })
+    }
+
+    func writingToolsCoordinator(_ writingToolsCoordinator: Coordinator, select ranges: [NSValue], in context: Coordinator.Context,
+                                 completion: @escaping @Sendable () -> Void) {
+        onView(()) { $0.writingToolsSelect(ranges, in: context) }
+        completion()
+    }
+
+    func writingToolsCoordinator(_ writingToolsCoordinator: Coordinator, requestsBoundingBezierPathsFor range: NSRange,
+                                 in context: Coordinator.Context, completion: @escaping @Sendable ([NSBezierPath]) -> Void) {
+        completion(onView([]) { $0.writingToolsBoundingPaths(range, in: context) })
+    }
+
+    func writingToolsCoordinator(_ writingToolsCoordinator: Coordinator, requestsUnderlinePathsFor range: NSRange,
+                                 in context: Coordinator.Context, completion: @escaping @Sendable ([NSBezierPath]) -> Void) {
+        completion(onView([]) { $0.writingToolsUnderlinePaths(range, in: context) })
+    }
+
+    func writingToolsCoordinator(_ writingToolsCoordinator: Coordinator, prepareFor textAnimation: Coordinator.TextAnimation,
+                                 for range: NSRange, in context: Coordinator.Context,
+                                 completion: @escaping @Sendable () -> Void) {
+        onView(()) { $0.writingToolsPrepare(textAnimation, for: range, in: context) }
+        completion()
+    }
+
+    func writingToolsCoordinator(_ writingToolsCoordinator: Coordinator, requestsPreviewFor textAnimation: Coordinator.TextAnimation,
+                                 of range: NSRange, in context: Coordinator.Context,
+                                 completion: @escaping @Sendable ([NSTextPreview]?) -> Void) {
+        completion(onView(nil) { $0.writingToolsPreviews(of: range, in: context) })
+    }
+
+    func writingToolsCoordinator(_ writingToolsCoordinator: Coordinator, requestsPreviewFor rect: NSRect,
+                                 in context: Coordinator.Context, completion: @escaping @Sendable (NSTextPreview?) -> Void) {
+        completion(onView(nil) { $0.writingToolsPreview(for: rect) })
+    }
+
+    func writingToolsCoordinator(_ writingToolsCoordinator: Coordinator, finish textAnimation: Coordinator.TextAnimation,
+                                 for range: NSRange, in context: Coordinator.Context,
+                                 completion: @escaping @Sendable () -> Void) {
+        onView(()) { $0.writingToolsFinish(textAnimation, for: range, in: context) }
+        completion()
+    }
+
+    func writingToolsCoordinator(_ writingToolsCoordinator: Coordinator, willChangeTo newState: Coordinator.State,
+                                 completion: @escaping @Sendable () -> Void) {
+        onView(()) { $0.writingToolsWillChange(to: newState) }
+        completion()
+    }
+}
+extension LeafTextView: RegionSlotOwner {
+    var shownFrame: DocView { docView }
+    var regionLayout: EditorLayout { layoutEngine }
+    var regionTheme: EditorTheme { theme }
+    func regionViewRect(_ rect: CGRect) -> CGRect { viewRect(rect) }
+
+    func regionMarksChanged() {
+        needsDisplay = true
+        resetBlink()
+        inputContext?.invalidateCharacterCoordinates()
+    }
+
+    func regionAnnounce(_ value: String) {
+        NSAccessibility.post(element: self, notification: .announcementRequested, userInfo: [
+            .announcement: value,
+            .priority: NSAccessibilityPriorityLevel.medium.rawValue,
+        ])
+    }
+
+    /// The caret leaf shows, in layout coordinates: an open picture session's,
+    /// where it says; none for a region with a view of its own; else the
+    /// document's.
+    var shownCaretRect: CGRect? {
+        regionSlot.isOpen ? regionSlot.caretRect() : layoutEngine.caretRect(docView, theme: theme)
+    }
+
+    /// An input method's composition in the open region, drawn at its caret
+    /// over the picture: the marked text on the page's colour, underlined.
+    func drawRegionComposition(in ctx: CGContext) {
+        guard let marked = regionSlot.marked, let caret = regionSlot.caretRect() else { return }
+        let font = NSFont.systemFont(ofSize: max(8, caret.height * 0.8))
+        let text = NSAttributedString(string: marked.text, attributes: [
+            .font: font, .foregroundColor: theme.textColor,
+            .underlineStyle: NSUnderlineStyle.single.rawValue,
+        ])
+        let size = text.size()
+        let box = CGRect(x: caret.minX, y: caret.midY - size.height / 2, width: size.width, height: size.height)
+        ctx.setFillColor(theme.pageColor.cgColor)
+        ctx.fill(box.insetBy(dx: -2, dy: 0))
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = NSGraphicsContext(cgContext: ctx, flipped: true)
+        text.draw(at: box.origin)
+        NSGraphicsContext.restoreGraphicsState()
+    }
+    func regionRender(_ frame: DocView) { render(frame) }
+    func focusDocument() { window?.makeFirstResponder(self) }
+    func regionHistory(redo: Bool) {
+        if redo { historyManager.redo() } else { historyManager.undo() }
+    }
+    func relayout() { render(docView, keepVerticalGoal: true, reflow: true) }
+
+    func regionPicturesArrived(_ kinds: Set<String>) {
+        // Only from the first region of an arrived kind down: the rows above
+        // it are as they were.
+        guard let first = docView.regions.filter({ kinds.contains($0.kind) }).map({ Int($0.startRow) }).min()
+        else { return }
+        render(docView, keepVerticalGoal: true, picturesFrom: first)
+    }
+}
+#endif

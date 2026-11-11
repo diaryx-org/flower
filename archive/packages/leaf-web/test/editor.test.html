@@ -1,0 +1,2974 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>leaf-web · tests</title>
+<style>
+  body { font: 13px/1.5 ui-monospace, Menlo, monospace; margin: 0; padding: 16px 20px;
+    background: #14161b; color: #d7dce5; }
+  h1 { font-size: 15px; margin: 0 0 12px; }
+  #summary { padding: 6px 10px; border-radius: 6px; margin-bottom: 12px; font-weight: 700; }
+  #summary.pass { background: #1d3f34; color: #7fd1c1; }
+  #summary.fail { background: #45222a; color: #ff9d9d; }
+  li { list-style: none; }
+  li.pass::before { content: "ok   "; color: #7fd1c1; }
+  li.fail::before { content: "FAIL "; color: #ff8888; }
+  li.fail { color: #ff9d9d; }
+  .why { color: #8b93a3; padding-left: 5ch; }
+  /* The editor mounts here. Given a real size, because the wrap-fitting tests
+     measure it — a zero-width box would make every one of them vacuous. */
+  #mount { width: 700px; height: 320px; margin-top: 16px; outline: 1px dashed #333; }
+</style>
+</head>
+<body>
+<h1>leaf-web · editor tests</h1>
+<div id="summary">running…</div>
+<!-- The mount sits above the results, not below them: the list grows a line
+     per test, and a mount under it drifts down the page until — some forty
+     tests in — its rows are below the headless window, where a test that
+     drops or clicks at a point finds nothing there. -->
+<div id="mount"></div>
+<ul id="results"></ul>
+
+<script type="module">
+// Tests for the half of leaf-web that Rust cannot reach: the DOM projection and
+// the input plumbing. They run in a real browser against the real wasm, because
+// that is the only place a `TreeWalker`, a `Range`, a native selection, and a
+// laid-out proportional font all behave the way the editor depends on. A stub
+// DOM would mostly be testing the stub.
+//
+// Run with `cargo xtask web --test`, which serves this page and opens it. The
+// page reports into `document.title` and `window.__results` as well as on
+// screen, so an automated driver can read the outcome without scraping.
+import {
+  LeafEditor,
+  MARK_COLORS,
+  ALIGNMENTS,
+  LINE_SPACINGS,
+  SIZE_STEPS,
+  FONT_FAMILIES,
+  PRESENTATION_CSS,
+} from "../src/index.js";
+
+const results = [];
+const list = document.getElementById("results");
+
+function record(name, error) {
+  results.push({ name, ok: !error, error: error ? String(error.message || error) : null });
+  const li = document.createElement("li");
+  li.className = error ? "fail" : "pass";
+  li.textContent = name;
+  list.appendChild(li);
+  if (error) {
+    const why = document.createElement("div");
+    why.className = "why";
+    why.textContent = String(error.message || error);
+    list.appendChild(why);
+  }
+}
+
+async function test(name, fn) {
+  let ed = null;
+  try {
+    ed = await fn();
+    record(name, null);
+  } catch (e) {
+    record(name, e);
+  } finally {
+    try { ed?.destroy?.(); } catch { /* a test that failed mid-construction */ }
+  }
+}
+
+function assert(cond, msg) {
+  if (!cond) throw new Error(msg || "assertion failed");
+}
+function eq(actual, expected, msg) {
+  const a = JSON.stringify(actual), b = JSON.stringify(expected);
+  if (a !== b) throw new Error((msg ? msg + ": " : "") + `expected ${b}, got ${a}`);
+}
+
+/** A fresh editor on the shared mount, so each test starts from a clean surface. */
+function editor(source, opts = {}) {
+  const mount = document.getElementById("mount");
+  mount.innerHTML = "";
+  return new LeafEditor(mount, { source, format: "markdown", ...opts });
+}
+
+/** Put the browser's selection at a DOM point, as a click would. */
+function place(node, offset) {
+  const r = document.createRange();
+  r.setStart(node, offset);
+  r.collapse(true);
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(r);
+}
+
+/** The first text node inside a run of `el`. */
+function firstText(el) {
+  const t = el.querySelector(".leaf-run");
+  assert(t, "no run inside the element");
+  return t.firstChild;
+}
+
+/** Dispatch a real editing intent, the way a keystroke does. */
+function input(ed, inputType, data) {
+  return ed.contentEl.dispatchEvent(
+    new InputEvent("beforeinput", { inputType, data, bubbles: true, cancelable: true })
+  );
+}
+
+const TABLE_DOC = [
+  "# Grid",
+  "",
+  "| Frontend | Draws | Align |",
+  "|---|---|:-:|",
+  "| leaf-tui | picture | a |",
+  "| leaf-web | its own | b |",
+  "",
+  "After the table.",
+  "",
+].join("\n");
+
+await LeafEditor.init();
+
+// ── the projection ────────────────────────────────────────────────────────
+
+await test("a table renders as a grid, not as box glyphs", () => {
+  const ed = editor(TABLE_DOC);
+  const table = ed.contentEl.querySelector("table.leaf-table");
+  assert(table, "no <table> was built");
+  eq(table.rows.length, 3, "header plus two body rows");
+  eq([...table.rows[0].cells].map((c) => c.tagName), ["TH", "TH", "TH"]);
+  eq([...table.rows[1].cells].map((c) => c.textContent), ["leaf-tui", "picture", "a"]);
+  assert(
+    !/[┌│├└┬┴┼─]/.test(ed.contentEl.textContent),
+    "the monospace picture is still being painted alongside the grid"
+  );
+  return ed;
+});
+
+await test("a column's alignment reaches the cell", () => {
+  const ed = editor(TABLE_DOC);
+  const head = ed.contentEl.querySelector("table.leaf-table").rows[0];
+  eq([...head.cells].map((c) => c.style.textAlign || "-"), ["-", "-", "center"]);
+  return ed;
+});
+
+await test("a repaint replaces the grid rather than stacking another under it", () => {
+  const ed = editor(TABLE_DOC);
+  eq(ed.contentEl.querySelectorAll("table").length, 1, "after the first paint");
+  ed.render(ed.doc.view());
+  ed.render(ed.doc.view());
+  eq(ed.contentEl.querySelectorAll("table").length, 1, "after three paints");
+  return ed;
+});
+
+// ── reuse across frames ───────────────────────────────────────────────────
+
+await test("an edit rebuilds the rows it touched and keeps the rest", () => {
+  const ed = editor("first paragraph\n\nsecond paragraph\n\nthird paragraph\n");
+  const rows = ed._lastView.rows;
+  const first = ed.rowEls[0];
+  const lastIdx = rows.length - 1;
+  const last = ed.rowEls[lastIdx];
+  const midIdx = rows.findIndex((r) => r.runs.some((x) => x.text.includes("second")));
+  const mid = ed.rowEls[midIdx];
+  place(firstText(mid), 6);
+  ed._syncFromDom();
+  input(ed, "insertText", "X");
+  assert(ed.source().includes("secondX"), "the edit did not land");
+  assert(ed.rowEls[0] === first, "the untouched first row was rebuilt");
+  assert(ed.rowEls[lastIdx] === last, "the untouched last row was rebuilt");
+  assert(ed.rowEls[midIdx] !== mid, "the edited row was not rebuilt");
+  eq(ed.rowEls[midIdx].textContent, "secondX paragraph");
+  // The reused row's runs still know where they come from, one byte on.
+  const span = last.querySelector(".leaf-run");
+  eq(ed.source().slice(span._src, span._src + 5), "third", "a reused run's offset went stale");
+  return ed;
+});
+
+await test("moving the selection changes no row", () => {
+  const ed = editor("one **two** three\n\nfour\n");
+  const before = [...ed.rowEls];
+  ed.selectAll();
+  assert(ed._lastView.has_selection, "select-all did not select");
+  ed.render(ed.doc.view());
+  assert(before.every((el, i) => ed.rowEls[i] === el), "a selection split rebuilt a row");
+  // And the selection is still one run to the DOM, not the halves core cut.
+  eq(ed.rowEls[0].querySelectorAll(".leaf-run").length, 3, "runs: body, bold, body");
+  return ed;
+});
+
+await test("a picture survives an edit above it", () => {
+  const ed = editor("before\n\n![a leaf](leaf.svg)\n\nafter\n");
+  const img = ed.contentEl.querySelector("img.leaf-media");
+  assert(img, "no image was built");
+  place(firstText(ed.rowEls[0]), 3);
+  ed._syncFromDom();
+  input(ed, "insertText", "Z");
+  assert(ed.contentEl.querySelector("img.leaf-media") === img, "the image was rebuilt");
+  return ed;
+});
+
+await test("a code block's edges follow the block as it shrinks", () => {
+  const ed = editor("prose\n\n```\nalpha\nbeta\n```\n\nafter\n");
+  const rows = ed._lastView.rows;
+  const alphaIdx = rows.findIndex((r) => r.code && r.runs.some((x) => x.text === "alpha"));
+  const betaIdx = rows.findIndex((r) => r.code && r.runs.some((x) => x.text === "beta"));
+  assert(alphaIdx > 0 && betaIdx > alphaIdx, "the code rows were not found");
+  const alpha = ed.rowEls[alphaIdx];
+  assert(!alpha.classList.contains("code-last"), "alpha was already the last line");
+  // Select from the end of alpha to the end of beta and delete: alpha becomes
+  // the block's last line, so its bottom edge has to move onto it — a row
+  // whose own text did not change, only what stands next to it.
+  ed.render(ed.doc.set_selection(alphaIdx, 5, betaIdx, 4));
+  input(ed, "deleteContentBackward");
+  assert(/```\nalpha\n```/.test(ed.source()), `beta was not removed: ${ed.source()}`);
+  const firsts = ed.contentEl.querySelectorAll(".code-first");
+  const lasts = ed.contentEl.querySelectorAll(".code-last");
+  eq(firsts.length, 1, "one first edge");
+  eq(lasts.length, 1, "one last edge");
+  assert(lasts[0].textContent === "alpha", "the last edge did not move up to alpha");
+  return ed;
+});
+
+await test("a code block's edges follow the block as it grows", () => {
+  // The other direction, and the one that found a core bug: Return at the end
+  // of the block's last line writes an empty line CommonMark keeps as content,
+  // and core used to lay out no row for it — the caret landed on `after` and
+  // the next keystroke went into the paragraph below. The block grows by a row
+  // and its bottom edge moves down onto the empty one.
+  const ed = editor("prose\n\n```\nalpha\nbeta\n```\n\nafter\n");
+  const rows = ed._lastView.rows;
+  const betaIdx = rows.findIndex((r) => r.code && r.runs.some((x) => x.text === "beta"));
+  assert(betaIdx > 0, "the code rows were not found");
+  const codeBefore = rows.filter((r) => r.code).length;
+
+  ed.render(ed.doc.set_selection(betaIdx, 4, betaIdx, 4));
+  input(ed, "insertParagraph");
+  assert(/```\nalpha\nbeta\n\n```/.test(ed.source()), `no empty line was made: ${ed.source()}`);
+  eq(ed._lastView.rows.filter((r) => r.code).length, codeBefore + 1, "the block did not grow");
+
+  const lasts = ed.contentEl.querySelectorAll(".code-last");
+  eq(ed.contentEl.querySelectorAll(".code-first").length, 1, "one first edge");
+  eq(lasts.length, 1, "one last edge");
+  eq(lasts[0].textContent, "", "the last edge did not move down onto the empty line");
+
+  // And the caret is on that row, so what is typed next is code.
+  input(ed, "insertText", "gamma");
+  assert(
+    /```\nalpha\nbeta\ngamma\n```/.test(ed.source()),
+    `typing did not land in the block: ${ed.source()}`
+  );
+  return ed;
+});
+
+// ── the frame crosses the boundary as a change ────────────────────────────
+
+/** A document of `paragraphs` paragraphs — two rows each, the gap included. */
+function longDocument(paragraphs) {
+  let out = "";
+  for (let i = 0; i < paragraphs; i++) {
+    out += `paragraph ${i} carries \`code\` and **bold** and a [link](https://example.org/${i}) in it\n\n`;
+  }
+  return out;
+}
+
+/** The frames core answered `ed`'s gestures with, before `_whole` applied
+ *  them — what crossed the boundary, as distinct from what was painted. */
+function crossings(ed) {
+  const raw = [];
+  const whole = ed._whole.bind(ed);
+  ed._whole = (view) => { raw.push(view); return whole(view); };
+  return raw;
+}
+
+await test("a keystroke on a long document lifts the rows it changed, not the document", () => {
+  const ed = editor(longDocument(1800));
+  const total = ed._lastView.rows.length;
+  assert(total >= 3600, `${total} rows`);
+  const raw = crossings(ed);
+  const mid = ed.rowEls[Math.floor(total / 2)];
+  place(firstText(mid), 4);
+  ed._syncFromDom();
+  raw.length = 0;
+  input(ed, "insertText", "X");
+  const typed = raw.at(-1);
+  assert(typed.basis > 0, "the keystroke's frame is a change, not a whole frame");
+  eq(typed.rows.length, 1, "the keystroke lifted its own row");
+  eq(typed.replaced, 1);
+  eq(typed.row_count, total);
+  eq(typed.src_shift, 1, "every row below moved one byte");
+  eq(ed._lastView.rows.length, total, "the frame painted is still the whole document");
+  assert(ed._lastView.rows.some((r) => r.runs.some((x) => x.text.includes("X"))), "the edit is in the rows");
+  // A row below the edit still knows where it comes from, one byte on.
+  const lastIdx = ed._lastView.rows.findLastIndex((r) => r.runs.some((x) => x.text.startsWith("paragraph")));
+  const last = ed.rowEls[lastIdx].querySelector(".leaf-run");
+  eq(ed.source().slice(last._src, last._src + 14), "paragraph 1799", "a kept run's offset went stale");
+  // And a caret move lifts no row at all.
+  raw.length = 0;
+  ed.render(ed.doc.move_up(false));
+  eq(raw.at(-1).rows.length, 0, "a caret move lifted a row");
+  eq(raw.at(-1).basis, typed.frame);
+  return ed;
+});
+
+await test("an edit that shows no row still moves the rows below it and reaches the host", () => {
+  // A comment pasted between two paragraphs is source with no row to show:
+  // the frame lifts no row and replaces none, and says only how far the
+  // rows below moved. The host still hears of the edit, and a kept run
+  // still knows where it comes from, the comment's length on.
+  let state = null;
+  const ed = editor("first paragraph\n\nsecond paragraph\n", { onChange: (s) => { state = s; } });
+  const raw = crossings(ed);
+  const lastIdx = ed._lastView.rows.findIndex((r) => r.runs.some((x) => x.text.includes("second")));
+  const last = ed.rowEls[lastIdx];
+  place(firstText(last), 0);
+  ed._syncFromDom();
+  state = null;
+  ed.render(ed.doc.paste("<!-- c -->\n\n"));
+  const pasted = raw.at(-1);
+  assert(pasted.basis > 0, "the paste's frame is a change");
+  eq(pasted.rows.length, 0, "the comment shows no row");
+  eq(pasted.replaced, 0);
+  eq(pasted.src_shift, 12, "the paragraph below moved by the comment's length");
+  assert(ed.source().includes("<!-- c -->"), "the paste did not land");
+  assert(state && state.dirty, "the host was not told of the edit");
+  assert(ed.rowEls[lastIdx] === last, "the row below was rebuilt");
+  const span = last.querySelector(".leaf-run");
+  eq(ed.source().slice(span._src, span._src + 6), "second", "a kept run's offset went stale");
+  return ed;
+});
+
+// The count is the measure rather than a clock: the headless driver runs the
+// page under a virtual-time budget, where `performance.now()` stands still.
+// What the lift costs per row is the binding's, and the same for every row;
+// how many rows cross is what this package decides.
+await test("what a keystroke lifts does not grow with the document", () => {
+  const lifted = (paragraphs) => {
+    const ed = editor(longDocument(paragraphs));
+    const raw = crossings(ed);
+    place(firstText(ed.rowEls[2]), 4);
+    ed._syncFromDom();
+    raw.length = 0;
+    input(ed, "insertText", "Y");
+    const rows = raw.at(-1).rows.length;
+    ed.destroy();
+    return rows;
+  };
+  const small = lifted(200);
+  const large = lifted(2000);
+  eq(large, small, "the rows lifted grew with the document");
+  assert(small <= 2, `${small} rows lifted for one keystroke`);
+  return null;
+});
+
+await test("a change against a frame the editor dropped is made whole again", () => {
+  const ed = editor("one\n\ntwo\n\nthree\n");
+  const total = ed._lastView.rows.length;
+  // A frame taken from core and never painted: the editor's copy is now a
+  // frame behind, and the next change names a basis it does not hold.
+  ed.doc.move_right(false);
+  const raw = crossings(ed);
+  ed.render(ed.doc.insert("Q"));
+  assert(raw.at(-1).basis > 0, "the frame was a change");
+  eq(ed._lastView.rows.length, total, "the rows are whole again");
+  eq(ed._lastView.basis, 0);
+  eq(ed.rowEls[0].textContent, "oQne", "and painted from a whole frame asked of core");
+  // From here every change applies again.
+  raw.length = 0;
+  input(ed, "insertText", "R");
+  eq(raw.at(-1).rows.length, 1);
+  eq(ed.rowEls[0].textContent, "oQRne");
+  return ed;
+});
+
+await test("a loaded document starts its frames afresh", () => {
+  const ed = editor("first\n");
+  ed.load("alpha\n\nbeta\n");
+  eq(ed._lastView.rows.length, 3);
+  input(ed, "insertText", "Z");
+  eq(ed.rowEls[0].textContent, "Zalpha");
+  return ed;
+});
+
+// ── the caret, in and out of a grid ───────────────────────────────────────
+
+await test("a point in a cell maps to the source byte under it", () => {
+  const ed = editor(TABLE_DOC);
+  const line = ed.cellLines.find((l) => l.el.textContent.includes("leaf-web"));
+  assert(line, "no cell line for the second body row");
+  place(firstText(line.el), 4);
+  assert(ed._syncFromDom(), "the selection did not map into core");
+  const src = ed._lastView.caret_src;
+  eq(ed.source().slice(src - 4, src), "leaf", "the caret is not after 'leaf'");
+  return ed;
+});
+
+await test("typing in a cell edits that cell and leaves the caret in it", () => {
+  const ed = editor(TABLE_DOC);
+  const line = ed.cellLines.find((l) => l.el.textContent.includes("leaf-web"));
+  place(firstText(line.el), 4);
+  ed._syncFromDom();
+  input(ed, "insertText", "X");
+
+  assert(ed.source().includes("| leafX-web |"), "the edit did not land in the cell");
+  const cells = [...ed.contentEl.querySelector("table.leaf-table").rows[2].cells];
+  eq(cells.map((c) => c.textContent), ["leafX-web", "its own", "b"]);
+
+  const sel = window.getSelection();
+  assert(
+    sel.focusNode?.parentElement?.closest(".leaf-cell-line"),
+    "the caret was not restored inside the cell"
+  );
+  return ed;
+});
+
+await test("a caret placed by core round-trips back out of the DOM", () => {
+  const ed = editor(TABLE_DOC);
+  const line = ed.cellLines.find((l) => l.el.textContent.includes("picture"));
+  place(firstText(line.el), 3);
+  ed._syncFromDom();
+  const src = ed._lastView.caret_src;
+  // Repaint from the model, then read the browser's selection back: the two
+  // descriptions of a table have to agree about where the caret is.
+  ed.render(ed.doc.view());
+  assert(ed._syncFromDom(), "the restored selection did not map back");
+  eq(ed._lastView.caret_src, src, "the caret moved across a repaint");
+  return ed;
+});
+
+await test("Tab in a grid walks the cells; outside it indents", () => {
+  const ed = editor(TABLE_DOC);
+  const line = ed.cellLines.find((l) => l.el.textContent.includes("leaf-tui"));
+  place(firstText(line.el), 2);
+  ed._syncFromDom();
+  const before = ed._lastView.caret_src;
+  ed.render(ed.doc.cell_tab(true) ?? ed.doc.indent());
+  const after = ed._lastView.caret_src;
+  assert(after !== before, "Tab did not move the caret out of the cell");
+  assert(ed.doc.caret_in_table(), "Tab left the table entirely");
+  // Outside a table there is no cell to step to, so core declines and the
+  // ordinary meaning is what is left.
+  const plain = editor("- an item\n");
+  eq(plain.doc.cell_tab(true), undefined, "cell_tab answered outside a table");
+  plain.destroy();
+  return ed;
+});
+
+await test("typing in a cell far down the document keeps the viewport where it was", () => {
+  let src = "";
+  for (let i = 0; i < 80; i++) src += `paragraph ${i}\n\n`;
+  const ed = editor(src + "| a | b |\n|---|---|\n| leaf-web | x |\n\nafter\n");
+  const mount = document.getElementById("mount");
+  const line = ed.cellLines.find((l) => l.el.textContent.includes("leaf-web"));
+  place(firstText(line.el), 2);
+  ed._syncFromDom();
+  mount.scrollTop = mount.scrollHeight;
+  const before = mount.scrollTop;
+  assert(before > 0, "the mount did not scroll");
+  input(ed, "insertText", "Z");
+  assert(ed.source().includes("leZaf-web"), "the edit did not land");
+  // The row core names for the caret is the picture row, which is not in the
+  // document; scrolling to its (zero) offset sent the viewport to the top.
+  assert(mount.scrollTop > before * 0.5, `the viewport jumped to ${mount.scrollTop} from ${before}`);
+  return ed;
+});
+
+// ── media rows ────────────────────────────────────────────────────────────
+
+await test("a media row has a caret stop on each side of the picture", () => {
+  const ed = editor("before\n\n![a leaf](leaf.svg)\n\nafter\n");
+  const media = (ed._lastView.media || [])[0];
+  assert(media, "core reserved no media row");
+  const rowEl = ed.rowEls[media.row];
+  const zwsps = [...rowEl.childNodes].filter((n) => n.nodeType === 3);
+  eq(zwsps.length, 2, "the caret homes either side of the element");
+
+  // Core's two columns are the row's two ends, and each maps to a distinct
+  // place in the DOM — the failure this replaced put both at the same one.
+  const coreLen = Number(rowEl.dataset.leafCoreLen);
+  assert(coreLen > 0, "the row's core length was not recorded");
+  const near = ed._domPoint(zwsps[0], 0);
+  const far = ed._domPoint(zwsps[1], 1);
+  eq(near.ch, 0, "the near stop");
+  eq(far.ch, coreLen, "the far stop");
+  assert(near.ch !== far.ch, "both stops collapsed onto one position");
+  return ed;
+});
+
+// ── the wrap budget ───────────────────────────────────────────────────────
+
+await test("ordinary prose does not overflow the measure", () => {
+  // Capitals and inline code are what the average-glyph estimate gets wrong.
+  const ed = editor(
+    "THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG and `some_inline_code_here` " +
+      "and more WORDS IN CAPITALS to push the line past the measure it was given.\n"
+  );
+  const avail = ed._availWidth();
+  const widest = Math.max(
+    ...ed.rowEls.filter((r) => r.isConnected).map((r) => r.scrollWidth)
+  );
+  assert(widest <= avail + 1, `a row is ${widest}px in a ${avail}px measure`);
+  assert(!ed._acceptedOverflow, "the fit gave up on wrappable prose");
+  return ed;
+});
+
+await test("one unwrappable word scrolls without narrowing the document", () => {
+  const long = "W".repeat(120);
+  const ed = editor(`some ordinary prose to set the measure by, and then ${long} after it.\n`);
+  // It cannot be made to fit — but the budget must not be dragged down chasing
+  // it, so the rest of the document keeps a measure close to the full width.
+  const avail = ed._availWidth();
+  const rows = ed.rowEls.filter((r) => r.isConnected && r.scrollWidth <= avail + 1);
+  const widestFitting = Math.max(0, ...rows.map((r) => r.scrollWidth));
+  assert(
+    widestFitting > avail * 0.5,
+    `the measure collapsed to ${widestFitting}px of ${avail}px`
+  );
+  return ed;
+});
+
+// ── clickable things ──────────────────────────────────────────────────────
+
+await test("clicking a task box ticks it", () => {
+  const ed = editor("- [ ] not yet\n- [x] already\n");
+  const box = [...ed.contentEl.querySelectorAll(".leaf-r-list")].find((e) =>
+    /^[☐☑]/.test(e.textContent)
+  );
+  assert(box, "no checkbox was drawn");
+  box.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+  assert(ed.source().startsWith("- [x] not yet"), `not ticked: ${ed.source()}`);
+  return ed;
+});
+
+await test("a click under the last row lands on a fresh paragraph, wherever it is horizontally", () => {
+  const ed = editor("first\n\n```\ncode\n```\n");
+  const rows = ed.contentEl.querySelectorAll(".leaf-row");
+  const last = rows[rows.length - 1].getBoundingClientRect();
+  // Well under the last row, and far to the right — where a caret placed at
+  // the pointer's x would have gone to the end of the code line.
+  ed.contentEl.dispatchEvent(new MouseEvent("mousedown", {
+    bubbles: true, cancelable: true, button: 0, detail: 1,
+    clientX: last.right - 4, clientY: last.bottom + 40,
+  }));
+  eq(ed.source(), "first\n\n```\ncode\n```\n\n", "no paragraph was opened under the fence");
+  // A second click under it finds the paragraph already there and opens
+  // nothing more.
+  const rows2 = ed.contentEl.querySelectorAll(".leaf-row");
+  const last2 = rows2[rows2.length - 1].getBoundingClientRect();
+  ed.contentEl.dispatchEvent(new MouseEvent("mousedown", {
+    bubbles: true, cancelable: true, button: 0, detail: 1,
+    clientX: last2.left + 2, clientY: last2.bottom + 40,
+  }));
+  eq(ed.source(), "first\n\n```\ncode\n```\n\n", "a click on the paragraph already there wrote something");
+  input(ed, "insertText", "after");
+  eq(ed.source(), "first\n\n```\ncode\n```\n\nafter", "typing did not land in the new paragraph");
+  return ed;
+});
+
+await test("the code block command fences the caret's paragraph and lights the state", () => {
+  const ed = editor("plain\n");
+  let state = null;
+  ed.onChange((s) => { state = s; });
+  ed.toggleCodeBlock();
+  eq(ed.source(), "```\nplain\n```\n", "the paragraph was not fenced");
+  eq(state && state.codeBlock, true, "the state did not light for a caret in the block");
+  ed.toggleCodeBlock();
+  eq(ed.source(), "plain\n", "a second press did not unfence");
+  eq(state && state.codeBlock, false, "the state stayed lit outside the block");
+  return ed;
+});
+
+await test("the task commands box the caret's item and the state says which way it faces", () => {
+  const ed = editor("- plain\n");
+  let state = null;
+  ed.onChange((s) => { state = s; });
+  ed.toggleTaskItem();
+  eq(ed.source(), "- [ ] plain\n", "the item got no box");
+  eq(state && state.task, false, "the state did not say the new box is empty");
+  ed.toggleTaskChecked();
+  eq(ed.source(), "- [x] plain\n", "the box was not ticked");
+  eq(state && state.task, true, "the state did not say the box is ticked");
+  ed.toggleTaskItem();
+  eq(ed.source(), "- plain\n", "the box was not taken away");
+  eq(state && state.task, null, "the state still claims a box");
+  return ed;
+});
+
+await test("a link follows only with the platform modifier held", () => {
+  const ed = editor("see [the docs](https://example.com/x) now\n");
+  let followed = null;
+  ed.onFollowLink((d) => { followed = d; });
+  const link = ed.contentEl.querySelector(".leaf-r-link");
+  assert(link, "no link was drawn");
+
+  link.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+  eq(followed, null, "a plain click navigated away instead of placing a caret");
+
+  link.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, metaKey: true }));
+  eq(followed, "https://example.com/x", "the modified click did not follow");
+  return ed;
+});
+
+// ── input intents ─────────────────────────────────────────────────────────
+
+await test("an autocorrect replaces the word it names, not the caret", () => {
+  const ed = editor("teh quick fox\n");
+  const node = firstText(ed.rowEls[0]);
+  // The caret sits after the word, as it does when autocorrect fires on the
+  // space; the word itself is named only by the event's target range.
+  place(node, 3);
+  ed._syncFromDom();
+  const range = new StaticRange({
+    startContainer: node, startOffset: 0, endContainer: node, endOffset: 3,
+  });
+  ed.contentEl.dispatchEvent(
+    new InputEvent("beforeinput", {
+      inputType: "insertReplacementText", data: "the", targetRanges: [range],
+      bubbles: true, cancelable: true,
+    })
+  );
+  eq(ed.source(), "the quick fox\n", "the replaced word was left in place");
+  return ed;
+});
+
+await test("delete-to-line-start takes the line, not a word", () => {
+  const ed = editor("one two three\nnext\n");
+  place(firstText(ed.rowEls[0]), 13);
+  ed._syncFromDom();
+  input(ed, "deleteSoftLineBackward");
+  eq(ed.source(), "\nnext\n", "⌘⌫ did not clear back to the line start");
+  return ed;
+});
+
+await test("shortcuts answer to the platform's modifier only", () => {
+  const ed = editor("word\n");
+  ed.selectAll();
+  const key = (init) =>
+    ed.contentEl.dispatchEvent(new KeyboardEvent("keydown", { key: "b", bubbles: true, cancelable: true, ...init }));
+  const mac = /Mac/.test(navigator.platform);
+  // The other platform's modifier is the system's own — on a Mac, Ctrl+B is
+  // "caret left" — and must pass through untouched.
+  key(mac ? { ctrlKey: true } : { metaKey: true });
+  eq(ed.source(), "word\n", "the wrong modifier toggled bold");
+  key(mac ? { metaKey: true } : { ctrlKey: true });
+  eq(ed.source(), "**word**\n", "the platform modifier did not toggle bold");
+  return ed;
+});
+
+// ── host highlights ───────────────────────────────────────────────────────
+
+await test("a host highlight washes exactly its bytes and answers a click", () => {
+  const ed = editor("the quick brown fox\n");
+  let hit = null;
+  ed.onActivateHighlight((id) => { hit = id; });
+  ed.setHighlights([{ start: 4, end: 9, id: "h1", color: "#ff0000" }]);
+  const washed = [...ed.contentEl.querySelectorAll(".leaf-hl")];
+  eq(washed.map((e) => e.textContent), ["quick"], "the wash covers the wrong text");
+  eq(washed[0].dataset.hl, "h1");
+  eq(washed[0].style.getPropertyValue("--leaf-hl"), "#ff0000", "the colour hint was dropped");
+  eq(ed.highlightAt(6), "h1");
+  eq(ed.highlightAt(1), null);
+  washed[0].dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+  eq(hit, "h1", "the click did not name the highlight");
+  // Replacing the set with nothing clears it.
+  ed.setHighlights([]);
+  eq(ed.contentEl.querySelectorAll(".leaf-hl").length, 0, "the wash outlived its highlight");
+  return ed;
+});
+
+// ── author highlights ─────────────────────────────────────────────────────
+
+await test("a coloured highlight keeps the mark class and swaps only the wash", () => {
+  const ed = editor("a ==\u{1F534} red== and ==plain== b\n");
+  const marks = [...ed.contentEl.querySelectorAll(".leaf-r-mark")];
+  eq(marks.map((e) => e.textContent), ["red", "plain"],
+     "the emoji that named the colour was drawn as text");
+  assert(marks[0].classList.contains("leaf-mk-red"), "the red wash was not asked for");
+  assert(!marks[1].classList.contains("leaf-mk-red"), "a plain highlight took a colour");
+  // Both are still `leaf-r-mark`, which is what makes the colour additive: a
+  // stylesheet that knows nothing of `leaf-mk-*` still draws the highlight.
+  assert(marks.every((e) => e.classList.contains("leaf-r-mark")), "the mark role was lost");
+  return ed;
+});
+
+// ── the source view ───────────────────────────────────────────────────────
+
+await test("the source view is monospaced and coloured by what the markup is", () => {
+  const ed = editor("# Title\n\nsee [here](https://x.dev) `c`\n\n```rust\nlet x = 1;\n```\n");
+  const bodyFamily = getComputedStyle(ed.contentEl).fontFamily;
+  ed.toggleView();
+  eq(ed.viewName(), "source");
+  assert(ed.container.classList.contains("leaf-source"), "the surface is not classed as source");
+  const monoFamily = getComputedStyle(ed.contentEl).fontFamily;
+  assert(monoFamily !== bodyFamily, "the source view kept the body face");
+  assert(/mono|Menlo|Consolas/i.test(monoFamily), `not a mono family: ${monoFamily}`);
+
+  // The markup arrives as delimiter runs, the heading text as a heading run
+  // — bold, as its row is in the rendered view — and neither is resized.
+  const rows = ed.rowEls;
+  const hash = rows[0].querySelector(".leaf-r-delimiter");
+  assert(hash && hash.textContent === "# ", "the heading's `# ` is not a delimiter");
+  const title = rows[0].querySelector(".leaf-r-h1");
+  assert(title && title.textContent === "Title", "the heading's text is not a heading");
+  eq(getComputedStyle(title).fontWeight, "700", "the heading text is not bold");
+  eq(getComputedStyle(title).fontSize, getComputedStyle(hash).fontSize, "the heading was resized");
+  assert(getComputedStyle(hash).color !== getComputedStyle(title).color, "the markup is not dimmed");
+
+  // A link's label is a link, its destination is markup.
+  const link = rows[2].querySelector(".leaf-r-link");
+  assert(link && link.textContent === "here", "the link label is not a link");
+  const dest = [...rows[2].querySelectorAll(".leaf-r-delimiter")].map((e) => e.textContent);
+  eq(dest, ["[", "](https://x.dev)", "`", "`"], "the link's and code's markup");
+
+  // Inline code keeps its ink and loses its pill; a fence's body is
+  // highlighted by token, as it is in the rendered view.
+  const code = rows[2].querySelector(".leaf-r-code");
+  assert(code && code.textContent === "c", "the inline code is not a code run");
+  eq(getComputedStyle(code).backgroundColor, "rgba(0, 0, 0, 0)", "the pill stayed on in the source view");
+  const keyword = rows[5].querySelector(".leaf-t-keyword");
+  assert(keyword && keyword.textContent === "let", "the fence's `let` is not a keyword");
+  assert(
+    getComputedStyle(keyword).color !== getComputedStyle(code).color,
+    "the keyword draws in the plain code ink"
+  );
+  assert(rows[4].querySelector(".leaf-r-delimiter"), "the fence line is not markup");
+
+  // And back: the class comes off with the view.
+  ed.toggleView();
+  eq(ed.viewName(), "wysiwyg");
+  assert(!ed.container.classList.contains("leaf-source"), "the source class outlived the view");
+  eq(getComputedStyle(ed.contentEl).fontFamily, bodyFamily, "the body face did not come back");
+  return ed;
+});
+
+// ── syntax highlighting ───────────────────────────────────────────────────
+
+await test("a fenced block in a known language is classed by token", () => {
+  const ed = editor("```rust\nlet x = \"s\"; // c\n```\n\n```text\nlet y\n```\n");
+  const rows = [...ed.contentEl.querySelectorAll(".leaf-row.code")];
+  eq(rows.length, 2, "two code rows");
+  const keyword = rows[0].querySelector(".leaf-t-keyword");
+  assert(keyword && keyword.textContent === "let", "`let` is a keyword");
+  const string = rows[0].querySelector(".leaf-t-string");
+  assert(string && string.textContent === '"s"', "the literal, quotes included, is a string");
+  const comment = rows[0].querySelector(".leaf-t-comment");
+  assert(comment && getComputedStyle(comment).fontStyle === "italic", "a comment is italic");
+  assert(
+    getComputedStyle(keyword).color !== getComputedStyle(string).color,
+    "a keyword and a string draw in different inks"
+  );
+  // Every run is still `leaf-r-code`: the token is additive, and a stylesheet
+  // that knows nothing of `leaf-t-*` still draws the block as code.
+  assert([...rows[0].querySelectorAll(".leaf-run")].every((e) => e.classList.contains("leaf-r-code")),
+         "the code role was lost");
+  // A language no grammar covers is one plain run, as it always was.
+  eq([...rows[1].querySelectorAll("[class*=leaf-t-]")].length, 0, "`text` was highlighted");
+  return ed;
+});
+
+// ── what the host is told ─────────────────────────────────────────────────
+
+await test("read-only refuses the edit and drops the editing chrome", () => {
+  let state = null;
+  const ed = editor("fixed\n", { onChange: (s) => { state = s; } });
+  ed.setReadOnly(true);
+  assert(ed.isReadOnly(), "the gate did not close");
+  eq(state.readOnly, true, "the state did not say so");
+  assert(!ed.contentEl.isContentEditable, "the surface is still editable");
+  place(firstText(ed.rowEls[0]), 5);
+  ed._syncFromDom();
+  input(ed, "insertText", "!");
+  eq(ed.source(), "fixed\n", "a read-only document took an edit");
+  ed.setReadOnly(false);
+  assert(ed.contentEl.isContentEditable, "the surface did not come back");
+  input(ed, "insertText", "!");
+  eq(ed.source(), "fixed!\n", "the reopened document refused the edit");
+  return ed;
+});
+
+await test("the change state carries what the history buttons enable by", () => {
+  let state = null;
+  const ed = editor("start\n", { onChange: (s) => { state = s; } });
+  eq([state.canUndo, state.canRedo], [false, false], "a fresh document has no history");
+  place(firstText(ed.rowEls[0]), 5);
+  ed._syncFromDom();
+  input(ed, "insertText", "!");
+  eq([state.canUndo, state.canRedo], [true, false], "after an edit");
+  ed.undo();
+  eq([state.canUndo, state.canRedo], [false, true], "after undoing it");
+  return ed;
+});
+
+await test("the selection can be read as text and as a quote", () => {
+  const ed = editor("alpha beta gamma\n");
+  eq(ed.selectedText(), null, "nothing selected yet");
+  ed.render(ed.doc.select_range(6, 10));
+  eq(ed.selectedText(), "beta");
+  const q = ed.selectionQuote(3);
+  eq([q.exact, q.prefix, q.suffix, q.start, q.end], ["beta", "ha ", " ga", 6, 10]);
+  return ed;
+});
+
+await test("the document and the selection say how much is written, without the markup", () => {
+  const ed = editor("a **bold** word\n\n- item\n");
+  const c = ed.counts();
+  // Four words and fifteen characters is the sentence a reader sees; the four
+  // asterisks and the list's dash are spelling, not writing.
+  eq([c.words, c.characters, c.characters_without_spaces, c.paragraphs], [4, 15, 13, 2]);
+  eq(ed.selectionCounts(), null, "nothing selected, and yet counts came back");
+  ed.render(ed.doc.select_range(11, 15));
+  const s = ed.selectionCounts();
+  eq([s.words, s.characters, s.characters_without_spaces, s.paragraphs], [1, 4, 4, 1]);
+  return ed;
+});
+
+// ── navigation ────────────────────────────────────────────────────────────
+
+await test("a locator lands on the block it names, and a fragment link follows it", () => {
+  const ed = editor("# Intro\n\nbody text\n\n[up](#intro)\n");
+  let followed = null;
+  ed.onFollowLink((d) => { followed = d; });
+  ed.render(ed.doc.move_doc_end(false));
+  assert(ed._lastView.caret_src > 0, "the caret did not leave the top");
+  const landing = ed.doc.locate("intro");
+  assert(landing && landing.start === 0 && landing.end > 0, "the heading was not located");
+  assert(ed.goTo("intro"), "the heading was not located");
+  // The block starts at its marker; the caret lands on its first visible stop.
+  const onHeading = (src) => src >= landing.start && src <= landing.end;
+  assert(onHeading(ed._lastView.caret_src), `the caret landed at ${ed._lastView.caret_src}, off the heading`);
+  assert(ed.rowEls[0].classList.contains("leaf-landed"), "the landing was not flashed");
+  eq(ed.goTo("nowhere"), false, "an unknown locator claimed to land");
+
+  ed.render(ed.doc.move_doc_end(false));
+  const link = ed.contentEl.querySelector(".leaf-r-link");
+  link.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, metaKey: true }));
+  assert(onHeading(ed._lastView.caret_src), "the fragment link did not land in the document");
+  eq(followed, null, "an in-document link was handed to the host");
+  return ed;
+});
+
+await test("a footnote goes down to its note and back up to its reference", () => {
+  const ed = editor("text[^1] more\n\n[^1]: the note\n");
+  const sup = ed.contentEl.querySelector(".leaf-sup");
+  assert(sup, "no footnote reference was drawn");
+  // A browser sets a raised run raised, so the reference is its bare label.
+  eq(sup.textContent, "1", "the reference kept its brackets");
+  const note = ed.footnoteAt(sup._src);
+  assert(note && note.offset != null, "the reference does not know its note");
+  sup.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, metaKey: true }));
+  eq(ed._lastView.caret_src, note.offset, "the click did not land on the note");
+  const def = ed.footnoteDefinitionAtCaret();
+  assert(def && def.offset != null, "the note does not know its reference");
+  assert(ed.followFootnote(), "there was nothing to follow back");
+  eq(ed._lastView.caret_src, def.offset, "the return leg did not land on the reference");
+  // And by ⌘-click in the note's text, as a reader would.
+  const noteRow = ed.rowEls.find((r) => r.isConnected && r.textContent.includes("the note"));
+  assert(noteRow, "the note's row was not found");
+  const noteText = [...noteRow.querySelectorAll(".leaf-run")].find((r) => r.textContent.includes("note"));
+  place(noteText.firstChild, 2);
+  noteText.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, metaKey: true }));
+  eq(ed._lastView.caret_src, def.offset, "the ⌘-click in the note did not go back up");
+  return ed;
+});
+
+await test("a tap follows a footnote without a modifier, from a finger or in a reader", () => {
+  const ed = editor("text[^1] more\n\n[^1]: the note\n");
+  const tapOn = (el, pointerType) => {
+    el.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerType }));
+    el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+  };
+  const sup = () => ed.contentEl.querySelector(".leaf-r-link.leaf-sup");
+  const marker = () => ed.contentEl.querySelector(".leaf-r-list.leaf-sup");
+  assert(marker(), "the note's marker is not a raised run");
+  eq(marker().textContent, "1", "the note's marker kept its brackets");
+  const note = ed.footnoteAt(sup()._src);
+  const back = sup()._src;
+
+  // A mouse click is the editor's: it places a caret, and follows nothing.
+  tapOn(sup(), "mouse");
+  assert(ed._lastView.caret_src !== note.offset, "a plain mouse click followed the reference");
+
+  // A finger follows it down, and the note's marker back up.
+  tapOn(sup(), "touch");
+  eq(ed._lastView.caret_src, note.offset, "the tap did not land on the note");
+  tapOn(marker(), "touch");
+  eq(ed._lastView.caret_src, back, "the tap on the marker did not go back to the reference");
+
+  // In a reader a mouse does too: there is no caret to place.
+  ed.setReadOnly(true);
+  tapOn(sup(), "mouse");
+  eq(ed._lastView.caret_src, note.offset, "a click in a reader did not follow the reference");
+  return ed;
+});
+
+await test("a tap follows a link without a modifier, from a finger or in a reader", () => {
+  const src = "see [the docs](https://example.com/x) or [below](#end) now\n\n## End\n\nlast\n";
+  const ed = editor(src);
+  const followed = [];
+  ed.onFollowLink((dest) => followed.push(dest));
+  const tapOn = (el, pointerType) => {
+    el.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, pointerType }));
+    el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+  };
+  const link = (text) => [...ed.contentEl.querySelectorAll(".leaf-r-link")]
+    .find((el) => el.textContent === text);
+
+  // A mouse click is the editor's: it places a caret, and follows nothing.
+  tapOn(link("the docs"), "mouse");
+  eq(followed.length, 0, "a plain mouse click followed the link");
+
+  // A finger follows it, to the host; a fragment lands in the document.
+  tapOn(link("the docs"), "touch");
+  eq(followed.join(), "https://example.com/x", "the tap did not follow the link");
+  tapOn(link("below"), "pen");
+  eq(followed.length, 1, "a fragment went to the host");
+  // On the heading's words, not at the end of the paragraph above its `## `.
+  eq(ed._lastView.caret_src, src.indexOf("End"), "the fragment did not land on its heading");
+
+  // In a reader a mouse does too: there is no caret to place.
+  ed.setReadOnly(true);
+  tapOn(link("the docs"), "mouse");
+  eq(followed.length, 2, "a click in a reader did not follow the link");
+  return ed;
+});
+
+await test("hovering a link shows where it goes", () => {
+  const ed = editor("see [the docs](https://example.com/x) now\n");
+  const link = ed.contentEl.querySelector(".leaf-r-link");
+  eq(link.title, "", "the tooltip was set before anyone hovered");
+  link.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+  eq(link.title, "https://example.com/x");
+  return ed;
+});
+
+await test("the shortcuts leaf-gpui binds reach the model", () => {
+  const ed = editor("word\n");
+  const mac = /mac/i.test(navigator.platform);
+  const mod = mac ? { metaKey: true } : { ctrlKey: true };
+  const key = (init) =>
+    ed.contentEl.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...mod, ...init }));
+  ed.selectAll();
+  key({ key: "c", shiftKey: true });
+  eq(ed.source(), "`word`\n", "⌘⇧C did not toggle code");
+  key({ key: "c", shiftKey: true });
+  key({ key: "¡", code: "Digit1", altKey: true });
+  eq(ed.source(), "# word\n", "⌘⌥1 did not make a heading");
+  key({ key: "º", code: "Digit0", altKey: true });
+  eq(ed.source(), "word\n", "⌘⌥0 did not make a paragraph");
+  key({ key: "*", code: "Digit8", shiftKey: true });
+  eq(ed.source(), "- word\n", "⌘⇧8 did not make a list");
+  key({ key: "*", code: "Digit8", shiftKey: true });
+  eq(ed.source(), "word\n", "⌘⇧8 did not toggle the list off");
+  return ed;
+});
+
+await test("⌘⇧V pastes the plain flavour, and only for that paste", () => {
+  const ed = editor("\n");
+  const mac = /mac/i.test(navigator.platform);
+  const mod = mac ? { metaKey: true } : { ctrlKey: true };
+  const paste = () => {
+    const dt = new DataTransfer();
+    dt.setData("text/html", "<b>rich</b>");
+    dt.setData("text/plain", "plain");
+    ed.contentEl.dispatchEvent(new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true }));
+  };
+  ed.contentEl.dispatchEvent(new KeyboardEvent("keydown", { key: "v", shiftKey: true, bubbles: true, cancelable: true, ...mod }));
+  paste();
+  eq(ed.source(), "plain\n", "the plain flavour was not taken");
+  paste();
+  eq(ed.source(), "plain**rich**\n", "the next paste was still plain");
+  return ed;
+});
+
+// ── drag and drop ─────────────────────────────────────────────────────────
+
+/** A point just inside the start of a row's text, for a drop to land on. */
+function pointIn(el) {
+  const r = el.querySelector(".leaf-run").getBoundingClientRect();
+  return { clientX: r.left + 2, clientY: r.top + r.height / 2 };
+}
+function drag(ed, type, dt, at = {}) {
+  return ed.contentEl.dispatchEvent(new DragEvent(type, { dataTransfer: dt, bubbles: true, cancelable: true, ...at }));
+}
+
+await test("text dropped from outside lands under the pointer", () => {
+  const ed = editor("alpha\n\nbeta\n");
+  const dt = new DataTransfer();
+  dt.setData("text/plain", "X");
+  const beta = ed.rowEls.find((r) => r.textContent === "beta");
+  drag(ed, "drop", dt, pointIn(beta));
+  eq(ed.source(), "alpha\n\nXbeta\n", "the drop did not land at the point");
+  return ed;
+});
+
+await test("a selection dragged within the surface moves, and copies with ⌥", () => {
+  const ed = editor("alpha\n\nbeta\n");
+  ed.render(ed.doc.select_range(0, 5));
+  const dt = new DataTransfer();
+  drag(ed, "dragstart", dt);
+  eq(dt.getData("text/plain"), "alpha", "the drag did not carry the source");
+  const beta = ed.rowEls.find((r) => r.textContent === "beta");
+  drag(ed, "drop", dt, pointIn(beta));
+  eq(ed.source(), "\n\nalphabeta\n", "the selection was not moved");
+
+  const ed2 = editor("alpha\n\nbeta\n");
+  ed2.render(ed2.doc.select_range(0, 5));
+  const dt2 = new DataTransfer();
+  drag(ed2, "dragstart", dt2);
+  const beta2 = ed2.rowEls.find((r) => r.textContent === "beta");
+  drag(ed2, "drop", dt2, { ...pointIn(beta2), altKey: true });
+  eq(ed2.source(), "alpha\n\nalphabeta\n", "⌥ did not copy");
+  ed.destroy();
+  return ed2;
+});
+
+await test("dropped files go to the host with the offset under the pointer", () => {
+  const ed = editor("alpha\n\nbeta\n");
+  let got = null;
+  ed.onDropFiles((files, at) => { got = { names: files.map((f) => f.name), at }; });
+  const dt = new DataTransfer();
+  dt.items.add(new File(["x"], "leaf.png", { type: "image/png" }));
+  const beta = ed.rowEls.find((r) => r.textContent === "beta");
+  drag(ed, "drop", dt, pointIn(beta));
+  eq(got, { names: ["leaf.png"], at: 7 });
+  eq(ed.source(), "alpha\n\nbeta\n", "a file drop edited the document");
+  return ed;
+});
+
+// ── moving a block ────────────────────────────────────────────────────────
+
+function key(ed, init) {
+  return ed.contentEl.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init }));
+}
+function pointer(ed, type, at, init = {}) {
+  return ed.contentEl.dispatchEvent(new PointerEvent(type, {
+    bubbles: true, cancelable: true, pointerId: 7, button: 0, buttons: 1, isPrimary: true, ...at, ...init,
+  }));
+}
+/** A point in the margin left of a row — where a block is picked up. */
+function marginOf(ed, el) {
+  const c = ed.contentEl.getBoundingClientRect();
+  const r = el.getBoundingClientRect();
+  return { clientX: c.left + 4, clientY: r.top + r.height / 2 };
+}
+/** A point on a row's upper edge, where a drop lands before its block. */
+function topOf(el) {
+  const r = el.getBoundingClientRect();
+  return { clientX: r.left + r.width / 2, clientY: r.top + 1 };
+}
+
+await test("⌥↓ and ⌥↑ move the caret's block, and the caret rides it", () => {
+  const ed = editor("alpha\n\nbeta\n\ngamma\n");
+  ed.render(ed.doc.set_selection_offsets(2, 2));
+  key(ed, { key: "ArrowDown", altKey: true });
+  eq(ed.source(), "beta\n\nalpha\n\ngamma\n", "⌥↓ did not move the block");
+  eq(ed.doc.caret_offset(), 8, "the caret did not ride the block");
+  key(ed, { key: "ArrowUp", altKey: true });
+  eq(ed.source(), "alpha\n\nbeta\n\ngamma\n", "⌥↑ did not bring it back");
+  return ed;
+});
+
+await test("a block picked up by its margin drops on the boundary under the pointer", () => {
+  const ed = editor("alpha\n\nbeta\n\ngamma\n");
+  const rowOf = (t) => ed.rowEls.find((r) => r.textContent === t);
+  const gamma = rowOf("gamma");
+  pointer(ed, "pointerdown", marginOf(ed, gamma));
+  assert(ed._blockDrag, "the press in the margin did not pick the block up");
+  eq(ed._blockDrag.from, 13, "the wrong block was picked up");
+  const beta = rowOf("beta");
+  pointer(ed, "pointermove", topOf(beta));
+  assert(ed.container.classList.contains("leaf-block-dragging"), "no drag in progress");
+  assert(gamma.classList.contains("leaf-drag-source"), "the carried block is not marked");
+  const line = ed.contentEl.querySelector(".leaf-drop-indicator");
+  assert(line, "no drop indicator drawn");
+  eq(ed._blockDrag.target, { offset: 7, row: 2 }, "the indicator is not on beta's boundary");
+  pointer(ed, "pointerup", topOf(beta));
+  eq(ed.source(), "alpha\n\ngamma\n\nbeta\n", "the drop did not move the block");
+  assert(!ed.contentEl.querySelector(".leaf-drop-indicator"), "the indicator outlived the drop");
+  assert(!ed.rowEls.some((r) => r.classList.contains("leaf-drag-source")), "a row stayed marked");
+  return ed;
+});
+
+await test("a press in the margin with no travel is a click on the row", () => {
+  const ed = editor("alpha\n\nbeta\n");
+  const beta = ed.rowEls.find((r) => r.textContent === "beta");
+  pointer(ed, "pointerdown", marginOf(ed, beta));
+  pointer(ed, "pointerup", marginOf(ed, beta));
+  eq(ed.source(), "alpha\n\nbeta\n", "a click edited the document");
+  eq(ed.doc.caret_offset(), 7, "the caret did not land on the row");
+  return ed;
+});
+
+await test("a picture is picked up by itself and dropped below everything", () => {
+  const ed = editor("![a leaf](leaf.png)\n\nalpha\n");
+  const img = ed.contentEl.querySelector("img.leaf-media");
+  assert(img, "no picture drawn");
+  const r = img.getBoundingClientRect();
+  // The press is on the picture itself, and bubbles to the surface.
+  img.dispatchEvent(new PointerEvent("pointerdown", {
+    bubbles: true, cancelable: true, pointerId: 7, button: 0, buttons: 1, isPrimary: true,
+    clientX: r.left + 2, clientY: r.top + 2,
+  }));
+  assert(ed._blockDrag, "the press on the picture did not pick it up");
+  const alpha = ed.rowEls.find((r) => r.textContent === "alpha");
+  const below = alpha.getBoundingClientRect().bottom + 40;
+  pointer(ed, "pointermove", { clientX: r.left + 2, clientY: below });
+  eq(ed._blockDrag.target, { offset: ed.source().length, row: ed.rowEls.length }, "not aimed at the end");
+  pointer(ed, "pointerup", { clientX: r.left + 2, clientY: below });
+  eq(ed.source(), "alpha\n\n![a leaf](leaf.png)\n", "the picture did not move to the end");
+  return ed;
+});
+
+// ── another document, same editor ─────────────────────────────────────────
+
+await test("load swaps the document and keeps the reader's preferences", () => {
+  let state = null;
+  const ed = editor("# Old\n\ntext\n", { onChange: (s) => { state = s; } });
+  place(firstText(ed.rowEls[0]), 3);
+  ed._syncFromDom();
+  input(ed, "insertText", "!");
+  assert(ed.isDirty(), "the edit did not dirty the old document");
+  ed.setReadOnly(true);
+  ed.setMarkupMode("full");
+  const oldRow = ed.rowEls[0];
+  ed.load("plain new text\n\n| a | b |\n|---|---|\n| c | d |\n");
+  eq(ed.source(), "plain new text\n\n| a | b |\n|---|---|\n| c | d |\n");
+  assert(!ed.isDirty(), "a freshly loaded document is not dirty");
+  eq([state.canUndo, state.canRedo], [false, false], "the old history came along");
+  eq(state.readOnly, true, "read-only did not carry over");
+  eq(ed.markupMode(), "full", "the markup mode did not carry over");
+  assert(ed.rowEls[0] !== oldRow, "the old surface is still showing");
+  assert(ed.contentEl.querySelector("table.leaf-table"), "the new document's grid was not drawn");
+  eq(ed._lastView.caret_src, 0, "the caret did not start at the top");
+  return ed;
+});
+
+await test("a repaint does not pull focus out of the host's own field", () => {
+  const ed = editor("some text\n");
+  const field = document.createElement("input");
+  document.body.appendChild(field);
+  try {
+    field.focus();
+    assert(document.activeElement === field, "the field did not take focus");
+    ed.setHighlights([{ start: 0, end: 4, id: "h" }]);
+    assert(document.activeElement === field, "the repaint stole focus from the field");
+    // Back in the editor, the caret is restored as ever.
+    ed.focus();
+    ed.render(ed.doc.set_selection_offsets(5, 5));
+    const sel = window.getSelection();
+    assert(ed.contentEl.contains(sel.focusNode), "the caret was not restored once focused");
+  } finally {
+    field.remove();
+  }
+  return ed;
+});
+
+await test("autofocus can be declined", () => {
+  const ed = editor("quiet\n", { autofocus: false });
+  assert(document.activeElement !== ed.contentEl, "the editor took focus anyway");
+  ed.focus();
+  assert(document.activeElement === ed.contentEl, "focus() did not focus");
+  return ed;
+});
+
+// ── what the format can spell ─────────────────────────────────────────────
+
+await test("capabilities answer for the format, not for the editor", () => {
+  const md = editor("hello\n");
+  const caps = md.capabilities();
+  eq(caps.bold, true, "markdown has bold");
+  // Markdown both reads and writes `==mark==` since twig 3.3.1 — it was the
+  // example of a thing this flag said no to, and the superscript is that
+  // example now.
+  eq(caps.mark, true, "markdown authors a highlight");
+  eq(caps.superscript, false, "and has no spelling for a superscript");
+  assert(md.isAuthorable(), "markdown is authorable");
+  md.destroy();
+
+  const dj = editor("hello\n", { format: "djot" });
+  eq(dj.capabilities().mark, true, "djot does have a highlight");
+  // What still separates the two lightweight formats: djot writes `{=word=}`
+  // and has no spelling for a colour on it, so a colour picker is Markdown's
+  // alone even though the button beside it works in both.
+  eq(dj.capabilities().mark_color, false, "djot has no highlight colour");
+  return dj;
+});
+
+// ── the highlight's colour ────────────────────────────────────────────────
+
+await test("one press highlights the selection and colours it", () => {
+  const ed = editor("word\n");
+  ed.selectAll();
+  ed.highlight("red");
+  eq(ed.source(), "==\u{1F534} word==\n", "the emoji is the spelling core writes");
+
+  // Painted, not merely written: the run carries the colour's class, which is
+  // what the stylesheet's `--leaf-mk-red` hangs off. The emoji itself is
+  // markup and never reaches the text.
+  const run = ed.contentEl.querySelector(".leaf-r-mark");
+  assert(run, "no mark run was painted");
+  assert(run.classList.contains("leaf-mk-red"), "the run: " + run.className);
+  eq(run.textContent, "word", "the circle is spelling, not text");
+
+  // And one undo takes the whole press back rather than leaving an uncoloured
+  // highlight the author never asked for.
+  ed.undo();
+  eq(ed.source(), "word\n", "one press, one undo");
+  return ed;
+});
+
+await test("the caret's highlight colour rides the frame", () => {
+  let last = null;
+  const ed = editor("word\n", { onChange: (s) => { last = s; } });
+  ed.selectAll();
+  ed.highlight("green");
+  eq(last.markColor, "green", "the state names the colour a picker ticks");
+  assert(ed.caretInMark(), "the caret is in the highlight it just made");
+
+  // Clearing the colour leaves the highlight — the "no colour" row, not a
+  // second press of the swatch.
+  ed.setMarkColor(null);
+  eq(ed.source(), "==word==\n");
+  eq(last.markColor, null);
+  assert(ed.caretInMark(), "still a highlight");
+  return ed;
+});
+
+await test("a colour needs a highlight or a selection", () => {
+  const ed = editor("word here\n");
+  place(firstText(ed.rowEls[0]), 0); // a bare caret in plain text
+  assert(!ed.caretInMark(), "nothing to colour here");
+  ed.setMarkColor("blue");
+  eq(ed.source(), "word here\n", "a colour does not invent a highlight");
+  return ed;
+});
+
+await test("every colour the package offers is one core writes", () => {
+  // `MARK_COLORS` is a hand-written list on this side of the boundary, and
+  // this is what holds it to core's: each name is accepted, written, and read
+  // back as itself.
+  const ed = editor("word\n");
+  for (const name of MARK_COLORS) {
+    ed.load("word\n");
+    ed.selectAll();
+    ed.highlight(name);
+    eq(ed._lastView.mark_color, name, name + " did not read back");
+    assert(ed.contentEl.querySelector(".leaf-mk-" + name), name + " has no class to paint it");
+  }
+  return ed;
+});
+
+await test("a name outside the palette is refused, not read as no colour", () => {
+  // The two arguments are one typo apart and mean opposite things, so an
+  // unknown name must not fall through to "clear the colour".
+  const ed = editor("word\n");
+  ed.selectAll();
+  ed.highlight("purple");
+  let threw = false;
+  try { ed.setMarkColor("chartreuse"); } catch { threw = true; }
+  assert(threw, "an unknown colour was accepted");
+  eq(ed.source(), "==\u{1F7E3} word==\n", "and nothing was written");
+  return ed;
+});
+
+// ── boundaries ────────────────────────────────────────────────────────────
+
+await test("a block boundary is read from core, not sniffed off the row", () => {
+  const ed = editor("a paragraph\n\n## a heading\n\nanother paragraph\n");
+  const rows = ed._lastView.rows;
+  const gaps = rows.filter((r) => r.boundary != null);
+  assert(gaps.length >= 2, "core published no boundaries");
+  assert(
+    gaps.some((r) => r.boundary.below === "heading"),
+    "no gap reported a heading below it"
+  );
+  // A boundary above a heading is drawn taller than one below it, so the
+  // heading groups with the text it introduces.
+  const above = rows.findIndex((r) => r.boundary?.below === "heading");
+  const below = rows.findIndex((r) => r.boundary?.above === "heading");
+  assert(above >= 0 && below >= 0, "expected a gap on each side of the heading");
+  const h = (i) => ed.rowEls[i].getBoundingClientRect().height;
+  assert(h(above) > h(below), `above=${h(above)}px is not taller than below=${h(below)}px`);
+  return ed;
+});
+
+// ── the module's own helpers, through the surface that uses them ──────────
+
+await test("a wide glyph keeps the caret in step across a cell", () => {
+  // A cell holding astral and CJK text: source bytes, display columns and
+  // UTF-16 units all disagree here, which is where the mapping earns its keep.
+  const ed = editor("| a | b |\n|---|---|\n| 漢字🍃x | y |\n");
+  const line = ed.cellLines.find((l) => l.el.textContent.includes("漢字"));
+  assert(line, "the wide cell did not render");
+  const node = firstText(line.el);
+  // Core's offsets are UTF-8 *byte* offsets; the DOM counts UTF-16 units. Walk
+  // every UTF-16 boundary in the cell and check each maps to a byte that really
+  // does begin a character — a continuation byte (0b10xxxxxx) would mean the
+  // mapping had landed inside one.
+  const bytes = new TextEncoder().encode(ed.source());
+  const seen = new Set();
+  for (let i = 0; i <= node.length; i++) {
+    place(node, i);
+    if (!ed._syncFromDom()) continue;
+    const src = ed._lastView.caret_src;
+    seen.add(src);
+    assert(src >= 0 && src <= bytes.length, `offset ${src} is outside the source`);
+    assert(
+      src === bytes.length || (bytes[src] & 0xc0) !== 0x80,
+      `offset ${src} landed inside a character (from UTF-16 ${i})`
+    );
+  }
+  // The cell has several distinct caret homes, so this is not vacuously true of
+  // a mapping that answers with the same offset every time.
+  assert(seen.size > 2, `only ${seen.size} distinct offsets across the cell`);
+  return ed;
+});
+
+// ── the presentation vocabulary ───────────────────────────────────────────
+
+await test("a centred block carries the class, and spacing scales the line box", () => {
+  const ed = editor('<div class="center" data-line-height="1.5">\n\nhello\n\n</div>\n');
+  const row = ed.rowEls.find((r) => r.textContent.includes("hello"));
+  assert(row, "the block did not render");
+  assert(row.classList.contains("center"), `the row's classes are ${row.className}`);
+  eq(row.dataset.lineHeight, "1.5", "the spacing token rides the row");
+  eq(getComputedStyle(row).textAlign, "center", "the stylesheet did not reach the row");
+  // A multiple of the *theme's* line height (24px), not of the font size —
+  // which is the difference between the editor's rule and the published page's
+  // unitless one, and the reason the row's line box is computed in JS.
+  eq(row.style.lineHeight, "36px", "the line box is not 1.5 of the theme's");
+  return ed;
+});
+
+/**
+ * Put the caret inside a word, as a click would. Each block gesture rewrites
+ * the source around the caret — in Markdown by wrapping the block in a
+ * `<div>` — so a test that presses two of them in a row says where the second
+ * one is aimed rather than inheriting wherever the first left the caret.
+ */
+function caretAt(ed, word) {
+  ed.reveal(ed.source().indexOf(word) + 1);
+}
+
+await test("the alignment gesture writes the class and the query reads it back", () => {
+  const ed = editor("hello\n");
+  eq(ed.alignmentAtCaret(), null, "a plain paragraph is the theme's default, which is left");
+  ed.setAlignment("center");
+  eq(ed.alignmentAtCaret(), "center");
+  const row = ed.rowEls.find((r) => r.textContent.includes("hello"));
+  assert(row.classList.contains("center"), `the row's classes are ${row.className}`);
+  // Clearing is the same gesture with null — there is no `left` token.
+  caretAt(ed, "hello");
+  ed.setAlignment(null);
+  eq(ed.alignmentAtCaret(), null);
+  const cleared = ed.rowEls.find((r) => r.textContent.includes("hello"));
+  assert(!cleared.classList.contains("center"), "the class outlived the key");
+  assert(!ed.source().includes("<div"), `an empty set unwraps the div: ${JSON.stringify(ed.source())}`);
+  return ed;
+});
+
+await test("a large run carries data-size, and the face and colour beside it", () => {
+  const ed = editor('a <span data-size="large" data-font="serif" data-color="red">big</span> b\n');
+  const runs = [...ed.contentEl.querySelectorAll(".leaf-run")];
+  const run = runs.find((r) => r.dataset.size);
+  assert(run, "no run carried a size");
+  eq(run.textContent, "big", "the attributed span is not the run it wraps");
+  eq(run.dataset.size, "large");
+  eq(run.dataset.font, "serif");
+  eq(run.dataset.color, "red");
+  // A *step* larger than the text around it (16px × 1.125), not the absolute
+  // keyword — so the same run inside a heading would step up from the
+  // heading's size rather than down to the body's.
+  eq(getComputedStyle(run).fontSize, "18px", "the size step is not relative to the text around it");
+  const plain = runs.find((r) => !r.dataset.color && r.textContent.trim());
+  assert(
+    getComputedStyle(run).color !== getComputedStyle(plain).color,
+    "the colour token did not reach the run"
+  );
+  assert(/serif/i.test(getComputedStyle(run).fontFamily), "the face token did not reach the run");
+  // A name is a rule the stylesheet has. Drawing it inline as well would put
+  // the theme's own ramp out of reach of a page that restyles the token.
+  assert(
+    !run.style.fontSize && !run.style.fontFamily && !run.style.color,
+    `a name was drawn as an inline style: ${run.getAttribute("style")}`
+  );
+  return ed;
+});
+
+await test("an exact value draws inline, beside the token the document carries", () => {
+  const ed = editor(
+    '<div data-line-height="1.3">\n\n' +
+      'a <span data-size="14pt" data-font="Garamond" data-color="#c03030">exact</span> b\n\n' +
+      "</div>\n"
+  );
+  const run = [...ed.contentEl.querySelectorAll(".leaf-run")].find((r) => r.dataset.size);
+  assert(run, "no run carried a size");
+  eq(run.textContent, "exact", "the attributed span is not the run it wraps");
+  // The document's own tokens still ride the element — a published page and
+  // the editor's DOM are spelled the same, whichever form the author used.
+  eq(run.dataset.size, "14pt");
+  eq(run.dataset.font, "Garamond");
+  eq(run.dataset.color, "#c03030");
+  // And the value, which no stylesheet can enumerate, is transcribed inline.
+  eq(run.style.fontSize, "14pt", "the point size was not set inline");
+  assert(/Garamond/.test(run.style.fontFamily), `the family is ${run.style.fontFamily}`);
+  eq(getComputedStyle(run).color, "rgb(192, 48, 48)", "the triple is painted as written");
+  // 14 points is 14/72 of an inch, which CSS counts as 96 dots — the size the
+  // author asked for, not the theme's.
+  const px = parseFloat(getComputedStyle(run).fontSize);
+  assert(Math.abs(px - (14 * 96) / 72) < 0.1, `14pt drew at ${px}px`);
+  // The row's ratio goes through the same arithmetic the three names do: a
+  // multiple of the theme's 24px line height, computed here because only this
+  // editor knows what that is.
+  const row = ed.rowEls.find((r) => r.textContent.includes("exact"));
+  eq(row.dataset.lineHeight, "1.3", "the ratio rides the row");
+  const leading = parseFloat(row.style.lineHeight);
+  assert(Math.abs(leading - 24 * 1.3) < 0.01, `the line box is ${leading}px, not 1.3 of 24px`);
+  return ed;
+});
+
+await test("an exact size replaces a heading's ramp rather than scaling it", () => {
+  const ed = editor('# head <span data-size="14pt">exact</span>\n');
+  const runs = [...ed.contentEl.querySelectorAll(".leaf-run")];
+  const run = runs.find((r) => r.dataset.size);
+  const plain = runs.find((r) => !r.dataset.size && r.textContent.includes("head"));
+  assert(run && plain, "the heading did not render with both runs");
+  // The heading's own size is the row's (16px × 1.625); the run's is 14pt,
+  // which is smaller — the name scales the ramp, the value replaces it.
+  eq(parseFloat(getComputedStyle(plain).fontSize), 26, "the heading is not at its ramp");
+  const px = parseFloat(getComputedStyle(run).fontSize);
+  assert(Math.abs(px - (14 * 96) / 72) < 0.1, `an exact size inside a heading drew at ${px}px`);
+  return ed;
+});
+
+await test("a page break draws a rule, and the caret steps over it in one press", () => {
+  const ed = editor("before\n\n::page-break\n\nafter\n");
+  const breakRow = ed.rowEls.find((r) => r.classList.contains("leaf-page-break"));
+  assert(breakRow, "no page-break row was drawn");
+  assert(breakRow.querySelector(".leaf-page-break-rule"), "the row has no rule in it");
+  assert(
+    !ed.contentEl.textContent.includes("page-break"),
+    "the placeholder glyphs are still being painted alongside the rule"
+  );
+  const before = ed.rowEls.find((r) => r.textContent === "before");
+  const after = ed.rowEls.find((r) => r.textContent === "after");
+  assert(before && after, "the paragraphs either side did not render");
+  // The browser's own vertical motion, which is what an arrow key runs. The
+  // break holds no caret, so one press clears it — two would mean the rule had
+  // become a line the author has to walk through.
+  const sel = window.getSelection();
+  place(firstText(before), 0);
+  sel.modify("move", "forward", "line");
+  assert(
+    after.contains(sel.anchorNode),
+    "one step down did not clear the break"
+  );
+  place(firstText(after), 0);
+  sel.modify("move", "backward", "line");
+  assert(
+    before.contains(sel.anchorNode),
+    "one step up did not clear the break"
+  );
+  return ed;
+});
+
+await test("the page-break gesture writes a directive the renderer knows", () => {
+  const ed = editor("hello world\n");
+  assert(ed.capabilities().page_break, "markdown spells a page break");
+  ed.insertPageBreak();
+  assert(ed.source().includes("::page-break"), `wrote ${JSON.stringify(ed.source())}`);
+  assert(
+    ed.rowEls.some((r) => r.classList.contains("leaf-page-break")),
+    "the directive did not arrive as a drawn break"
+  );
+  return ed;
+});
+
+// ── a host's directives ───────────────────────────────────────────────────
+
+/** The demo's renderer for `::embed{src=…}`: a card with a title and the
+ *  URL, as an element. Counts what it was asked. */
+function embedRenderer(asked = []) {
+  return (r) => {
+    asked.push(r.name + " " + r.attrs.map((a) => a.key + "=" + a.value).join(" "));
+    const card = document.createElement("div");
+    card.className = "test-embed";
+    card.textContent = "Embed " + (r.attrs.find((a) => a.key === "src")?.value ?? "");
+    return { element: card };
+  };
+}
+/** `regionRenderers` with the embed's renderer in it. */
+const embedRenderers = (asked) => ({ "directive:embed": embedRenderer(asked) });
+
+const EMBED_DOC = 'before\n\n::embed{src="https://x.org/a"}\n\nafter\n';
+
+await test("a directive the host draws stands in for its row, with a caret stop either side", () => {
+  const ed = editor(EMBED_DOC, { regionRenderers: embedRenderers() });
+  const d = ed._lastView.directives[0];
+  const rowEl = ed.rowEls[d.start_row];
+  assert(rowEl.isConnected, "the directive's row is not in the document");
+  const atom = rowEl.querySelector(".leaf-directive");
+  assert(atom && atom.getAttribute("contenteditable") === "false", "no non-editable atom");
+  assert(atom.querySelector(".test-embed"), "the host's element is not in the atom");
+  assert(!ed.contentEl.textContent.includes("⧉"), "the placeholder is painted beside the drawing");
+  const zwsps = [...rowEl.childNodes].filter((n) => n.nodeType === 3);
+  eq(zwsps.length, 2, "the caret homes either side of the drawing");
+  const coreLen = Number(rowEl.dataset.leafCoreLen);
+  assert(coreLen > 0, "the row's core length was not recorded");
+  eq(ed._domPoint(zwsps[0], 0), { row: d.start_row, ch: 0 }, "the near stop");
+  eq(ed._domPoint(zwsps[1], 1), { row: d.start_row, ch: coreLen }, "the far stop");
+  // A point inside the host's drawing is past it, not a column in its text.
+  eq(ed._domPoint(atom.querySelector(".test-embed").firstChild, 3).ch, coreLen, "inside the drawing");
+  // Row offsets either side of the drawing, as a click beside a block reports.
+  const at = [...rowEl.childNodes].indexOf(atom);
+  eq(ed._domPoint(rowEl, at).ch, 0, "the row offset in front of the drawing");
+  eq(ed._domPoint(rowEl, at + 1).ch, coreLen, "the row offset past it");
+  return ed;
+});
+
+await test("a caret on a row a renderer drew round-trips through _syncFromDom", () => {
+  const ed = editor(EMBED_DOC, { regionRenderers: embedRenderers() });
+  const src = ed.source();
+  const start = src.indexOf("::embed");
+  const end = src.indexOf("}", start) + 1;
+  const rowAt = () => ed.rowEls[ed._lastView.directives[0].start_row];
+  for (const [side, want] of [["far", end], ["near", start]]) {
+    const zwsps = [...rowAt().childNodes].filter((n) => n.nodeType === 3);
+    if (side === "far") place(zwsps[1], 1);
+    else place(zwsps[0], 0);
+    assert(ed._syncFromDom(), `the ${side} stop did not map`);
+    eq(ed._lastView.caret_src, want, `the ${side} stop's source offset`);
+    // Repaint from the model, then read the browser's selection back: core's
+    // column has to come out of the DOM where it went in.
+    ed.render(ed.doc.view());
+    assert(rowAt().contains(window.getSelection().anchorNode), `the ${side} caret left the row`);
+    assert(ed._syncFromDom(), `the restored ${side} selection did not map back`);
+    eq(ed._lastView.caret_src, want, `the ${side} caret moved across a repaint`);
+  }
+  return ed;
+});
+
+await test("the caret steps over a drawn directive in one press each way", () => {
+  const ed = editor(EMBED_DOC, { regionRenderers: embedRenderers() });
+  const src = ed.source();
+  const start = src.indexOf("::embed");
+  const end = src.indexOf("}", start) + 1;
+  const rowEl = ed.rowEls[ed._lastView.directives[0].start_row];
+  const zwsps = [...rowEl.childNodes].filter((n) => n.nodeType === 3);
+  const sel = window.getSelection();
+  // The keys themselves, as the browser runs them: a synthetic keydown moves
+  // no native caret, so the editor's own handler is asked first and the
+  // browser's motion stands in for the default it did not prevent.
+  const press = (key) => {
+    const e = new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true });
+    if (ed.contentEl.dispatchEvent(e)) {
+      const forward = key === "ArrowRight" || key === "ArrowDown";
+      const unit = key === "ArrowUp" || key === "ArrowDown" ? "line" : "character";
+      sel.modify("move", forward ? "forward" : "backward", unit);
+    }
+    ed._syncFromDom();
+    return ed._lastView.caret_src;
+  };
+  place(zwsps[0], 0);
+  ed._syncFromDom();
+  eq(ed._lastView.caret_src, start, "the caret starts before the drawing");
+  // Where the browser draws its caret, not only where core thinks it is: a
+  // point the offsets count as past the drawing can still sit in front of it.
+  const side = () => {
+    const atom = ed.rowEls[ed._lastView.directives[0].start_row].querySelector(".leaf-directive");
+    const pos = atom.compareDocumentPosition(sel.anchorNode);
+    return pos & Node.DOCUMENT_POSITION_FOLLOWING ? "after" : "before";
+  };
+  eq(press("ArrowRight"), end, "one press right did not clear the drawing");
+  eq(side(), "after", "core is past the drawing and the browser's caret is not");
+  eq(press("ArrowLeft"), start, "one press left did not clear the drawing");
+  eq(side(), "before", "core is before the drawing and the browser's caret is not");
+  // And on out of the row, either way, in one more press each.
+  eq(press("ArrowLeft"), src.indexOf("before") + "before".length, "left off the row");
+  place(zwsps[1], 1);
+  ed._syncFromDom();
+  eq(press("ArrowRight"), src.indexOf("after"), "right off the row");
+  // Up and down leave the row from either stop, rather than stepping to the
+  // other stop on the way.
+  place(zwsps[1], 1);
+  const down = press("ArrowDown");
+  assert(down >= src.indexOf("after") && down <= src.indexOf("after") + 5, `down off the row went to ${down}`);
+  place(zwsps[0], 0);
+  assert(press("ArrowUp") <= "before".length, "up off the row");
+  // A point in front of the drawing is its near stop wherever in the gap it
+  // sits, and a point behind it the far one — so the browser never draws a
+  // caret on one side of the drawing that core has on the other.
+  eq(ed._domPoint(zwsps[0], 1).ch, 0, "between the space and the drawing");
+  eq(ed._domPoint(zwsps[1], 0).ch, Number(rowEl.dataset.leafCoreLen), "just past the drawing");
+  return ed;
+});
+
+await test("a key in a field of the host's drawing is the host's", () => {
+  const ed = editor(EMBED_DOC, {
+    regionRenderers: {
+      "directive:embed": () => {
+        const field = document.createElement("input");
+        field.className = "test-field";
+        return { element: field };
+      },
+    },
+  });
+  const field = ed.contentEl.querySelector(".test-field");
+  field.focus();
+  const before = ed.source();
+  for (const [type, init] of [
+    ["keydown", { key: "ArrowLeft" }],
+    ["keydown", { key: "Tab" }],
+    ["beforeinput", { inputType: "insertText", data: "x" }],
+  ]) {
+    const Ev = type === "keydown" ? KeyboardEvent : InputEvent;
+    const e = new Ev(type, { ...init, bubbles: true, cancelable: true });
+    assert(field.dispatchEvent(e), `the editor took a ${type} ${init.key ?? init.inputType} from the field`);
+  }
+  eq(ed.source(), before, "the document changed under a key in the host's field");
+  return ed;
+});
+
+await test("a drawing is kept under its directive's key, and not asked for again", () => {
+  const asked = [];
+  const ed = editor(EMBED_DOC, { regionRenderers: embedRenderers(asked) });
+  eq(asked.length, 1, "the renderer is asked once for the one directive");
+  const card = ed.contentEl.querySelector(".test-embed");
+  // An edit above it moves the directive's rows and source; its key is the same.
+  place(firstText(ed.rowEls[0]), 0);
+  input(ed, "insertText", "x");
+  input(ed, "insertParagraph");
+  eq(asked.length, 1, "an edit elsewhere asked the renderer again");
+  assert(ed.contentEl.querySelector(".test-embed") === card, "the drawing was rebuilt");
+  assert(card.isConnected, "the drawing left the page");
+  // The source view lists no directives; coming back from it is no news.
+  ed.toggleView();
+  ed.toggleView();
+  eq(asked.length, 1, "a trip through the source view asked the renderer again");
+  assert(ed.contentEl.querySelector(".test-embed") === card, "the drawing did not survive the trip");
+  // Two identical directives are two drawings, not one element moved between them.
+  ed.load(EMBED_DOC + '\n::embed{src="https://x.org/a"}\n');
+  eq(ed.contentEl.querySelectorAll(".test-embed").length, 2, "identical directives share a drawing");
+  // A changed attribute is a different directive, and is drawn afresh.
+  const n = asked.length;
+  ed.load(EMBED_DOC.replace("/a", "/b"));
+  eq(asked.length, n + 1, "a changed attribute was not asked about");
+  assert(ed.contentEl.querySelector(".test-embed").textContent.endsWith("/b"), "stale drawing");
+  // And a host whose answer changed says so — for its own kind, which
+  // another kind's redraw leaves alone.
+  ed.redrawRegions("fence:demo");
+  eq(asked.length, n + 1, "redrawing another kind asked the embed again");
+  ed.redrawRegions("directive:embed");
+  eq(asked.length, n + 2, "redrawRegions did not ask again");
+  return ed;
+});
+
+await test("a null answer keeps the placeholder, and a page break is never asked about", () => {
+  const asked = [];
+  const toc = (r) => {
+    asked.push(r.name + " " + r.attrs.map((a) => a.key + "=" + a.value).join(" "));
+    return null;
+  };
+  const ed = editor("::toc\n\n::page-break\n\nafter\n", { regionRenderers: { "directive:toc": toc } });
+  eq(asked, ["toc "], "the renderer was asked about the wrong directives");
+  assert(ed.contentEl.textContent.includes("⧉ toc"), "the placeholder is gone");
+  assert(!ed.contentEl.querySelector(".leaf-directive"), "a null answer was wrapped");
+  assert(ed.rowEls.some((r) => r.classList.contains("leaf-page-break")), "the break lost its rule");
+  // Remembered like a picture: an edit does not ask again.
+  place(firstText(ed.rowEls.find((r) => r.textContent === "after")), 0);
+  input(ed, "insertText", "x");
+  eq(asked.length, 1, "a null answer was asked for again");
+  // A page break is leaf's, and no renderer of a host's can claim it.
+  let threw = false;
+  try { editor("x", { regionRenderers: { "directive:page-break": toc } }); } catch { threw = true; }
+  assert(threw, "a renderer for the page break was accepted");
+  // A renderer that throws is a host bug, drawn as the placeholder; so is
+  // one element handed to two directives, which could only stand in one
+  // place, and an answer that is not a picture.
+  const quiet = console.error;
+  const errors = [];
+  console.error = (...a) => errors.push(a);
+  try {
+    const bad = editor("::embed{src=x}\n", { regionRenderers: { "directive:embed": () => { throw new Error("host bug"); } } });
+    assert(bad.contentEl.textContent.includes("⧉ embed"), "a throwing renderer took the placeholder");
+    bad.destroy();
+    const one = document.createElement("div");
+    const twice = editor("::embed{src=x}\n\n::embed{src=y}\n", { regionRenderers: { "directive:embed": () => ({ element: one }) } });
+    eq(twice.contentEl.querySelectorAll(".leaf-directive").length, 1, "one element drawn twice");
+    assert(twice.contentEl.textContent.includes("⧉ embed"), "the second lost its placeholder");
+    twice.destroy();
+    const n = errors.length;
+    const odd = editor("::embed{src=x}\n", { regionRenderers: { "directive:embed": () => document.createElement("div") } });
+    assert(odd.contentEl.textContent.includes("⧉ embed"), "a bare element was drawn as a picture");
+    eq(errors.length, n + 1, "an answer that is not a picture was not reported");
+    odd.destroy();
+  } finally {
+    console.error = quiet;
+  }
+  assert(errors.length >= 3, "the host's bugs were not reported");
+  return ed;
+});
+
+await test("an item from the catalogue asks, then writes where the caret was", async () => {
+  const items = [
+    {
+      id: "directive.embed",
+      name: "embed",
+      title: "Embed",
+      icon: "⧉",
+      ask: async () => ({ attrs: [{ key: "src", value: "https://x.org/c" }] }),
+    },
+    { id: "directive.toc", name: "toc", title: "Contents", attrs: { depth: "2", wide: "" } },
+    { id: "directive.none", name: "embed", ask: async () => null },
+  ];
+  const ed = editor("one\n\ntwo\n", { regionRenderers: embedRenderers(), directives: items });
+  eq(ed.directiveItems().map((i) => i.id), items.map((i) => i.id), "the catalogue as given");
+  assert(Object.isFrozen(ed.directiveItems()), "the catalogue can be changed under the editor");
+  assert(ed.capabilities().directives, "markdown spells a directive");
+  place(firstText(ed.rowEls[0]), 3);
+  ed._syncFromDom();
+  eq(await ed.insertDirectiveItem("directive.none"), false, "a cancelled ask wrote something");
+  eq(ed.source(), "one\n\ntwo\n");
+  eq(await ed.insertDirectiveItem("directive.embed"), true, "the embed was not written");
+  assert(ed.source().includes('::embed{src="https://x.org/c"}'), `wrote ${JSON.stringify(ed.source())}`);
+  assert(ed.source().indexOf("::embed") < ed.source().indexOf("two"), "written in the wrong place");
+  assert(ed.contentEl.querySelector(".test-embed"), "the new directive was not drawn");
+  ed.insertDirective("toc", null, { depth: "2", wide: "" });
+  assert(ed.source().includes("::toc{depth=2 wide}"), `wrote ${JSON.stringify(ed.source())}`);
+  eq(await ed.insertDirectiveItem("no.such.item"), false);
+  // A format that cannot read an arbitrary name back says so, and the gesture
+  // is refused rather than written.
+  const html = editor("<p>x</p>", { format: "html" });
+  assert(!html.capabilities().directives, "html claims to spell a host's directive");
+  html.insertDirective("embed", null, { src: "y" });
+  assert(!html.source().includes("embed"), "html wrote a directive it cannot read back");
+  html.destroy();
+  return ed;
+});
+
+await test("every presentation token the package offers is one core writes", () => {
+  const ed = editor("hello\n");
+  for (const [tokens, set, read] of [
+    [ALIGNMENTS, "setAlignment", "alignmentAtCaret"],
+    [LINE_SPACINGS, "setLineSpacing", "lineSpacingAtCaret"],
+    [SIZE_STEPS, "setFontSize", "fontSizeAtCaret"],
+    [FONT_FAMILIES, "setFontFamily", "fontFamilyAtCaret"],
+    [MARK_COLORS, "setTextColor", "textColorAtCaret"],
+  ]) {
+    for (const token of tokens) {
+      caretAt(ed, "hello");
+      ed[set](token);
+      eq(ed[read](), token, `${set}(${token})`);
+    }
+    caretAt(ed, "hello");
+    ed[set](null);
+    eq(ed[read](), null, `${set}(null) clears`);
+  }
+  // A name outside the vocabulary is an error, not the null that clears — the
+  // two are one keystroke apart and mean opposite things.
+  let threw = false;
+  try { ed.setFontSize("huge"); } catch { threw = true; }
+  assert(threw, "an unknown size was read as no size");
+  return ed;
+});
+
+await test("the exact forms go through the API and come back as written", () => {
+  const ed = editor("hello\n");
+  // Each gesture edits one key and keeps the rest, so the four compose on the
+  // same word — and each query answers the value the document now carries.
+  for (const [set, read, value] of [
+    ["setFontSize", "fontSizeAtCaret", "14pt"],
+    ["setFontFamily", "fontFamilyAtCaret", "Garamond"],
+    ["setTextColor", "textColorAtCaret", "#c03030"],
+    ["setLineSpacing", "lineSpacingAtCaret", "1.3"],
+  ]) {
+    caretAt(ed, "hello");
+    ed[set](value);
+    eq(ed[read](), value, `${set}(${value})`);
+  }
+  // The run the four wrote is the run the renderer drew from.
+  const run = [...ed.contentEl.querySelectorAll(".leaf-run")].find((r) => r.dataset.size);
+  assert(run, `no run carried the size: ${JSON.stringify(ed.source())}`);
+  eq(run.style.fontSize, "14pt", "the gesture's value did not reach the surface");
+  // Only `pt` is a size unit — a screen's unit is not a document's, and a
+  // refusal is not the null that clears.
+  let threw = false;
+  try { ed.setFontSize("14px"); } catch { threw = true; }
+  assert(threw, "a px size was accepted");
+  return ed;
+});
+
+await test("a formula is its placeholder until the typesetter lands, then its picture", async () => {
+  // The first formula this page shows: the typesetter is a second module
+  // that nothing has fetched yet, and this frame is what starts the fetch.
+  const ed = editor("intro\n\nsay $E = mc^2$ here\n\n$$\n\\int_0^1 x\\,dx\n$$\n\nend\n");
+  const atom = ed.contentEl.querySelector(".leaf-r-math");
+  assert(atom, "no math run");
+  eq(atom.textContent, "∑");
+  assert(!atom.classList.contains("leaf-math"), "a picture was drawn before the typesetter arrived");
+  assert(!atom.classList.contains("leaf-math-error"), "the wait was drawn as a fault");
+  assert(!ed.rowEls.some((r) => r.classList.contains("leaf-math-row")), "a block was drawn before the typesetter arrived");
+  assert(ed.contentEl.textContent.includes("∑ \\int"), "the block is not its placeholder row");
+  const before = ed.rowEls.length;
+  await LeafEditor.loadMath();
+  // Settled, the rows that carried a formula were rebuilt and nothing else
+  // moved: the same row count, pictures where the placeholders stood.
+  eq(ed.rowEls.length, before, "the row count changed");
+  const again = ed.contentEl.querySelector(".leaf-r-math");
+  assert(again.classList.contains("leaf-math"), "the inline formula did not become its picture");
+  assert(ed.rowEls.some((r) => r.classList.contains("leaf-math-row")), "the block did not become its picture");
+  assert(!ed.contentEl.textContent.includes("\\int"), "the placeholder label is still painted");
+  return ed;
+});
+
+await test("an inline formula is a picture the caret sits either side of", async () => {
+  await LeafEditor.loadMath();
+  const ed = editor("intro\n\nsay $E = mc^2$ here\n");
+  const row = ed.rowEls.find((r) => r.textContent.includes("say"));
+  assert(row, "the paragraph did not render");
+  const atom = row.querySelector(".leaf-r-math");
+  assert(atom, "no math run");
+  assert(atom.classList.contains("leaf-math"), "the run was not drawn as a picture");
+  eq(atom.textContent, "∑", "the atom character is not what core drew");
+  assert(atom.style.backgroundImage.startsWith('url("data:image/svg+xml'), "no picture");
+  const w = parseFloat(atom.style.width);
+  assert(w > 30, `the picture is ${w}px wide`);
+  // Stretched to the picture: the caret's two homes are its two edges.
+  const rect = atom.getBoundingClientRect();
+  place(atom.firstChild, 0);
+  const r0 = window.getSelection().getRangeAt(0).getBoundingClientRect();
+  place(atom.firstChild, 1);
+  const r1 = window.getSelection().getRangeAt(0).getBoundingClientRect();
+  assert(Math.abs(r0.left - rect.left) < 2, `caret before at ${r0.left}, picture at ${rect.left}`);
+  assert(Math.abs(r1.left - rect.right) < 2, `caret after at ${r1.left}, picture ends at ${rect.right}`);
+  // Both map into core at the formula's ends: past the closing `$`, and at
+  // its start. Landing on either puts the caret on the formula's line, which
+  // reveals it in the model — so the picture is put back between the two by
+  // moving away and repainting, as the selectionchange handler would.
+  place(atom.firstChild, 1);
+  ed._syncFromDom();
+  const end = ed._lastView.caret_src;
+  eq(ed.source().slice(end - 2, end), "2$");
+  place(firstText(ed.rowEls[0]), 0);
+  ed._syncFromDom();
+  ed.render(ed.doc.view());
+  const again = ed.rowEls.find((r) => r.textContent.includes("say")).querySelector(".leaf-r-math");
+  assert(again.classList.contains("leaf-math"), "the picture did not come back");
+  place(again.firstChild, 0);
+  ed._syncFromDom();
+  const start = ed._lastView.caret_src;
+  eq(ed.source().slice(start, start + 2), "$E");
+  eq(end, start + "$E = mc^2$".length);
+  return ed;
+});
+
+await test("a formula on the caret's line is its TeX, and folds back when the caret leaves", async () => {
+  await LeafEditor.loadMath();
+  const ed = editor("say $x+y$ here\n\nnext\n", { mathEditing: "source" });
+  // The caret opens on the first line: the formula is source, in code style.
+  let row = ed.rowEls[0];
+  assert(!row.querySelector(".leaf-r-math"), "a picture stood in under the caret");
+  eq(row.textContent, "say $x+y$ here");
+  assert(row.querySelector(".leaf-r-delimiter"), "the dollars are not delimiters");
+  // Down to the next paragraph, and it is the picture.
+  const next = ed.rowEls.find((r) => r.textContent === "next");
+  place(firstText(next), 0);
+  ed._syncFromDom();
+  ed.render(ed.doc.view());
+  row = ed.rowEls[0];
+  assert(row.querySelector(".leaf-r-math.leaf-math"), "the formula did not fold to its picture");
+  eq(row.textContent, "say ∑ here");
+  return ed;
+});
+
+await test("printed, the caret's line is not revealed, and the screen's is again after", async () => {
+  await LeafEditor.loadMath();
+  const ed = editor("say $x+y$ here\n\nnext\n", { mathEditing: "source" });
+  eq(ed.rowEls[0].textContent, "say $x+y$ here");
+  window.dispatchEvent(new Event("beforeprint"));
+  eq(ed.rowEls[0].textContent, "say ∑ here");
+  assert(ed.rowEls[0].querySelector(".leaf-r-math"), "the page drew no formula");
+  window.dispatchEvent(new Event("afterprint"));
+  eq(ed.rowEls[0].textContent, "say $x+y$ here");
+  // And the screen's frames go on from there.
+  ed.render(ed.doc.move_doc_end(false));
+  eq(ed.rowEls[0].textContent, "say ∑ here");
+  return ed;
+});
+
+await test("a caret move onto a formula's line repaints, through the real selection", async () => {
+  await LeafEditor.loadMath();
+  const ed = editor("say $x+y$ here\n\nnext\n", { mathEditing: "source" });
+  const next = ed.rowEls.find((r) => r.textContent === "next");
+  place(firstText(next), 0);
+  ed._syncFromDom();
+  ed.render(ed.doc.view());
+  eq(ed.rowEls[0].textContent, "say ∑ here", "the picture did not stand in");
+  const key = ed._lastView.map_key;
+  // A native selection change, as a click or an arrow key makes: the handler
+  // sees the map's key move and paints the revealed line.
+  place(ed.rowEls[0].querySelector(".leaf-r-math").firstChild, 0);
+  await new Promise((r) => setTimeout(r, 0));
+  assert(ed._lastView.map_key !== key, "the map did not change under the caret");
+  eq(ed.rowEls[0].textContent, "say $x+y$ here", "the line was not repainted revealed");
+  // And back off it, the picture again — one repaint each way, none between.
+  place(firstText(ed.rowEls.find((r) => r.textContent === "next")), 0);
+  await new Promise((r) => setTimeout(r, 0));
+  eq(ed.rowEls[0].textContent, "say ∑ here", "the line did not fold back");
+  return ed;
+});
+
+await test("a display formula is a centred picture in a row of its own", async () => {
+  await LeafEditor.loadMath();
+  const ed = editor("intro\n\n$$\n\\int_0^1 x\\,dx\n$$\n\nend\n");
+  const row = ed.rowEls.find((r) => r.classList.contains("leaf-math-row"));
+  assert(row, "no math row was drawn");
+  const img = row.querySelector("img.leaf-math-block");
+  assert(img && img.src.startsWith("data:image/svg+xml"), "no picture in the row");
+  assert(!ed.contentEl.textContent.includes("\\int"), "the placeholder label is still painted");
+  assert(row.classList.contains("leaf-media-row"), "the row is not the media row's shape");
+  // Its two caret homes, as a picture's.
+  place(row.firstChild, 0);
+  ed._syncFromDom();
+  const before = ed._lastView.caret_src;
+  eq(ed.source().slice(before, before + 2), "$$");
+  place(row.lastChild, 1);
+  ed._syncFromDom();
+  const after = ed._lastView.caret_src;
+  eq(ed.source().slice(after - 2, after), "$$");
+  assert(after > before);
+  return ed;
+});
+
+/** A key pressed on the surface, as the keyboard would deliver it. */
+function press(ed, key, mods = {}) {
+  ed.contentEl.dispatchEvent(new KeyboardEvent("keydown", { key, bubbles: true, cancelable: true, ...mods }));
+}
+
+await test("→ onto a formula opens it, and what is typed there is TeX in the document", async () => {
+  await LeafEditor.loadMath();
+  const ed = editor("say $x$ here\n");
+  const m = ed._lastView.math[0];
+  ed.render(ed.doc.select_range(m.src, m.src));
+  press(ed, "ArrowRight");
+  assert(ed._session, "→ in front of the formula did not open it");
+  assert(ed.contentEl.classList.contains("leaf-region-editing"), "the browser's caret is still shown");
+  for (const k of ["ArrowRight", "^", "2", "ArrowRight", "+", "1", "/", "2"]) press(ed, k);
+  eq(ed.source(), "say $x^{2}+\\frac{1}{2}$ here\n");
+  // The open formula is drawn from its session, and leaf draws its caret
+  // over the picture.
+  const atom = ed.contentEl.querySelector(".leaf-r-math.leaf-math");
+  assert(atom, "the open formula is not a picture");
+  assert(ed.overlayEl.querySelector(".leaf-region-caret"), "no caret over the picture");
+  // Out of the denominator, then out of the formula, behind it.
+  press(ed, "ArrowRight");
+  assert(ed._session, "left the formula a stop early");
+  press(ed, "ArrowRight");
+  assert(!ed._session, "→ at the last stop did not leave the formula");
+  eq(ed._lastView.caret_src, ed._lastView.regions[0].end);
+  // ← from behind it opens it again, at its end.
+  press(ed, "ArrowLeft");
+  assert(ed._session && ed._session.impl.session.at_end(), "← behind the formula did not open it at its end");
+  press(ed, "Escape");
+  assert(!ed._session, "Escape did not close it");
+  return ed;
+});
+
+await test("on the caret's line a formula stays its picture when it is edited as structure", async () => {
+  await LeafEditor.loadMath();
+  const ed = editor("say $x+y$ here\n");
+  ed.render(ed.doc.select_range(1, 1));
+  assert(ed.contentEl.querySelector(".leaf-r-math.leaf-math"), "the formula revealed its TeX");
+  assert(!ed.contentEl.textContent.includes("$x+y$"));
+  return ed;
+});
+
+await test("a click on a formula's picture opens it at the stop under the pointer", async () => {
+  await LeafEditor.loadMath();
+  const ed = editor("say $xy$ here\n");
+  const atom = ed.contentEl.querySelector(".leaf-r-math.leaf-math");
+  const r = atom.getBoundingClientRect();
+  atom.dispatchEvent(new MouseEvent("mousedown", {
+    bubbles: true, cancelable: true, button: 0, detail: 1, clientX: r.left + 1, clientY: r.top + r.height / 2,
+  }));
+  assert(ed._session, "the click did not open the formula");
+  assert(ed._session.impl.session.at_home(), "the click at its left edge is not at its first stop");
+  press(ed, "a");
+  eq(ed.source(), "say $axy$ here\n");
+  return ed;
+});
+
+await test("typing in a formula is one undo step, and ⌘Z leaves the formula to undo it", async () => {
+  await LeafEditor.loadMath();
+  const mac = /Mac|iPhone|iPad/.test(navigator.platform);
+  const ed = editor("say $x$ here\n");
+  const m = ed._lastView.regions[0];
+  ed.render(ed.doc.select_range(m.end, m.end));
+  press(ed, "ArrowLeft");
+  // `sqrt` is four keystrokes, the last of which makes two splices: the `t`,
+  // then the letters becoming `\sqrt{}`. Typed one after another, they are
+  // one step with the `+` before them, as typing in the document is.
+  for (const k of "+sqrt") press(ed, k);
+  eq(ed.source(), "say $x+\\sqrt{}$ here\n");
+  press(ed, "z", mac ? { metaKey: true } : { ctrlKey: true });
+  assert(!ed._session, "⌘Z did not close the formula");
+  eq(ed.source(), "say $x$ here\n");
+  return ed;
+});
+
+await test("a display block opens, and its TeX stays between its own lines", async () => {
+  await LeafEditor.loadMath();
+  const ed = editor("intro\n\n$$\n\\int_0^1 x\n$$\n\nend\n");
+  const m = ed._lastView.regions.find((m) => !m.inline);
+  ed.render(ed.doc.select_range(m.end, m.end));
+  press(ed, "ArrowLeft");
+  assert(ed._session, "← behind the block did not open it");
+  press(ed, "+");
+  press(ed, "1");
+  eq(ed.source(), "intro\n\n$$\n\\int_0^1 x+1\n$$\n\nend\n");
+  const img = ed.contentEl.querySelector(".leaf-math-block");
+  assert(img, "the open block is not a picture");
+  assert(ed.overlayEl.querySelector(".leaf-region-caret"), "no caret over the block's picture");
+  return ed;
+});
+
+await test("in a formula, ⇧← selects whole structures, and typing, Delete and / act on the selection", async () => {
+  await LeafEditor.loadMath();
+  const ed = editor("say $1+\\frac{a}{b}$ here\n");
+  const r = ed._lastView.regions[0];
+  ed.render(ed.doc.select_range(r.end, r.end));
+  press(ed, "ArrowLeft");
+  assert(ed._session, "← behind the formula did not open it");
+  // From the end, into the denominator: the whole fraction is selected.
+  press(ed, "ArrowLeft", { shiftKey: true });
+  press(ed, "ArrowLeft", { shiftKey: true });
+  eq(ed._session.impl.copy(), "\\frac{a}{b}");
+  assert(ed._session, "⇧← at a selection's edge left the formula");
+  // Leaf draws the selection over the picture.
+  assert(ed.overlayEl.querySelector(".leaf-region-selection"), "no selection over the picture");
+  press(ed, "x");
+  eq(ed.source(), "say $1+x$ here\n");
+  // ⌘A selects the whole formula, not the document; / makes it a numerator.
+  const mac = /Mac|iPhone|iPad/.test(navigator.platform);
+  press(ed, "a", mac ? { metaKey: true } : { ctrlKey: true });
+  assert(ed._session, "⌘A left the formula");
+  press(ed, "/");
+  eq(ed.source(), "say $\\frac{1+x}{}$ here\n");
+  // Delete forward at the start of the denominator does nothing there; from
+  // the first stop it enters the fraction and takes its letters.
+  press(ed, "Escape");
+  ed.render(ed.doc.select_range(r.src, r.src));
+  press(ed, "ArrowRight");
+  press(ed, "Delete");
+  press(ed, "Delete");
+  eq(ed.source(), "say $\\frac{+x}{}$ here\n");
+  return ed;
+});
+
+await test("copy, cut and paste in a formula are its TeX, and each is one undo step", async () => {
+  await LeafEditor.loadMath();
+  const ed = editor("say $a+b$ here\n");
+  const r = ed._lastView.regions[0];
+  ed.render(ed.doc.select_range(r.end, r.end));
+  press(ed, "ArrowLeft");
+  press(ed, "ArrowLeft", { shiftKey: true });
+  press(ed, "ArrowLeft", { shiftKey: true });
+  const clip = (type, text) => {
+    const dt = new DataTransfer();
+    if (text != null) dt.setData("text/plain", text);
+    ed.contentEl.dispatchEvent(new ClipboardEvent(type, { clipboardData: dt, bubbles: true, cancelable: true }));
+    return dt.getData("text/plain");
+  };
+  eq(clip("copy"), "+b");
+  eq(ed.source(), "say $a+b$ here\n");
+  eq(clip("cut"), "+b");
+  eq(ed.source(), "say $a$ here\n");
+  assert(ed._session, "cut left the formula");
+  clip("paste", "\\sqrt{2}");
+  eq(ed.source(), "say $a\\sqrt{2}$ here\n");
+  // Text that is not TeX the formula reads is typed instead: the brace is
+  // escaped, as a typed one is.
+  clip("paste", "+x}");
+  eq(ed.source(), "say $a\\sqrt{2}+x\\}$ here\n");
+  assert(ed._session, "paste left the formula");
+  press(ed, "z", /Mac|iPhone|iPad/.test(navigator.platform) ? { metaKey: true } : { ctrlKey: true });
+  eq(ed.source(), "say $a\\sqrt{2}$ here\n", "the typed paste was not one undo step");
+  return ed;
+});
+
+await test("mathEditing \"source\" keeps a formula's TeX to be typed on the caret's line", async () => {
+  await LeafEditor.loadMath();
+  const ed = editor("say $x+y$ here\n", { mathEditing: "source" });
+  ed.render(ed.doc.select_range(1, 1));
+  assert(ed.contentEl.textContent.includes("$x+y$"), "the formula did not reveal its TeX");
+  let threw = false;
+  try { editor("x", { mathEditing: "wysiwyg" }); } catch { threw = true; }
+  assert(threw, "an unknown mathEditing was accepted");
+  return ed;
+});
+
+/**
+ * A host's renderer and editor for `fence:demo`, the stand-in for a Mermaid
+ * editor: drawn closed as a figure naming its content, open as a textarea
+ * that writes the whole content back. Records what leaf asked of it in
+ * `log`.
+ */
+function demoRenderer(log) {
+  return (r) => {
+    log.push(["render", r.content]);
+    const f = document.createElement("figure");
+    f.className = "demo-drawing";
+    f.textContent = "drawn: " + r.content.trim();
+    return { element: f };
+  };
+}
+function demoEditor(log) {
+  return {
+    open(r, entry, host) {
+      log.push(["open", entry.at]);
+      const ta = document.createElement("textarea");
+      ta.className = "demo-editor";
+      ta.value = r.content;
+      return {
+        element: ta,
+        host,
+        focus: () => ta.focus(),
+        reload(c) {
+          log.push(["reload", c]);
+          ta.value = c;
+          return true;
+        },
+        close: () => log.push(["close"]),
+      };
+    },
+  };
+}
+/** The options that hand `fence:demo` to both. */
+const demoOpts = (log) => ({
+  regionRenderers: { "fence:demo": demoRenderer(log) },
+  regionEditors: { "fence:demo": demoEditor(log) },
+});
+
+const DEMO = "intro\n\n```demo\nA\n```\n\n```rust\nfn x() {}\n```\n\nend\n";
+
+await test("a fence a host edits is its drawing, and → in front of it opens the host's view", async () => {
+  const log = [];
+  const ed = editor(DEMO, demoOpts(log));
+  const fig = ed.contentEl.querySelector(".leaf-region .demo-drawing");
+  assert(fig, "the host's drawing is not on the page");
+  eq(fig.textContent, "drawn: A");
+  assert(!ed.contentEl.textContent.includes("```"), "the fence shows its markup");
+  // A language with no editor is still code.
+  assert(ed.contentEl.textContent.includes("fn x() {}"), "the rust fence is not code");
+  eq(ed._lastView.regions.map((r) => r.kind), ["fence:demo"]);
+  const r = ed._lastView.regions[0];
+  eq(r.content, "A\n");
+  ed.focus();
+  ed.render(ed.doc.select_range(r.src, r.src));
+  press(ed, "ArrowRight");
+  assert(ed._session?.kind === "fence:demo", "→ in front of the fence did not open it");
+  const ta = ed.contentEl.querySelector(".leaf-region textarea.demo-editor");
+  assert(ta, "the host's view is not where the drawing was");
+  eq(document.activeElement, ta, "the host's view does not have the focus");
+  eq(log.filter((l) => l[0] === "open"), [["open", "home"]]);
+  // A key in the host's view is the host's, not the document's.
+  ta.dispatchEvent(new KeyboardEvent("keydown", { key: "x", bubbles: true, cancelable: true }));
+  eq(ed.source(), DEMO);
+  return ed;
+});
+
+await test("what a host's view writes is one undo step, and an undo reaches it as a reload", async () => {
+  const log = [];
+  const ed = editor(DEMO, demoOpts(log));
+  const r = ed._lastView.regions[0];
+  ed.focus();
+  ed.render(ed.doc.select_range(r.end, r.end));
+  press(ed, "ArrowLeft");
+  assert(ed._session, "← behind the fence did not open it");
+  eq(log.filter((l) => l[0] === "open"), [["open", "end"]]);
+  const { host } = ed._session.impl;
+  host.replace("A\nB\n");
+  eq(ed.source(), DEMO.replace("A\n", "A\nB\n"));
+  host.replace("A\nB é\n");
+  eq(ed.source(), DEMO.replace("A\n", "A\nB é\n"));
+  assert(ed._session, "an edit closed the host's view");
+  const ta = ed.contentEl.querySelector("textarea.demo-editor");
+  eq(document.activeElement, ta, "an edit took the focus from the host's view");
+  host.undo();
+  eq(ed.source(), DEMO.replace("A\n", "A\nB\n"));
+  assert(ed._session, "undo closed the host's view");
+  eq(log.at(-1), ["reload", "A\nB\n"]);
+  host.redo();
+  eq(log.at(-1), ["reload", "A\nB é\n"]);
+  // Leaving puts the caret behind the fence, and the drawing comes back.
+  host.leave("after");
+  assert(!ed._session, "leave did not close it");
+  // Closed, then asked to draw what it wrote.
+  eq(log.slice(-2), [["close"], ["render", "A\nB é\n"]]);
+  eq(ed._lastView.caret_src, ed._lastView.regions[0].end);
+  eq(ed.contentEl.querySelector(".demo-drawing")?.textContent, "drawn: A\nB é");
+  // A host that calls back after it closed changes nothing.
+  host.replace("gone\n");
+  eq(ed.source(), DEMO.replace("A\n", "A\nB é\n"));
+  return ed;
+});
+
+await test("a click on a host's drawing opens it, and a click elsewhere closes it", async () => {
+  const log = [];
+  const ed = editor(DEMO, demoOpts(log));
+  const fig = ed.contentEl.querySelector(".demo-drawing");
+  const b = fig.getBoundingClientRect();
+  fig.dispatchEvent(new MouseEvent("mousedown", {
+    bubbles: true, cancelable: true, button: 0, detail: 1, clientX: b.left + 5, clientY: b.top + 3,
+  }));
+  assert(ed._session, "the click did not open the fence");
+  eq(log.filter((l) => l[0] === "open"), [["open", "point"]]);
+  const first = ed.rowEls[0];
+  const fb = first.getBoundingClientRect();
+  first.dispatchEvent(new MouseEvent("mousedown", {
+    bubbles: true, cancelable: true, button: 0, detail: 1, clientX: fb.left + 2, clientY: fb.top + 2,
+  }));
+  assert(!ed._session, "a click elsewhere left it open");
+  eq(log.at(-1), ["close"]);
+  return ed;
+});
+
+await test("a click on a drawing is the drawing's, wherever the open view scrolls the point", async () => {
+  const log = [];
+  const ed = editor("intro\n\n```demo\nA\n```\n", demoOpts(log));
+  const before = ed.source();
+  const fig = ed.contentEl.querySelector(".demo-drawing");
+  const b = fig.getBoundingClientRect();
+  // Opening a drawing below the fold scrolls to it, which can leave the
+  // pointer's point past the last row — no click past the end, which would
+  // write a paragraph there and take the focus from the view. Stood in for
+  // by a point already past it.
+  assert(ed._isPastEnd(b.bottom + 5000), "the point is not past the end");
+  fig.dispatchEvent(new MouseEvent("mousedown", {
+    bubbles: true, cancelable: true, button: 0, detail: 1, clientX: b.left + 5, clientY: b.bottom + 5000,
+  }));
+  assert(ed._session, "the click did not open the fence");
+  eq(document.activeElement, ed.contentEl.querySelector("textarea.demo-editor"), "the focus left the host's view");
+  eq(ed.source(), before, "the click wrote past the end");
+  return ed;
+});
+
+await test("an undo that takes a fence away closes its view", async () => {
+  const log = [];
+  const ed = editor("intro\n", demoOpts(log));
+  ed.render(ed.doc.edit_source(5, 5, "\n\n```demo\nA\n```"));
+  const r = ed._lastView.regions[0];
+  assert(r, "the inserted fence is not a region");
+  ed.focus();
+  ed.render(ed.doc.select_range(r.src, r.src));
+  press(ed, "ArrowRight");
+  assert(ed._session);
+  ed._session.impl.host.undo();
+  eq(ed.source(), "intro\n");
+  assert(!ed._session, "the fence went and its view stayed");
+  eq(log.at(-1), ["close"]);
+  return ed;
+});
+
+await test("an edit above an open fence keeps it open, and its edits land in it", async () => {
+  const log = [];
+  const ed = editor(DEMO, demoOpts(log));
+  const r = ed._lastView.regions[0];
+  ed.focus();
+  ed.render(ed.doc.select_range(r.src, r.src));
+  press(ed, "ArrowRight");
+  const { host } = ed._session.impl;
+  // Another writer, above the fence.
+  ed.render(ed.doc.edit_source(0, 0, "more "));
+  assert(ed._session, "an edit above closed the fence");
+  eq(ed._session.src, r.src + 5);
+  host.replace("A\nC\n");
+  eq(ed.source(), "more " + DEMO.replace("A\n", "A\nC\n"));
+  return ed;
+});
+
+await test("an edit that would close a fence is refused, and the host shown what stands", async () => {
+  const log = [];
+  const ed = editor(DEMO, demoOpts(log));
+  const r = ed._lastView.regions[0];
+  ed.focus();
+  ed.render(ed.doc.select_range(r.src, r.src));
+  press(ed, "ArrowRight");
+  ed._session.impl.host.replace("A\n```\n");
+  eq(ed.source(), DEMO);
+  eq(log.at(-1), ["reload", "A\n"]);
+  assert(ed._session, "the refusal closed the fence");
+  return ed;
+});
+
+await test("a click on a formula after an edit above it opens that formula", async () => {
+  await LeafEditor.loadMath();
+  const ed = editor("abcd\n\n$a$ and $b$\n");
+  ed.render(ed.doc.edit_source(0, 0, "wxyz"));
+  const atoms = ed.contentEl.querySelectorAll(".leaf-r-math.leaf-math");
+  const b = atoms[1].getBoundingClientRect();
+  atoms[1].dispatchEvent(new MouseEvent("mousedown", {
+    bubbles: true, cancelable: true, button: 0, detail: 1, clientX: b.left + 1, clientY: b.top + b.height / 2,
+  }));
+  assert(ed._session, "the click did not open a formula");
+  eq(ed._session.src, ed._lastView.regions[1].src, "the click opened the other formula");
+  // A click elsewhere closes it, and its caret goes from the picture.
+  const first = ed.rowEls[0];
+  const fb = first.getBoundingClientRect();
+  first.dispatchEvent(new MouseEvent("mousedown", {
+    bubbles: true, cancelable: true, button: 0, detail: 1, clientX: fb.left + 2, clientY: fb.top + 2,
+  }));
+  assert(!ed._session);
+  assert(ed.overlayEl.hidden, "the closed formula still has leaf's caret over it");
+  assert(!decodeURIComponent(atoms[1].isConnected ? atoms[1].style.backgroundImage : ed.contentEl.querySelectorAll(".leaf-r-math.leaf-math")[1].style.backgroundImage).includes("<rect"),
+    "the closed formula still draws its caret");
+  return ed;
+});
+
+await test("regionEditors takes math, fences and directives, each with an open() and no view()", async () => {
+  let threw = 0;
+  const bad = [
+    { code: { open() {} } },
+    { "fence:": { open() {} } },
+    { "fence:demo": {} },
+    { "directive:page-break": { open() {} } },
+    { "fence:demo": { open() {}, view() {} } },
+  ];
+  for (const b of bad) {
+    try { editor("x", { regionEditors: b }); } catch { threw++; }
+  }
+  eq(threw, bad.length);
+  return editor("x", { regionEditors: { math: { open() {} }, "fence:demo": { open() {} }, "directive:embed": { open() {} } } });
+});
+
+await test("regionRenderers takes math, fences and directives, each a function; the directive hook is gone", async () => {
+  let threw = 0;
+  const bad = [
+    { opts: { regionRenderers: { code: () => null } } },
+    { opts: { regionRenderers: { "fence:": () => null } } },
+    { opts: { regionRenderers: { "fence:demo": {} } } },
+    { opts: { regionRenderers: { "directive:page-break": () => null } } },
+    { opts: { directive: () => null } },
+  ];
+  for (const b of bad) {
+    try { editor("x", b.opts); } catch { threw++; }
+  }
+  eq(threw, bad.length);
+  return editor("x", { regionRenderers: { math: () => null, "fence:demo": () => null, "directive:embed": () => null } });
+});
+
+/** A standalone SVG of `w` × `h` naming `text`, as a host's renderer answers. */
+function svgOf(text, w, h) {
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}">` +
+    `<rect width="${w}" height="${h}" fill="#888"/><text x="4" y="${h - 4}">${text.replace(/[<&]/g, "")}</text></svg>`;
+}
+
+await test("a host's renderer draws a closed fence as a picture, with a caret stop either side", async () => {
+  const asked = [];
+  const ed = editor(DEMO, {
+    regionRenderers: {
+      "fence:demo": (r, ctx) => {
+        asked.push([r.kind, r.content, ctx.size, typeof ctx.ink, typeof ctx.dark]);
+        return { svg: svgOf(r.content, 120, 40), width: 120, height: 40 };
+      },
+    },
+  });
+  eq(asked, [["fence:demo", "A\n", ed.theme.fontSize, "string", "boolean"]]);
+  eq(ed._lastView.regions.map((r) => r.kind), ["fence:demo"], "a renderer does not own its kind");
+  const r = ed._lastView.regions[0];
+  const row = ed.rowEls[r.start_row];
+  assert(row.classList.contains("leaf-picture-row"), "the fence is not a picture row");
+  const img = row.querySelector(".leaf-region img.leaf-region-picture");
+  assert(img && img.src.startsWith("data:image/svg+xml"), "no picture in the row");
+  eq(img.getBoundingClientRect().width, 120, "the picture is not at its own size");
+  assert(!ed.contentEl.textContent.includes("```"), "the fence shows its markup");
+  assert(!ed.contentEl.textContent.includes("▤"), "the placeholder is painted beside the picture");
+  assert(ed.contentEl.textContent.includes("fn x() {}"), "a fence of another language is not code");
+  // Its two caret homes, at the fence's two ends.
+  const zwsps = [...row.childNodes].filter((n) => n.nodeType === 3);
+  eq(zwsps.length, 2, "the caret homes either side of the picture");
+  place(zwsps[0], 0);
+  ed._syncFromDom();
+  eq(ed._lastView.caret_src, r.src, "the near stop");
+  place(zwsps[1], 1);
+  ed._syncFromDom();
+  eq(ed._lastView.caret_src, r.end, "the far stop");
+  // With no editor, a click on it opens nothing; an edit elsewhere draws nothing anew.
+  const b = img.getBoundingClientRect();
+  img.dispatchEvent(new MouseEvent("mousedown", {
+    bubbles: true, cancelable: true, button: 0, detail: 1, clientX: b.left + 5, clientY: b.top + 3,
+  }));
+  assert(!ed._session, "a fence with no editor opened");
+  ed.render(ed.doc.edit_source(0, 0, "more "));
+  eq(asked.length, 1, "an edit elsewhere drew the fence again");
+  // Wider than the measure, it is scaled down to fit it.
+  const wide = editor(DEMO, {
+    regionRenderers: { "fence:demo": (r) => ({ svg: svgOf(r.content, 4000, 100), width: 4000, height: 100 }) },
+  });
+  const wimg = wide.contentEl.querySelector("img.leaf-region-picture");
+  assert(wimg.getBoundingClientRect().width < wide.contentEl.getBoundingClientRect().width, "a wide picture overflows");
+  wide.destroy();
+  return ed;
+});
+
+await test("a renderer's promise is the placeholder until it settles into the picture", async () => {
+  const settle = [];
+  let calls = 0;
+  const ed = editor(DEMO, {
+    regionRenderers: {
+      "fence:demo": (r) => {
+        calls++;
+        return new Promise((resolve) => settle.push(() => resolve({ svg: svgOf(r.content, 80, 30), width: 80, height: 30 })));
+      },
+    },
+  });
+  assert(ed.contentEl.textContent.includes("▤"), "no placeholder while the picture is on its way");
+  assert(!ed.contentEl.querySelector("img.leaf-region-picture"), "a picture before it arrived");
+  // A frame painted while it is on its way does not ask again.
+  ed.render(ed.doc.edit_source(0, 0, "x"));
+  eq(calls, 1, "a pending picture was asked for again");
+  settle.shift()();
+  await new Promise((r) => setTimeout(r, 0));
+  assert(ed.contentEl.querySelector("img.leaf-region-picture"), "the settled picture was not drawn");
+  assert(!ed.contentEl.textContent.includes("▤"), "the placeholder stayed");
+  // A picture that settles for content no longer there is dropped.
+  const r = ed._lastView.regions[0];
+  ed.render(ed.doc.edit_source(r.content_start, r.content_start, "B"));
+  eq(calls, 2);
+  ed.render(ed.doc.edit_source(r.content_start, r.content_start + 1, "C"));
+  eq(calls, 3);
+  settle.shift()();
+  await new Promise((r) => setTimeout(r, 0));
+  assert(ed.contentEl.textContent.includes("▤"), "a stale picture was drawn");
+  settle.shift()();
+  await new Promise((r) => setTimeout(r, 0));
+  assert(decodeURIComponent(ed.contentEl.querySelector("img.leaf-region-picture").src).includes("CA"), "the current picture was not drawn");
+  // One that rejects is reported, and stays the placeholder.
+  const quiet = console.error;
+  let reported = 0;
+  console.error = () => reported++;
+  try {
+    const bad = editor(DEMO, { regionRenderers: { "fence:demo": () => Promise.reject(new Error("no")) } });
+    await new Promise((r) => setTimeout(r, 0));
+    assert(bad.contentEl.textContent.includes("▤"), "a rejected picture took the placeholder");
+    bad.destroy();
+  } finally {
+    console.error = quiet;
+  }
+  eq(reported, 1, "the rejection was not reported");
+  return ed;
+});
+
+await test("redrawRegions asks the renderers again, all or one kind", async () => {
+  await LeafEditor.loadMath();
+  let fences = 0;
+  let version = "one";
+  const ed = editor("say $x$ here\n\n" + DEMO, {
+    regionRenderers: {
+      "fence:demo": (r) => {
+        fences++;
+        const f = document.createElement("figure");
+        f.className = "demo-drawing";
+        f.textContent = version;
+        return { element: f };
+      },
+    },
+  });
+  eq(fences, 1);
+  version = "two";
+  ed.redrawRegions("math");
+  eq(fences, 1, "a math redraw asked the fence again");
+  eq(ed.contentEl.querySelector(".demo-drawing").textContent, "one");
+  assert(ed.contentEl.querySelector(".leaf-r-math.leaf-math"), "the formula was not drawn again");
+  ed.redrawRegions();
+  eq(fences, 2, "redrawRegions() did not ask again");
+  eq(ed.contentEl.querySelector(".demo-drawing").textContent, "two", "the new drawing is not on the page");
+  ed.redrawRegions("fence:demo");
+  eq(fences, 3);
+  return ed;
+});
+
+await test("a renderer for math replaces leaf's, inline and in a block", async () => {
+  await LeafEditor.loadMath();
+  const asked = [];
+  const ed = editor("say $x+y$ here\n\n$$\n\\int x\n$$\n\nend\n", {
+    regionRenderers: {
+      math: (r, ctx) => {
+        asked.push([r.kind, r.content.trim(), r.inline, r.display, ctx.size]);
+        return { svg: svgOf(r.content, 30, 12), width: 30, height: 12, baseline: 9 };
+      },
+    },
+  });
+  assert(asked.some((a) => a[1] === "x+y" && a[2] && !a[3]), `the inline formula was not asked: ${JSON.stringify(asked)}`);
+  assert(asked.some((a) => a[1] === "\\int x" && !a[2] && a[3]), `the block was not asked: ${JSON.stringify(asked)}`);
+  const atom = ed.contentEl.querySelector(".leaf-r-math.leaf-math");
+  assert(atom, "the inline formula is not a picture");
+  eq(atom.style.width, "30px");
+  eq(atom.style.height, "12px");
+  eq(atom.style.verticalAlign, "-3px", "not dropped by its depth below the baseline");
+  assert(decodeURIComponent(atom.style.backgroundImage).includes("#888"), "not the host's picture");
+  const img = ed.contentEl.querySelector("img.leaf-math-block");
+  assert(img && decodeURIComponent(img.src).includes("#888"), "the block is not the host's picture");
+  eq(img.style.width, "30px");
+  // Formulas are still leaf's to edit: → opens the inline one, and the open
+  // formula is drawn by its session, caret and all.
+  const m = ed._lastView.regions.find((r) => r.inline);
+  ed.render(ed.doc.select_range(m.src, m.src));
+  press(ed, "ArrowRight");
+  assert(ed._session?.kind === "math", "the formula did not open");
+  const open = ed.contentEl.querySelector(".leaf-r-math.leaf-math");
+  assert(ed.overlayEl.querySelector(".leaf-region-caret"), "no caret over the open formula");
+  assert(!decodeURIComponent(open.style.backgroundImage).includes("#888"), "the open formula is the renderer's picture");
+  press(ed, "Escape");
+  assert(decodeURIComponent(ed.contentEl.querySelector(".leaf-r-math.leaf-math").style.backgroundImage).includes("#888"),
+    "closed, the formula is not the renderer's picture again");
+  // Math edited as source is drawn by it too.
+  const src = editor("say $x+y$ here\n\nnext\n", { mathEditing: "source", regionRenderers: { math: () => ({ svg: svgOf("m", 20, 10), width: 20, height: 10 }) } });
+  src.render(src.doc.move_doc_end(false));
+  eq(src.contentEl.querySelector(".leaf-r-math.leaf-math")?.style.width, "20px", "an unowned formula is not the host's picture");
+  src.destroy();
+  return ed;
+});
+
+await test("a directive renderer is handed the directive as a region", async () => {
+  const seen = [];
+  const ed = editor('intro\n\n::embed[Card]{src="a.md" wide}\n\nend\n', {
+    regionRenderers: {
+      "directive:embed": (r, ctx) => {
+        seen.push({ r, ctx });
+        const card = document.createElement("div");
+        card.className = "test-embed";
+        card.textContent = r.label;
+        return { element: card };
+      },
+    },
+  });
+  eq(seen.length, 1);
+  const { r, ctx } = seen[0];
+  eq(r.kind, "directive:embed");
+  eq(r.name, "embed");
+  eq(r.label, "Card");
+  eq(r.attrs, [{ key: "src", value: "a.md" }, { key: "wide", value: "" }]);
+  eq(r.content, '::embed[Card]{src="a.md" wide}', "the content is not the directive's whole source");
+  eq(r.inline, false);
+  eq(typeof ctx.dark, "boolean");
+  const row = ed.rowEls[r.start_row];
+  assert(row.classList.contains("leaf-directive-row") && row.dataset.directive === "embed", "the row does not say it is the directive");
+  eq(row.querySelector(".leaf-directive .test-embed")?.textContent, "Card");
+  return ed;
+});
+
+await test("a directive's editor writes its source through splices, and its renderer draws what it wrote", async () => {
+  const log = [];
+  const ed = editor(EMBED_DOC, {
+    regionRenderers: embedRenderers(log),
+    regionEditors: {
+      "directive:embed": {
+        open(r, entry, host) {
+          log.push("open " + entry.at);
+          const field = document.createElement("input");
+          field.className = "test-directive-field";
+          field.value = r.content;
+          return { element: field, host, focus: () => field.focus(), reload: () => true, close: () => log.push("close") };
+        },
+      },
+    },
+  });
+  const r = ed._lastView.regions[0];
+  eq(r.kind, "directive:embed");
+  ed.focus();
+  ed.render(ed.doc.select_range(r.src, r.src));
+  press(ed, "ArrowRight");
+  assert(ed._session?.kind === "directive:embed", "→ in front of the directive did not open it");
+  const field = ed.contentEl.querySelector(".leaf-directive .test-directive-field");
+  assert(field, "the editor's view is not where the drawing was");
+  eq(document.activeElement, field);
+  const { host } = ed._session.impl;
+  host.edit([{ from: r.content.indexOf("/a"), to: r.content.indexOf("/a") + 2, text: "/b" }]);
+  eq(ed.source(), EMBED_DOC.replace("/a", "/b"));
+  host.replace('::embed{src="https://x.org/c"}');
+  eq(ed.source(), EMBED_DOC.replace("/a", "/c"));
+  host.undo();
+  eq(ed.source(), EMBED_DOC.replace("/a", "/b"), "undo is not one step per write");
+  host.redo();
+  host.leave("after");
+  assert(!ed._session, "leave did not close it");
+  eq(ed._lastView.caret_src, ed._lastView.regions[0].end);
+  eq(ed.contentEl.querySelector(".test-embed")?.textContent, "Embed https://x.org/c", "the renderer did not draw what was written");
+  // A click on the drawing opens it at the point.
+  const card = ed.contentEl.querySelector(".test-embed");
+  const b = card.getBoundingClientRect();
+  card.dispatchEvent(new MouseEvent("mousedown", {
+    bubbles: true, cancelable: true, button: 0, detail: 1, clientX: b.left + 2, clientY: b.top + 2,
+  }));
+  eq(log.filter((l) => typeof l === "string" && l.startsWith("open")), ["open home", "open point"]);
+  return ed;
+});
+
+/**
+ * A host's picture session for `directive:date`, the stand-in for the demo's
+ * date chip: three stops, 20px apart, on a 60 × 16 picture, the caret at the
+ * middle of each and the middle stop selected. ← at the first stop and → at
+ * the last leave; any other name is not its own. Typed text goes in at the
+ * end of the label. Records what leaf asked of it in `log`.
+ */
+function chipEditor(log) {
+  return {
+    open(r, entry, host) {
+      log.push(["open", entry.at, r.inline, r.label]);
+      let at = entry.at === "home" ? 0 : entry.at === "end" ? 2 : Math.max(0, Math.min(2, Math.floor(entry.x / 20)));
+      let content = r.content;
+      return {
+        host,
+        get at() { return at; },
+        picture(size, ink) {
+          log.push(["picture", size, typeof ink]);
+          return {
+            svg: svgOf(content, 60, 16), width: 60, height: 16, baseline: 12,
+            caret: { x: at * 20 + 10, y: 2, width: 0, height: 12 },
+            selection: at === 1 ? [{ x: 20, y: 2, width: 20, height: 12 }] : [],
+          };
+        },
+        key(name) {
+          log.push(["key", name]);
+          if (name === "ArrowLeft") return at === 0 ? { leave: "before" } : (at--, { moved: true });
+          if (name === "ArrowRight") return at === 2 ? { leave: "after" } : (at++, { moved: true });
+          if (name === "Escape") return { leave: "after" };
+          return null;
+        },
+        type(text) {
+          log.push(["type", text]);
+          const end = content.indexOf("]");
+          const at = new TextEncoder().encode(content.slice(0, end)).length;
+          content = content.slice(0, end) + text + content.slice(end);
+          return { edit: [{ from: at, to: at, text }] };
+        },
+        click(x, y, size) {
+          at = Math.max(0, Math.min(2, Math.floor(x / 20)));
+          log.push(["click", at, size]);
+          return { moved: true };
+        },
+        reload(c) {
+          content = c;
+          return true;
+        },
+        close: () => log.push(["close"]),
+      };
+    },
+  };
+}
+const CHIP_DOC = "on :date[2026-10-12] we met\n\nnext\n";
+const chipOpts = (log) => ({
+  regionRenderers: {
+    "directive:date": (r) => ({ svg: svgOf(r.label, 50, 16), width: 50, height: 16, baseline: 12 }),
+  },
+  regionEditors: { "directive:date": chipEditor(log) },
+});
+/** Open the chip in `ed` by → from in front of it. */
+function openChip(ed) {
+  const r = ed._lastView.regions.find((r) => r.kind === "directive:date");
+  ed.focus();
+  ed.render(ed.doc.select_range(r.src, r.src));
+  press(ed, "ArrowRight");
+  assert(ed._session?.kind === "directive:date", "→ in front of the chip did not open it");
+  return r;
+}
+/** A mousedown at `x, y` from `el`'s top left. */
+function clickAt(el, x, y) {
+  const b = el.getBoundingClientRect();
+  return el.dispatchEvent(new MouseEvent("mousedown", {
+    bubbles: true, cancelable: true, button: 0, detail: 1, clientX: b.left + x, clientY: b.top + y,
+  }));
+}
+const near = (a, b, what) => assert(Math.abs(a - b) < 0.75, `${what}: ${a} is not ${b}`);
+
+await test("an inline directive a host draws is its picture in the line, and opens by arrows and click", async () => {
+  const log = [];
+  const ed = editor(CHIP_DOC, chipOpts(log));
+  const r = ed._lastView.regions[0];
+  eq([r.kind, r.inline, r.name, r.label, r.content], ["directive:date", true, "date", "2026-10-12", ":date[2026-10-12]"]);
+  const pic = ed.contentEl.querySelector(".leaf-inline-picture");
+  assert(pic, "the directive is not drawn as a picture in its line");
+  eq(pic.style.width, "50px");
+  eq(pic.dataset.directive, "date");
+  assert(ed.rowEls[0].textContent.startsWith("on "), "the text around it is gone");
+  // → from in front opens it at its first stop; → walks it, and leaves it
+  // behind at the last.
+  openChip(ed);
+  eq(log[0], ["open", "home", true, "2026-10-12"]);
+  eq(document.activeElement, ed.imeEl, "the field under the caret does not have the focus");
+  assert(ed.contentEl.classList.contains("leaf-region-editing"), "the browser's caret is still shown");
+  eq(ed.contentEl.querySelector(".leaf-inline-picture").style.width, "60px", "the open chip is not its session's picture");
+  press(ed, "ArrowRight");
+  press(ed, "ArrowRight");
+  assert(ed._session, "left a stop early");
+  press(ed, "ArrowRight");
+  assert(!ed._session, "→ at the last stop did not leave");
+  eq(ed._lastView.caret_src, r.end);
+  eq(document.activeElement, ed.contentEl, "leaving did not give the document the focus back");
+  eq(ed.contentEl.querySelector(".leaf-inline-picture").style.width, "50px", "closed, the chip is not its renderer's picture");
+  // ← from behind opens it at its last stop, and ← walks out in front.
+  press(ed, "ArrowLeft");
+  assert(ed._session?.impl.at === 2, "← behind the chip did not open it at its end");
+  for (let i = 0; i < 3; i++) press(ed, "ArrowLeft");
+  assert(!ed._session, "← at the first stop did not leave");
+  eq(ed._lastView.caret_src, r.src);
+  // A click opens it at the point, and a click on it moves its caret.
+  clickAt(ed.contentEl.querySelector(".leaf-inline-picture"), 45, 8);
+  eq(log.filter((l) => l[0] === "open").at(-1), ["open", "point", true, "2026-10-12"]);
+  eq(ed._session?.impl.at, 2, "the click did not open it at the stop under the pointer");
+  clickAt(ed.contentEl.querySelector(".leaf-inline-picture"), 5, 8);
+  eq(ed._session?.impl.at, 0, "a click on the open chip did not move its caret");
+  eq(log.at(-1)[0] === "picture" ? log.filter((l) => l[0] === "click").at(-1) : log.at(-1), ["click", 0, ed.theme.fontSize]);
+  // A click elsewhere closes it.
+  clickAt(ed.rowEls[2], 2, 2);
+  assert(!ed._session, "a click elsewhere left it open");
+  eq(log.at(-1), ["close"]);
+  eq(ed.source(), CHIP_DOC, "walking the chip wrote something");
+  return ed;
+});
+
+await test("an inline region whose editor answers with a view is refused", async () => {
+  const quiet = console.error;
+  let reported = 0;
+  console.error = () => reported++;
+  let closed = 0;
+  let ed;
+  try {
+    ed = editor(CHIP_DOC, {
+      regionRenderers: chipOpts([]).regionRenderers,
+      regionEditors: {
+        "directive:date": { open: () => ({ element: document.createElement("input"), close: () => closed++ }) },
+      },
+    });
+    const r = ed._lastView.regions[0];
+    ed.render(ed.doc.select_range(r.src, r.src));
+    press(ed, "ArrowRight");
+  } finally {
+    console.error = quiet;
+  }
+  assert(!ed._session, "an inline region opened as a view");
+  eq([reported, closed], [1, 1], "the refusal was not reported, or the view not closed");
+  return ed;
+});
+
+await test("leaf draws a picture session's caret and selection where it says, and the host can find them", async () => {
+  const log = [];
+  const ed = editor(CHIP_DOC, chipOpts(log));
+  openChip(ed);
+  press(ed, "ArrowRight");
+  const pic = ed.contentEl.querySelector(".leaf-inline-picture").getBoundingClientRect();
+  assert(!ed.overlayEl.hidden, "nothing is drawn over the open picture");
+  const bar = ed.overlayEl.querySelector(".leaf-region-caret");
+  assert(bar, "no caret over the picture");
+  const cb = bar.getBoundingClientRect();
+  near(cb.left + cb.width / 2, pic.left + 30, "the caret's x");
+  near(cb.top, pic.top + 2, "the caret's top");
+  near(cb.height, 12, "the caret's height");
+  assert(cb.width >= 1.5 && cb.width <= 2, `the caret is ${cb.width}px wide`);
+  const sel = ed.overlayEl.querySelectorAll(".leaf-region-selection");
+  eq(sel.length, 1, "the selection is not drawn");
+  const sb = sel[0].getBoundingClientRect();
+  near(sb.left, pic.left + 20, "the selection's x");
+  near(sb.top, pic.top + 2, "the selection's top");
+  near(sb.width, 20, "the selection's width");
+  // The host's rects, in client coordinates: the caret inside the picture.
+  const { host } = ed._session.impl;
+  const caret = host.caretRect();
+  const region = host.regionRect();
+  assert(caret instanceof DOMRect && region instanceof DOMRect, "the host's rects are not DOMRects");
+  near(caret.x, pic.left + 30, "caretRect's x");
+  near(caret.height, 12, "caretRect's height");
+  assert(caret.left >= pic.left - 0.5 && caret.right <= pic.right + 0.5 && caret.top >= pic.top - 0.5 && caret.bottom <= pic.bottom + 0.5,
+    "caretRect is not inside the picture");
+  near(region.left, pic.left, "regionRect's x");
+  near(region.width, pic.width, "regionRect's width");
+  // A move redraws the caret, not the line.
+  const row = ed.rowEls[0];
+  press(ed, "ArrowRight");
+  eq(ed.rowEls[0], row, "a caret move rebuilt the row");
+  near(ed.overlayEl.querySelector(".leaf-region-caret").getBoundingClientRect().left + 1, pic.left + 50, "the moved caret");
+  eq(ed.overlayEl.querySelectorAll(".leaf-region-selection").length, 0, "a selection that went is still drawn");
+  // What a screen reader hears: the region's content, by default.
+  eq(ed.liveEl.getAttribute("aria-live"), "polite");
+  eq(ed.liveEl.textContent, ":date[2026-10-12]");
+  eq(ed.contentEl.querySelector(".leaf-inline-picture").getAttribute("aria-label"), ":date[2026-10-12]");
+  // Closed, nothing is drawn over it, and the host's rects are gone.
+  press(ed, "Escape");
+  assert(ed.overlayEl.hidden, "the overlay outlived the session");
+  eq(host.caretRect(), null);
+  return ed;
+});
+
+await test("consecutive typing in a picture session is one undo step, and a key in between splits it", async () => {
+  const log = [];
+  const mac = /Mac|iPhone|iPad/.test(navigator.platform);
+  const ed = editor(CHIP_DOC, chipOpts(log));
+  openChip(ed);
+  press(ed, "a");
+  press(ed, "b");
+  eq(ed.source(), CHIP_DOC.replace("12]", "12ab]"));
+  eq(ed.liveEl.textContent, ":date[2026-10-12ab]", "an edit was not announced");
+  press(ed, "ArrowRight");
+  press(ed, "c");
+  eq(ed.source(), CHIP_DOC.replace("12]", "12abc]"));
+  eq(log.filter((l) => l[0] === "type").map((l) => l[1]), ["a", "b", "c"]);
+  // ⌘Z is no name: the chip closes, and the document undoes.
+  press(ed, "z", mac ? { metaKey: true } : { ctrlKey: true });
+  assert(!ed._session, "⌘Z did not close the chip");
+  eq(ed.source(), CHIP_DOC.replace("12]", "12ab]"), "the typing after the key was not a step of its own");
+  press(ed, "z", mac ? { metaKey: true } : { ctrlKey: true });
+  eq(ed.source(), CHIP_DOC, "the typing before the key was not one step");
+  return ed;
+});
+
+await test("a key a session does not know closes it and runs, and keys reach it by name", async () => {
+  const log = [];
+  const mac = /Mac|iPhone|iPad/.test(navigator.platform);
+  const ed = editor(CHIP_DOC, chipOpts(log));
+  const named = [
+    [{ key: "ArrowRight", shiftKey: true }, "ExtendRight"],
+    [{ key: "ArrowUp", shiftKey: true }, "ExtendUp"],
+    [{ key: "ArrowRight", ...(mac ? { altKey: true } : { ctrlKey: true }) }, "WordRight"],
+    [{ key: "ArrowLeft", ...(mac ? { altKey: true } : { ctrlKey: true }) }, "WordLeft"],
+    [mac ? { key: "ArrowLeft", metaKey: true } : { key: "Home" }, "LineStart"],
+    [mac ? { key: "ArrowRight", metaKey: true } : { key: "End" }, "LineEnd"],
+    [mac ? { key: "ArrowUp", metaKey: true } : { key: "Home", ctrlKey: true }, "Home"],
+    [mac ? { key: "ArrowDown", metaKey: true } : { key: "End", ctrlKey: true }, "End"],
+    [{ key: "a", ...(mac ? { metaKey: true } : { ctrlKey: true }) }, "SelectAll"],
+    [{ key: "Backspace" }, "Backspace"],
+    [{ key: "Delete" }, "Delete"],
+    [{ key: "Enter" }, "Enter"],
+    [{ key: "Tab" }, "Tab"],
+  ];
+  for (const [init, name] of named) {
+    openChip(ed);
+    const ran = ed.contentEl.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, ...init }));
+    eq(log.filter((l) => l[0] === "key").at(-1), ["key", name], JSON.stringify(init));
+    assert(!ed._session, `${name}, unknown to the session, left it open`);
+    // Tab runs as leaf's own indent, which is prevented as it always is.
+    if (name !== "Tab") assert(ran, `${name}, unknown to the session, was kept from running`);
+  }
+  // A key with no name is not asked about, and closes it too; a modifier
+  // alone does nothing.
+  openChip(ed);
+  const asked = log.filter((l) => l[0] === "key").length;
+  press(ed, "Shift", { shiftKey: true });
+  assert(ed._session, "a modifier alone closed the session");
+  press(ed, "F5");
+  assert(!ed._session, "a key with no name left the session open");
+  eq(log.filter((l) => l[0] === "key").length, asked, "a key with no name was asked about");
+  // Tab, the chip's no more than F5, ran as leaf's indent once it closed.
+  eq(ed.source(), "  " + CHIP_DOC);
+  return ed;
+});
+
+await test("a composition in a picture session is shown by leaf, and only what is committed is typed", async () => {
+  const log = [];
+  const ed = editor(CHIP_DOC, chipOpts(log));
+  openChip(ed);
+  const ime = ed.imeEl;
+  ime.dispatchEvent(new CompositionEvent("compositionstart", { bubbles: true, data: "" }));
+  ime.dispatchEvent(new CompositionEvent("compositionupdate", { bubbles: true, data: "に" }));
+  let marked = ed.overlayEl.querySelector(".leaf-region-marked");
+  assert(marked, "the composition is not shown");
+  eq(marked.textContent, "に");
+  const pic = ed.contentEl.querySelector(".leaf-inline-picture").getBoundingClientRect();
+  near(marked.getBoundingClientRect().left, pic.left + 10, "the marked text is not at the caret");
+  ime.dispatchEvent(new InputEvent("beforeinput", { bubbles: true, cancelable: true, inputType: "insertCompositionText", data: "にほ" }));
+  eq(ed.overlayEl.querySelector(".leaf-region-marked")?.textContent, "にほ");
+  // A key while composing is the input method's.
+  ime.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true, cancelable: true, isComposing: true }));
+  eq(ed._session?.impl.at, 0, "a key while composing reached the session");
+  eq(log.filter((l) => l[0] === "type"), [], "the composition was typed before it was committed");
+  eq(ed.source(), CHIP_DOC);
+  ime.dispatchEvent(new CompositionEvent("compositionend", { bubbles: true, data: "日本" }));
+  eq(log.filter((l) => l[0] === "type"), [["type", "日本"]]);
+  eq(ed.source(), CHIP_DOC.replace("12]", "12日本]"));
+  assert(!ed.overlayEl.querySelector(".leaf-region-marked"), "the marked text outlived the composition");
+  assert(ed._session, "committing closed the session");
+  // Text from a keyboard with no keydown of its own is typed too.
+  const ev = new InputEvent("beforeinput", { bubbles: true, cancelable: true, inputType: "insertText", data: "!" });
+  ime.dispatchEvent(ev);
+  eq(ed.source(), CHIP_DOC.replace("12]", "12日本!]"));
+  assert(ev.defaultPrevented, "the input reached the field");
+  return ed;
+});
+
+await test("a host's math editor replaces leaf's, through the same door", async () => {
+  await LeafEditor.loadMath();
+  const log = [];
+  const hostMath = {
+    open(r, entry, host) {
+      log.push(["open", r.kind, r.content, entry.at]);
+      let content = r.content;
+      return {
+        picture: () => ({ svg: svgOf(content, 40, 14), width: 40, height: 14, baseline: 10, caret: { x: 40, y: 1, width: 0, height: 12 } }),
+        key: (name) => (name === "ArrowRight" || name === "Escape" ? { leave: "after" } : null),
+        type(text) {
+          const at = new TextEncoder().encode(content).length;
+          content += text;
+          return { edit: [{ from: at, to: at, text }] };
+        },
+        accessibilityValue: () => "formula " + content,
+      };
+    },
+  };
+  const ed = editor("say $x$ here\n", { regionEditors: { math: hostMath } });
+  assert(ed._regionEditors.get("math") === hostMath, "leaf's math editor took the host's place");
+  const m = ed._lastView.regions.find((r) => r.kind === "math");
+  assert(m, "a formula with a host's editor is not a region");
+  ed.focus();
+  ed.render(ed.doc.select_range(m.src, m.src));
+  press(ed, "ArrowRight");
+  eq(log, [["open", "math", "x", "home"]]);
+  assert(!ed._session.impl.session, "leaf's own session opened");
+  const atom = ed.contentEl.querySelector(".leaf-r-math.leaf-math");
+  eq(atom.style.width, "40px", "the open formula is not the host's picture");
+  press(ed, "y");
+  eq(ed.source(), "say $xy$ here\n");
+  eq(ed.liveEl.textContent, "formula xy", "the session's accessibility value was not said");
+  press(ed, "ArrowRight");
+  assert(!ed._session, "the host's leave did not close it");
+  eq(ed._lastView.caret_src, ed._lastView.regions[0].end);
+  return ed;
+});
+
+await test("TeX that will not typeset keeps its atom, tinted, with the fault in its title", async () => {
+  await LeafEditor.loadMath();
+  const ed = editor("intro\n\nbad $\\frac{$ here\n\n$$\n\\frac{\n$$\n\nend\n");
+  const atom = ed.contentEl.querySelector(".leaf-r-math");
+  assert(atom, "no math run");
+  assert(atom.classList.contains("leaf-math-error"), "the fault is not marked");
+  assert(atom.title.length > 0, "no message");
+  eq(atom.textContent, "∑");
+  // The block stays core's placeholder row, as text.
+  assert(!ed.rowEls.some((r) => r.classList.contains("leaf-math-row")), "a broken block was drawn as a picture");
+  assert(ed.contentEl.textContent.includes("∑ \\frac{"), "the placeholder row is gone");
+  return ed;
+});
+
+await test("the injected rules and presentation.css are the same stylesheet", async () => {
+  const text = await (await fetch("../src/presentation.css")).text();
+  // Comments and whitespace are each file's own; the rules are not.
+  const rules = (css) => css.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\s+/g, " ").trim();
+  eq(rules(text), rules(PRESENTATION_CSS), "presentation.css has drifted from PRESENTATION_CSS");
+  assert(rules(text).length > 0, "presentation.css is empty");
+});
+
+// ── report ────────────────────────────────────────────────────────────────
+
+const failed = results.filter((r) => !r.ok);
+const summary = document.getElementById("summary");
+summary.className = failed.length ? "fail" : "pass";
+summary.textContent = failed.length
+  ? `${failed.length} of ${results.length} failed`
+  : `all ${results.length} passed`;
+document.title = failed.length ? `FAIL ${failed.length}/${results.length}` : `PASS ${results.length}`;
+window.__results = { total: results.length, failed: failed.length, results };
+</script>
+</body>
+</html>

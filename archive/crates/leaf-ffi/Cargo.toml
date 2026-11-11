@@ -1,0 +1,81 @@
+[package]
+name = "leaf-ffi"
+publish = false
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+# Not `readme.workspace` — this crate has its own README.md, and the workspace
+# value (`../../README.md`) resolves outside the package. Cargo already ships
+# the local copy in the archive; this makes the manifest say so.
+readme = "README.md"
+description = "C-ABI / Swift frontend binding for leaf: wraps the filesystem-free leaf-core Doc behind UniFFI so an AppKit/SwiftUI app can drive the byte-offset caret model and render the VisualMap as style runs — the native-Apple peer of leaf-wasm."
+
+# staticlib -> the .a linked into the xcframework for device/simulator.
+# cdylib    -> a .dylib for a host-side macOS build and for `uniffi-bindgen`
+#              to introspect.
+# lib       -> lets `cargo test` and the in-tree bindgen bin see the crate.
+[lib]
+crate-type = ["staticlib", "cdylib", "lib"]
+
+# The bindings generator. Run as `cargo run -p leaf-ffi --bin uniffi-bindgen --
+# generate <path-to-dylib> --language swift --out-dir <dir>`; the build
+# script below wraps that. Kept in-tree (rather than the standalone
+# `uniffi-bindgen` crate) so the generator version can never drift from the
+# `uniffi` runtime this crate links.
+[[bin]]
+name = "uniffi-bindgen"
+path = "uniffi-bindgen.rs"
+
+[features]
+# Syntax highlighting in fenced code blocks — leaf-core's own `syntax`, passed
+# through so an app that has decided its binary cannot carry the grammars
+# (about a megabyte) can build the binding without them. On by default: the
+# Swift package paints every `Run::token`, and a run without one is plain code.
+default = ["syntax"]
+syntax = ["leaf-core/syntax"]
+# Mermaid diagrams for a host's `fence:mermaid` renderer (leaf-mermaid-ffi),
+# linked into this archive as a Swift module of its own. Off by default: leaf's
+# own views draw no diagrams, and an app that does not either should not carry
+# a Mermaid renderer. The leaf-editor app turns it on.
+mermaid = ["dep:leaf-mermaid-ffi"]
+
+[dependencies]
+# The document model, filesystem-free — same contract leaf-wasm builds against: a
+# sandboxed embed has no path to read and persists bytes its own way, so `fs` is
+# off and the host drives `Doc::from_source` + the public `source` field +
+# `mark_saved`. `syntax` comes back in through the feature above.
+leaf-core = { path = "../leaf-core", version = "0.5.1", default-features = false }
+
+# The FFI machinery: `proc-macro` mode (no .udl file) — the view structs derive
+# `Record`, the handle derives `Object`, and `setup_scaffolding!()` emits the C
+# ABI. `cli` pulls in `uniffi_bindgen_main` for the bin target above.
+uniffi = { version = "0.32", features = ["cli"] }
+thiserror = "1"
+
+# A visual column is a display cell; a native text run (NSAttributedString /
+# NSTextView) counts UTF-16 units — the two drift by a cell per wide glyph (CJK,
+# emoji). Same crate/version leaf-core segments with, so cluster boundaries agree.
+unicode-segmentation = "1.13.3"
+
+# SVG as vectors for the Apple views. Nothing here calls it: it is linked so
+# that its UniFFI scaffolding lands in *this* crate's staticlib, which is the
+# one archive the app force-loads — two Rust archives in one executable is a
+# duplicate-`std` link error, so a second binding crate can only ride along
+# inside the first. The Swift side (`ResvgCoreGraphics`, from the resvg-swift
+# package leaf-swift depends on) finds its `resvg_uniffi` symbols there. From
+# git, `branch = "main"`, spelled as thorn-svg-ffi spells it, so a host that
+# links both gets one resvg-uniffi.
+resvg-uniffi = { git = "https://github.com/diaryx-org/resvg-swift", branch = "main" }
+
+# TeX to a self-contained SVG picture with its baseline metrics, for the Swift
+# views to draw in a line (a run delegate) or over a block's rows. Exposed as
+# `typeset_math`; the fonts ride inside the crate, so nothing is loaded at
+# runtime.
+leaf-math.workspace = true
+# The editors leaf runs itself, chosen by a region's kind, behind
+# `EditSession`: today a formula opened in place, edited as fractions and
+# scripts, written back as splices on its TeX (leaf-math-edit).
+leaf-session.workspace = true
+# Under the `mermaid` feature: see above.
+leaf-mermaid-ffi = { path = "../leaf-mermaid-ffi", optional = true }

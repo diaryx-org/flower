@@ -1,0 +1,2 @@
+# The page's build (`cargo xtask web`), which the page loads; built, not kept.
+/pkg

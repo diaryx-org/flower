@@ -1,0 +1,127 @@
+//! The GUI end of leaf-core's styling seam: map the toolkit-neutral
+//! [`leaf_core::Style`] — a [`Role`] plus emphasis flags — onto gpui's `Hsla`,
+//! `Font`, and `TextRun`.
+//!
+//! This is the gpui counterpart of `leaf-tui`'s `to_ratatui`. Core hands over
+//! *what a glyph is*, never what color to paint it; here the GUI answers with
+//! its own palette and font metrics. Where a terminal tells a heading apart by
+//! cycling a color, the GUI gives it a larger font in the ordinary text color —
+//! and code a monospace family rather than a green tint — so the same neutral
+//! roles produce a native-feeling document rather than a colored-terminal echo.
+
+use gpui::{Font, FontStyle, FontWeight, Hsla, TextRun, UnderlineStyle, px};
+use leaf_core::style::{Role, Style as LStyle, Token};
+
+/// The GUI's presentation of a glyph: the two font families it shapes with plus
+/// the handful of role colors, resolved once per paint from the theme and handed
+/// to the shaper (a run picks its family and color from its glyph's [`Role`]).
+#[derive(Clone)]
+pub struct RunStyle {
+    /// Ordinary prose (and headings, which differ only in size and weight).
+    pub body: Font,
+    /// Code — a monospace family so columns line up.
+    pub mono: Font,
+    /// The default glyph color: body text, headings, and code all read in it.
+    pub text: Hsla,
+    /// A hyperlink's color.
+    pub link: Hsla,
+    /// Quiet decoration — list bullets, quote/code gutters, rules.
+    pub muted: Hsla,
+    /// The highlight behind marked (`==mark==`) text.
+    pub mark_bg: Hsla,
+    /// The washes behind a coloured highlight — `==🔴 text==` — indexed by
+    /// [`MarkColor::index`](leaf_core::MarkColor::index), so `[0]` is red. Pale,
+    /// like [`mark_bg`](Self::mark_bg): the text over them keeps reading in
+    /// [`text`](Self::text), so each has to be a wash rather than a fill.
+    pub mark_colors: [Hsla; 7],
+    /// The tint behind an inline `` `code` `` run — the pill that sets it apart
+    /// mid-sentence. A fenced block gets a drawn border box instead (geometry the
+    /// element paints), but an inline run can only carry a background color.
+    pub code_bg: Hsla,
+    /// The syntax-highlighting palette, indexed by
+    /// [`Token::index`](leaf_core::Token::index) — see
+    /// [`EditorStyle::syntax`](crate::EditorStyle::syntax).
+    pub syntax: [Hsla; 8],
+}
+
+/// How much larger than the body a heading of `level` (1-based) is drawn, given
+/// the theme's per-level ramp. Levels past the ramp (there is no heading past 6)
+/// fall back to body size.
+pub fn heading_scale(level: u8, ramp: &[f32; 6]) -> f32 {
+    level
+        .checked_sub(1)
+        .and_then(|i| ramp.get(i as usize))
+        .copied()
+        .unwrap_or(1.0)
+}
+
+/// A `TextRun` of `len` bytes for a glyph of style `s`: its [`Role`] picks the
+/// family (mono for code), the color, and any background/underline; the author's
+/// own bold/italic layer on top.
+///
+/// A run carries a `Font` but not a size — a line is shaped at one size (see
+/// [`crate::Shaper`]), which is why a heading, whose whole row is bigger, is a
+/// row-level decision while the family here is per-run. Headings are kept
+/// *orthogonal* to color: they read in the default text color and are bold from
+/// their role, so size and weight do all the distinguishing.
+pub fn text_run(len: usize, s: LStyle, rs: &RunStyle) -> TextRun {
+    let heading = matches!(s.role, Role::Heading(_));
+    let mut font = match s.role {
+        Role::Code => rs.mono.clone(),
+        _ => rs.body.clone(),
+    };
+    // A heading is bold from its role even though the author wrote no emphasis;
+    // every other role bolds only if he did.
+    if s.bold || heading {
+        font.weight = FontWeight::BOLD;
+    }
+    // A comment in a highlighted block is italic on top of its colour — the
+    // one token the palette gives a style as well as a hue.
+    if s.italic || (s.role == Role::Code && s.token == Some(Token::Comment)) {
+        font.style = FontStyle::Italic;
+    }
+    let color = match (s.role, s.token) {
+        // A highlighted code glyph reads in its token's colour; one without a
+        // token — or a token on a non-code role, which core never produces —
+        // falls through to the role's colour.
+        (Role::Code, Some(token)) => rs.syntax[token.index()],
+        (Role::Link, _) => rs.link,
+        // Revealed raw markup is muted for the same reason the list bullets and
+        // quote gutters are: it's the scaffolding around the prose, and the
+        // caret's line should still read as a line of text.
+        (Role::ListMarker | Role::QuoteGutter | Role::Rule | Role::Delimiter, _) => rs.muted,
+        // A list item's indent on its later rows is the marker's own characters,
+        // shaped so the row starts where the item's first row does, and never
+        // seen: ink with no alpha takes their width and draws nothing.
+        (Role::ListIndent, _) => gpui::transparent_black(),
+        // Body, Heading, plain Code, Mark all read in the default text color.
+        _ => rs.text,
+    };
+    // Marked text gets its highlight; inline code gets its pill tint. A fenced
+    // code block's rows get the same tint from a quad the element paints behind
+    // them, so the per-run background here reads the same either way.
+    let background_color = match s.role {
+        // A highlight the author coloured takes that wash; one they didn't takes
+        // the theme's highlighter. The ink is `rs.text` either way, which is why
+        // both are pale.
+        Role::Mark(Some(c)) => Some(rs.mark_colors[c.index()]),
+        Role::Mark(None) => Some(rs.mark_bg),
+        Role::Code => Some(rs.code_bg),
+        _ => None,
+    };
+    // Links are underlined; so is anything the author marked as an insertion
+    // (`{+ins+}` sets the underline flag). `color: None` follows the run's color.
+    let underline = (matches!(s.role, Role::Link) || s.underline).then(|| UnderlineStyle {
+        thickness: px(1.0),
+        color: None,
+        wavy: false,
+    });
+    TextRun {
+        len,
+        font,
+        color,
+        background_color,
+        underline,
+        strikethrough: None,
+    }
+}

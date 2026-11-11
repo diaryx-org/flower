@@ -1,0 +1,396 @@
+//  TableLayout.swift
+//
+//  The proportional grid a table is drawn as — the Apple peer of leaf-gpui's
+//  `layout_table`. Core hands back a table two ways: the monospace box-glyph
+//  picture in `DocView.rows` (right on a terminal, sheared in a proportional
+//  font), and the structural `TableView` (cells, alignment, which rows are the
+//  head). This lays the structural form out — columns sized to their widest
+//  cell, cells padded and aligned, a header ruled off from the body — so the
+//  view can paint a real grid and skip the picture rows entirely.
+//
+//  Columns are sized to content — each as wide as its widest cell — and only
+//  squeezed when the grid won't fit the text column, at which point the cells
+//  that overrun wrap into what their column has left. The same rule as the
+//  other two frontends (`fit_widths` in core, `fit_widths_px` in gpui), so a
+//  wide table reads the same everywhere: a grid the width of the column, never
+//  one that runs off the right edge of the view.
+
+import CoreGraphics
+import CoreText
+import Foundation
+import LeafFFI
+
+enum TableMetrics {
+    static let border: CGFloat = 1      // grid line thickness
+    static let padX: CGFloat = 8        // cell horizontal padding
+    static let padY: CGFloat = 4        // cell vertical padding
+    /// The narrowest a column is squeezed to when the grid won't fit. Below this
+    /// a column stops carrying words and shreds them a letter per line, which
+    /// reads worse than a grid that runs wide. leaf-gpui's `MIN_COL_PX`.
+    static let minColumnWidth: CGFloat = 24
+}
+
+/// One shaped line of a cell: the `CTLine` to draw, where to draw it (aligned
+/// within its column), and the source offsets a click/caret over *this line*
+/// resolves against. A cell is one line unless an in-cell `<br>` splits it, or
+/// its text overruns a squeezed column and soft-wraps into several.
+struct TableCellLineLayout {
+    let line: CTLine
+    let attributed: NSAttributedString
+    /// Text draw origin x, relative to the table's left edge (alignment applied).
+    let textX: CGFloat
+    /// The UTF-16 sub-ranges of this line that lie in the active selection —
+    /// filled behind the text as a selection background. Empty when nothing here
+    /// is selected. Line-local (offsets into the line's own shaped string), so a
+    /// `CTLineGetOffsetForStringIndex` maps them straight to draw x's.
+    let selRanges: [(start: Int, end: Int)]
+    /// Source offsets bounding this line — its caret home and its end stop.
+    let start: Int
+    let end: Int
+    /// Where each visible character of the line came from — the ruler between
+    /// the shaped string's UTF-16 indices and the source's byte offsets. See
+    /// `CellChar`.
+    let chars: [CellChar]
+    /// Whether this line ends at a soft wrap rather than at the cell's end or an
+    /// in-cell `<br>`. Its `end` is then the next line's `start`, and an offset
+    /// there belongs to the *following* line — the rule a paragraph's wrapped
+    /// lines follow too (`EditorLayout.rect(row:ch:)`).
+    var softWrapped: Bool = false
+
+    /// The UTF-16 index in this line's shaped string that source offset `src`
+    /// is drawn at — the first character at or past it, or the line's end when
+    /// none is. An offset inside a hidden delimiter (`**bold**`'s closing `**`
+    /// is bytes with no glyph) therefore lands after the last glyph before it,
+    /// which is where the caret standing there belongs.
+    func utf16Index(forSrc src: Int) -> Int {
+        chars.first { $0.src >= src }?.utf16 ?? attributed.length
+    }
+
+    /// The source offset the caret at UTF-16 index `idx` of the shaped string
+    /// stands at: the character there, or the line's `end` past its last one —
+    /// the cell's end stop, past whatever hidden markup closes the cell, which
+    /// is where core's own picture puts a click past the last glyph.
+    func src(forUTF16 idx: Int) -> Int {
+        chars.first { $0.utf16 >= idx }?.src ?? end
+    }
+}
+
+/// One visible character of a cell line: where it sits in the shaped string
+/// (a UTF-16 index) and where it came from in the source (a byte offset). The
+/// two advance at different rates — `é` is one unit and two bytes, `🙂` two
+/// units and four bytes — and a hidden delimiter leaves a gap in `src` with no
+/// glyph to show for it. Each run of a `TableCellLineView` carries the offset
+/// of its first glyph (`Run.src`); its characters are counted from there.
+struct CellChar {
+    let utf16: Int
+    let src: Int
+}
+
+/// One laid-out cell: its shaped lines, the column's box, and the source offsets
+/// bounding the whole cell (a click/caret resolves against the lines).
+struct TableCellLayout {
+    let lines: [TableCellLineLayout]
+    /// The column's left/right box edges, relative to the table's left edge.
+    let colLeft: CGFloat
+    let colRight: CGFloat
+    /// Source byte offsets bounding the whole cell — the caret anchors.
+    let start: Int
+    let end: Int
+}
+
+/// One grid row: its vertical band (relative to the table top), whether it's a
+/// header row, and its cells. A row is as tall as its tallest cell, so a cell
+/// with an in-cell break makes the whole row grow.
+struct TableRowLayout {
+    let top: CGFloat
+    let height: CGFloat
+    let head: Bool
+    let cells: [TableCellLayout]
+}
+
+/// A whole table laid out as a grid: column boundaries, row bands, and the total
+/// height it occupies in the document.
+struct TableLayout {
+    /// Column boundary x's (count = cols + 1), relative to the table's left edge —
+    /// the centres of the vertical rules.
+    let colX: [CGFloat]
+    let rows: [TableRowLayout]
+    /// The grid-row index of the first body row (header rows precede it) — where
+    /// the heavier header rule is drawn.
+    let bodyStart: Int
+    /// The table's total height (top border → bottom border).
+    let height: CGFloat
+    /// The height of one text line — a multi-line cell stacks these.
+    let lineHeight: CGFloat
+
+    var width: CGFloat { colX.last ?? 0 }
+
+    /// Lay `table` out with `theme`'s body font into `availableWidth` points —
+    /// the text column, which the grid is squeezed to fit; `<= 0` means "don't
+    /// fit" (every column at its widest cell), the state before a view knows its
+    /// bounds, and what an unwrapped layout asks for. `nil` when the table has no
+    /// columns (nothing to draw — the caller falls back to the picture rows).
+    init?(_ table: TableView, theme: EditorTheme, availableWidth: CGFloat = 0) {
+        let cols = table.grid.map { $0.cells.count }.max() ?? 0
+        guard cols > 0, !table.grid.isEmpty else { return nil }
+
+        // Shape every cell's every line once, unwrapped: the widest line is each
+        // column's wish, and a line that fits its column is kept as shaped (no
+        // second pass to find out that it doesn't wrap).
+        struct Shaped {
+            let line: CTLine; let attr: NSAttributedString; let width: CGFloat
+            let sel: [(Int, Int)]; let start: Int; let end: Int
+            let chars: [CellChar]; var soft = false
+        }
+        let unwrapped: [[[Shaped]]] = table.grid.map { row in
+            row.cells.map { cell in
+                cell.lines.map { ln in
+                    let attr = AttributedRow.makeCellLine(ln, head: row.head, theme: theme)
+                    let line = CTLineCreateWithAttributedString(attr as CFAttributedString)
+                    let w = CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
+                    return Shaped(line: line, attr: attr, width: w,
+                                  sel: Self.selectedRanges(ln.runs), start: Int(ln.start), end: Int(ln.end),
+                                  chars: Self.sourceChars(ln.runs))
+                }
+            }
+        }
+
+        // Column width = its widest line across every cell — the wish; `fit` is
+        // what the text column can actually give.
+        var colW = [CGFloat](repeating: 0, count: cols)
+        for row in unwrapped {
+            for (c, cell) in row.enumerated() {
+                for ln in cell { colW[c] = max(colW[c], ln.width) }
+            }
+        }
+        if availableWidth > 0 { Self.fit(&colW, avail: availableWidth) }
+
+        // A line that overruns its squeezed column wraps into it; each piece
+        // carries the source offsets a caret over it resolves against.
+        let shaped: [[[Shaped]]] = unwrapped.map { row in
+            row.enumerated().map { c, cell in
+                cell.flatMap { s -> [Shaped] in
+                    guard s.width > colW[c] else { return [s] }
+                    let pieces = EditorLayout.wrap(s.attr, width: colW[c])
+                    // Where each piece starts in the source: the offset of its
+                    // first character. The first piece keeps the line's own
+                    // start, which may precede its first glyph by a hidden
+                    // opening delimiter.
+                    let starts = pieces.enumerated().map { i, wl in
+                        i == 0 ? s.start : s.chars.first { $0.utf16 >= wl.start }?.src ?? s.end
+                    }
+                    return pieces.enumerated().map { i, wl in
+                        let last = i == pieces.count - 1
+                        let a = wl.start, b = wl.start + wl.length
+                        let sel = s.sel.compactMap { r -> (Int, Int)? in
+                            let cs = max(r.0, a), ce = min(r.1, b)
+                            return cs < ce ? (cs - a, ce - a) : nil
+                        }
+                        // The piece's characters, re-based to its own string.
+                        let chars = s.chars
+                            .filter { $0.utf16 >= a && $0.utf16 < b }
+                            .map { CellChar(utf16: $0.utf16 - a, src: $0.src) }
+                        return Shaped(line: wl.line, attr: wl.attributed, width: wl.width, sel: sel,
+                                      start: starts[i], end: last ? s.end : starts[i + 1],
+                                      chars: chars, soft: !last)
+                    }
+                }
+            }
+        }
+
+        // Column boundaries: a border, then padded content, per column.
+        var boundaries = [CGFloat](repeating: 0, count: cols + 1)
+        for c in 0..<cols {
+            boundaries[c + 1] = boundaries[c]
+                + TableMetrics.border + TableMetrics.padX + colW[c] + TableMetrics.padX
+        }
+        colX = boundaries
+
+        let lineH = theme.lineHeight
+        var laidRows: [TableRowLayout] = []
+        var firstBody = table.grid.count
+        var y: CGFloat = TableMetrics.border // leave the top border
+        for (ri, row) in table.grid.enumerated() {
+            if !row.head && firstBody == table.grid.count { firstBody = ri }
+            // The row is as tall as its tallest cell — an in-cell break, or a
+            // wrapped line, grows it.
+            let maxLines = shaped[ri].map(\.count).max() ?? 1
+            let rowH = CGFloat(maxLines) * lineH + 2 * TableMetrics.padY
+            var cells: [TableCellLayout] = []
+            for c in 0..<cols where c < row.cells.count {
+                let contentLeft = boundaries[c] + TableMetrics.border + TableMetrics.padX
+                let align = row.cells[c].align
+                let laidLines: [TableCellLineLayout] = shaped[ri][c].map { s in
+                    // A wrapped line keeps the space it broke at; it is not text
+                    // to align against, or a right-aligned column would sit a
+                    // space short of its edge.
+                    let trailing = CGFloat(CTLineGetTrailingWhitespaceWidth(s.line))
+                    let slack = max(0, colW[c] - (s.width - trailing))
+                    let alignShift: CGFloat
+                    switch align {
+                    case "right": alignShift = slack
+                    case "center": alignShift = slack / 2
+                    default: alignShift = 0
+                    }
+                    return TableCellLineLayout(
+                        line: s.line, attributed: s.attr,
+                        textX: contentLeft + alignShift, selRanges: s.sel, start: s.start, end: s.end,
+                        chars: s.chars, softWrapped: s.soft
+                    )
+                }
+                cells.append(TableCellLayout(
+                    lines: laidLines,
+                    colLeft: boundaries[c],
+                    colRight: boundaries[c + 1],
+                    start: Int(row.cells[c].start),
+                    end: Int(row.cells[c].end)
+                ))
+            }
+            laidRows.append(TableRowLayout(top: y, height: rowH, head: row.head, cells: cells))
+            y += rowH
+        }
+        rows = laidRows
+        bodyStart = firstBody
+        height = y + TableMetrics.border
+        lineHeight = lineH
+    }
+
+    /// Shrink `widths` until the grid fits `avail`, taking from the widest column
+    /// each time so the loss is shared rather than falling on whichever column is
+    /// last. No column goes below `TableMetrics.minColumnWidth`; a table with more
+    /// columns than the surface has room for still overflows, which is the honest
+    /// outcome — there's nothing left to give. The pixel counterpart of
+    /// leaf-core's `fit_widths`, solved directly where leaf-gpui's `fit_widths_px`
+    /// walks a point at a time to the same place.
+    static func fit(_ widths: inout [CGFloat], avail: CGFloat) {
+        // Chrome: every column carries a border and a gutter either side, and one
+        // more border closes the grid.
+        let chrome = CGFloat(widths.count) * (TableMetrics.border + 2 * TableMetrics.padX)
+            + TableMetrics.border
+        let budget = max(0, avail - chrome)
+        let floor = TableMetrics.minColumnWidth
+        guard widths.reduce(0, +) > budget else { return }
+        // Taking from the widest each time ends with every column that gave
+        // anything cut to one common level, and the rest untouched — so solve
+        // for that level outright rather than walking down to it, which in
+        // points is a scan of every column per point and stalls the layout on a
+        // wide grid of long cells. Capping, not scaling by a ratio: a narrow
+        // column that was already fine is left alone.
+        let kept = widths.filter { $0 <= floor }.reduce(0, +)
+        let tall = widths.filter { $0 > floor }.sorted(by: >)
+        guard !tall.isEmpty else { return }
+        let room = budget - kept
+        var level = floor
+        if CGFloat(tall.count) * floor < room {
+            // Cap the widest `k + 1` at the level that spends exactly the room
+            // the rest leave; it is the answer once it clears the next column
+            // down, which then fits under it uncut.
+            var rest = tall.reduce(0, +)
+            for (k, w) in tall.enumerated() {
+                rest -= w
+                let candidate = (room - rest) / CGFloat(k + 1)
+                if candidate >= (k + 1 < tall.count ? tall[k + 1] : floor) {
+                    level = candidate
+                    break
+                }
+            }
+        }
+        // Nothing goes below the floor, so a grid that doesn't fit even there
+        // overflows with every column at it.
+        for i in widths.indices where widths[i] > level { widths[i] = level }
+    }
+
+    /// The source offset of every character in a cell line's runs, alongside
+    /// its UTF-16 index in the string `AttributedRow.makeCellLine` shapes from
+    /// the same runs. Each run's `src` is where its first glyph came from, and
+    /// the characters after it are counted in source bytes — so a run that
+    /// follows a hidden delimiter starts where its own text does, not where
+    /// the previous run's text ran out.
+    ///
+    /// Exact for text that reads as it is written. A character the source
+    /// spells with more bytes than it shows — an escaped `\*`, an entity — is
+    /// counted at its shown width, so the offsets after it within the same
+    /// run drift short by the difference, up to the next run.
+    private static func sourceChars(_ runs: [Run]) -> [CellChar] {
+        var chars: [CellChar] = []
+        var utf16 = 0
+        for run in runs {
+            var src = Int(run.src)
+            for ch in run.text {
+                chars.append(CellChar(utf16: utf16, src: src))
+                utf16 += ch.utf16.count
+                src += ch.utf8.count
+            }
+        }
+        return chars
+    }
+
+    /// Coalesce a cell line's runs into the UTF-16 ranges the active selection
+    /// covers — the table peer of `EditorLayout.fillSelection`'s run walk. Core
+    /// already marks each run's `sel`; adjacent selected runs merge into one
+    /// range so the fill is one rect per span, not one per style change.
+    private static func selectedRanges(_ runs: [Run]) -> [(Int, Int)] {
+        var ranges: [(Int, Int)] = []
+        var utf16 = 0
+        for run in runs {
+            let len = run.text.utf16.count
+            if run.sel {
+                if let last = ranges.last, last.1 == utf16 {
+                    ranges[ranges.count - 1].1 = utf16 + len
+                } else {
+                    ranges.append((utf16, utf16 + len))
+                }
+            }
+            utf16 += len
+        }
+        return ranges
+    }
+
+    /// The cell and the specific line whose source range covers `src`, with its
+    /// row — for placing the caret. `nil` when no cell owns the offset.
+    func locate(src: Int) -> (row: TableRowLayout, cell: TableCellLayout, line: TableCellLineLayout, lineIndex: Int)? {
+        for row in rows {
+            for cell in row.cells where src >= cell.start && src <= cell.end {
+                // A soft-wrapped line's end is the next line's start, and belongs
+                // to it; a `<br>` line's end is its own stop, past its last glyph.
+                for (i, ln) in cell.lines.enumerated()
+                where src >= ln.start && (ln.softWrapped ? src < ln.end : src <= ln.end) {
+                    return (row, cell, ln, i)
+                }
+                // The offset fell in the gap a `<br>`'s bytes occupy (no stop
+                // there); park on the nearest real line rather than nowhere.
+                if let last = cell.lines.last {
+                    return (row, cell, last, cell.lines.count - 1)
+                }
+            }
+        }
+        return nil
+    }
+
+    /// The cell and line at table-relative point `(x, y)`, with its row — for a
+    /// click. The line is picked by the y offset within the row's band.
+    func locate(atX x: CGFloat, y: CGFloat) -> (row: TableRowLayout, cell: TableCellLayout, line: TableCellLineLayout, lineIndex: Int)? {
+        for row in rows where y >= row.top && y < row.top + row.height {
+            let raw = Int((y - row.top - TableMetrics.padY) / lineHeight)
+            let pick = { (cell: TableCellLayout) -> (TableCellLayout, TableCellLineLayout, Int) in
+                let i = min(max(0, raw), cell.lines.count - 1)
+                return (cell, cell.lines[i], i)
+            }
+            for cell in row.cells where x >= cell.colLeft && x < cell.colRight {
+                let (c, l, i) = pick(cell)
+                return (row, c, l, i)
+            }
+            // Off the grid to either side: the nearest edge's cell — the left
+            // margin is the first column's, the right margin the last's.
+            if let first = row.cells.first, x < first.colLeft {
+                let (c, l, i) = pick(first)
+                return (row, c, l, i)
+            }
+            if let last = row.cells.last {
+                let (c, l, i) = pick(last)
+                return (row, c, l, i)
+            }
+        }
+        return nil
+    }
+}

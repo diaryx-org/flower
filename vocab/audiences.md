@@ -1,6 +1,6 @@
 ---
 title: Audiences
-part_of: '[flower](/README.md)'
+part_of: '[leaf](/README.md)'
 contents:
 - '[Public](/vocab/public.md)'
 ---

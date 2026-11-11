@@ -1,357 +1,126 @@
 ---
 part_of: id:dx4hxn744/kv2bv2m
-title: flower
+title: leaf
 contents:
-- '[flower on diaryx.org](/www/index.md)'
+- '[Sample](sample.md)'
+- '[leaf on diaryx.org](/www/index.md)'
 - '[Audiences](/vocab/audiences.md)'
+- '[Proposals](/docs/proposals/proposals.md)'
 - '[Tasks](/docs/tasks/tasks.md)'
+- '[Archive](/archive/README.md)'
 config: .config/prov.yaml
 registry: registry.yaml
-id: rkhvqqw
-slug: flower
+id: 6h2bs8f
+slug: leaf
 ---
-# flower
+# leaf (Work in progress!!)
 
-A structural TUI editor for config files, built on [`fig`](https://github.com/diaryx-org/fig).
+A caret-based rich-text editor for documents, built on [`twig`](https://github.com/diaryx-org/twig).
 
-Where a text editor edits characters, **flower edits the tree.** You navigate the
-parsed config structurally — into mappings, along sequences, down to scalars —
-and edit one *value* at a time. Every change is a path-addressed, lossless
-splice through fig's editor: the bytes you didn't touch (comments, key order,
-blank lines, quoting) stay byte-for-byte identical, and the document is only
-ever committed in a valid state.
+## Workspace layout
 
-flower is to `fig` what `bough` is to `twig`: the structural editor over the
-lossless AST. (`leaf` is the *rich-text* sibling — the right model for permissive
-document formats, the wrong one for strict config grammars, where free-text
-editing spends most of its keystrokes in states the parser refuses to hold.)
+The caret/selection model and the AST→glyph mapping live in a
+frontend-neutral **core**. One editor widget draws it: `leaf-dioxus`, on
+Dioxus's native renderer, which draws HTML and CSS through
+[the Blitz fork](https://github.com/diaryx-org/blitz) (branch `leaf`) with no
+webview. Thin **apps** host the widget with a window or a terminal, a
+clipboard and file I/O.
 
-## Status
+The other frontends (Swift for iOS and the Mac, the web package and its wasm
+binding, gpui for the desktop, Android, and the ratatui terminal editor) are
+archived under [`archive/`](archive/README.md). They stay readable there as a
+guide to what each platform needs; the tasks under `docs/tasks` say which of
+those behaviours the Dioxus path does not have yet.
 
-Early prototype. Working today:
+### `crates/` — Rust libraries
 
-- Open a file (format detected from extension) and read it as a **settings
-  menu**: one container per page, small all-scalar groups inlined, and a
-  container short enough to fit shown in flow form (`push  {branches: [main]}`)
-  rather than counted. Two panes when there's width and depth to use them —
-  consecutive levels of one lineage, so the left is always the page the right
-  came out of — and one when there isn't. Depth costs a page rather than a
-  column, so a deeply nested document stays as legible as a shallow one.
-- Navigate structurally: along a page's items, into a container, back out to the
-  page that listed it.
-- Sink the fields nobody types in (a recomputed hash, a relation another pane
-  owns) below the ones they do, subtree and all, without hiding them.
-- Edit a scalar in place (typed: `true`/`42`/`3.14`/`null`/text) — committed via
-  `fig::Editor::replace_value`, so the splice is lossless and validated.
-- Read and edit the **comments** on a node: the block above it is drawn on the
-  row above, dimmed, and the one after its value sits after the value, the way
-  both read in the file. Either is edited in the same footer a value is, and
-  emptied to remove it. A comment is the document's own note on a field — the
-  closest thing an undescribed config has to help text — and fig anchors it to
-  the node, so it moves with a reorder and goes with a delete.
-- Delete a mapping entry or sequence item.
-- **Undo and redo** every edit, including a delete and its comment: the model
-  keeps a journal of inverse ops, so `u` walks back through a save as readily
-  as through a keystroke and undoing to the saved text reads as clean again. A
-  host pairing flower with another editor interleaves the two histories by
-  `Model::edit_seq`.
-- Draw the **host's findings** beside the rows they are about: a workspace
-  check (a link that resolves to nothing, an id two documents share) is a fact
-  flower cannot compute, so the embedder hands it over — `Model::set_annotations`
-  — and every row that names one carries a marker, with its message in the
-  status line.
-- Save (writes fig's edited source back to disk).
+| crate | what it is |
+| ----- | ---------- |
+| [`leaf-core`](crates/leaf-core)       | the document model — a `twig::Editor` with a byte-offset caret + selection, and the WYSIWYG `VisualMap`. Glyphs carry a **toolkit-agnostic `Style`**; no UI dependency. Fenced code is syntax-highlighted here too (syntect, two-face's grammars — the set `plates` publishes with), as an eight-way `Token` per glyph that each frontend colours its own way; the `syntax` feature carries the grammars and can be left out. |
+| [`leaf-raster`](crates/leaf-raster)   | the **shared CPU rasterization layer**: image decode (SVG included), path resolution and aspect-fit policy, and oversized-heading rasters with the caret and selection painted into the pixels — how a terminal heading stays editable when cells can't draw over a graphics-protocol image.                    |
+| [`leaf-dioxus`](crates/leaf-dioxus) | the **embeddable widget on Dioxus's native renderer** (`dioxus-native`, Blitz on wgpu): the editor, its rows, input method, find bar and status line, drawn in the `Look` its host gives it and asking a `Host` for the clipboard, Save, the zoom and the context menu. A standalone workspace, since `dioxus-native` is an alpha. |
+| [`leaf-pages`](crates/leaf-pages) | the **Reflow and Pages views** over that widget: the document set by Typst (twig-export) on a worker, drawn a picture a block, with the caret, the selection and presses on Typst's own glyphs, scrolled and zoomed; the built-in templates set in process. A host answers a `Host` (its editor, its area, a way to wake its UI) and may give a `Setup` (installed templates, where else to set them). |
+| [`leaf-math`](crates/leaf-math)       | TeX to a **self-contained SVG picture** with baseline metrics, through RaTeX with KaTeX's outlines embedded — the one door every frontend draws a formula through, so the picture is byte-identical everywhere.                                                    |
+| [`leaf-mermaid`](crates/leaf-mermaid) | Mermaid diagrams to SVG, through mmdr, for the editor to draw a fence with. |
+| [`leaf-session`](crates/leaf-session) | the editors leaf runs itself for a region of a document (a formula today), behind one interface: keys in, splices on the region's content out. |
+| [`leaf-math-edit`](crates/leaf-math-edit) | a structural formula editor whose file format stays TeX (a spike), which `leaf-session` runs. |
 
-Deliberately not here yet — see the roadmap.
+### `apps/` — runnable frontends
 
-## Keys
-
-| Key | What it does |
-|-----|--------------|
-| `j` / `k` (or ↓/↑) | next / previous item on the page |
-| `l` (or →) | open the container as a page; on a scalar, edit it |
-| `h` (or ← / `Esc`) | back to the page that listed the container you opened |
-| `Enter` / `Space` | ← same as `l` |
-| `e` | pick a value for the selected scalar where it has a vocabulary, else edit it |
-| `E` | edit the selected scalar as free text, vocabulary or not |
-| `c` | edit the comment after the selected value (one line; empty removes it) |
-| `C` | edit the comment block above the selected node (empty removes it) |
-| `x` | delete the selected entry or item |
-| `u` / `U` | undo / redo the last edit, wherever it was made |
-| `s` | save to disk |
-| `q` | quit |
-
-One projection, so one table. flower-data still offers the indented tree it
-started as, and an embedder driving the model by row index still uses it — the
-terminal doesn't, because depth there costs an indent column every row below
-pays for, where a page spends it once on a breadcrumb.
-
-In edit mode: type to change the value, `Enter` to commit, `Esc` to cancel.
-
-In the picker: type to filter the list (a case-insensitive substring of the
-label), `j`/`k` or ↑/↓ to walk it, `Enter` to choose, `Esc` to cancel. What is
-offered is the schema's vocabulary for the field — retired terms included, and
-flagged — or, for a link field, whatever the backend could enumerate
-(`Backend::candidates`); a field with neither opens the text line instead, so
-one key does both.
-
-## Usage
-
-```bash
-cargo run -- path/to/config.toml
-```
-
-Supported formats: JSON/JSONC/JSON5, YAML, TOML, ZON, and fig's `figl` dialect
-(`.figl`, or `.fig`) — the fig language crates flower depends on.
-
-## Architecture
-
-A Cargo workspace, split so the editing logic is frontend-neutral (mirroring
-`leaf-core` / `leaf-ratatui` / `leaf-tui`):
-
-```
-fig crate (Editor/Document/Value) + fig-json/-yaml/-toml/-zon/-figl
-                                          │
-                          crates/flower-data   (the model — no UI, no fs)
-                    ┌────────────────────────┼─────────────────────────┐
-      crates/flower-ratatui        crates/flower-ffi            apps/flower-data-tui
-         (ratatui widget)        (UniFFI C-ABI binding)      (app: file I/O + loop)
-                                          │
-                              packages/flower-swift
-                     (FlowerFFI + FlowerUI + FlowerPagesUI)
-
-            crates/flower-data ── crates/flower-data-editor (Dioxus widget, on unit)
-                                          │
-                               apps/flower-dioxus
-                            (Flower, the Mac app)
-```
-
-### The tiers
-
-| Tier | Path | What it is |
-|------|------|------------|
-| core | [`crates/flower-data`](crates/flower-data) | the frontend-neutral model — the navigable `Row` tree + path-addressed lossless edits over fig. No UI, no fs. |
-| widget | [`crates/flower-ratatui`](crates/flower-ratatui) | the ratatui widget: `draw(frame, &Model, header)` draws the page view, `handle_key(&mut Model, KeyEvent)` drives it and returns an `Outcome` naming what the host must do (quit, save) — the same division as `leaf-ratatui`. |
-| widget | [`crates/flower-data-editor`](crates/flower-data-editor) | the **Dioxus-native widget** (`dioxus-native` 0.8 alpha, Blitz on wgpu, no webview): the page view as a settings screen out of [unit](https://github.com/diaryx-org/unit)'s components — two panes, a section per group, chips, switches, menus, values typed in place, the picker in a modal, a context menu per row — with the terminal's keys and a window's (⌘Z, ⌫, ⌥↑/⌥↓), asking a `Host` for Save and the clipboard. A workspace of its own, as leaf's `crates/leaf-dioxus` is. |
-| app | [`apps/flower-dioxus`](apps/flower-dioxus) | **Flower**, the Mac app (`Flower.app`, built by `cargo xtask mac`; binary `flower-data-editor` elsewhere): the widget in a window, with open (⌘O, the Finder's Open With), save, save as, the zoom, the window title and a menu bar. `cargo run --manifest-path apps/flower-dioxus/Cargo.toml -- config.toml`. |
-| binding | [`crates/flower-ffi`](crates/flower-ffi) | the **UniFFI C-ABI binding** — wraps the filesystem-free `Model` so a native Apple app can drive it. The native-Apple peer of the ratatui widget. |
-| app | [`apps/flower-data-tui`](apps/flower-data-tui) | the terminal app (binary `flower`) — file I/O + event loop. |
-| Swift SDK | [`packages/flower-swift`](packages/flower-swift) | the Swift Package (manifest at the repo root, so SwiftPM can resolve it by version). `FlowerPagesUI` is the page view (`FlowerPages`) written against protocols, with **no binding behind it**; `FlowerUI` is `FlowerModel` over the UniFFI `flower-ffi` binding, and the conformances that let the page view render its records. `import FlowerUI` re-exports both. A host app of its own links it; flower's own Mac app is the Dioxus one. |
-
-The Swift frontend keeps the same contract as the TUI: **core owns the model**
-(the projection, selection, and every lossless edit), the frontend only renders
-the frame and forwards navigation / edit intents. Every page call across the FFI
-returns a `PagesView` — the page you are on, the page it came out of, and the
-page the cursor would open, plus dirty and status — one crossing that both
-mutates and repaints, so a two-pane host repaints whole from any edit.
-
-Both projections cross the FFI: the tree's `DocView` (the flat visible-row list,
-driven by row index) remains for a custom renderer, but every surface this repo
-packages — the ratatui widget, the Swift `FlowerPagesUI` — is the page view
-alone. The page methods address nodes by the dotted path a row already carries
-rather than by index, because a page item need not be a visible *row* at all.
-How much of the document one page holds is the host's
-`setInlineBudget(rows:depth:)` — at the default, small all-scalar groups inline
-and everything else drills; raised past the document's size, the root page is
-the whole document, which is how the old settings-list surface was absorbed.
-
-`FlowerPages` draws that frame two ways. Wide, it is the same sliding pair of
-panes the TUI draws, moving along the trail in the direction you went. Narrow —
-a small window, a phone — one column pushed and popped *is* a `NavigationStack`,
-so it gets one, along with the OS's push animation, its back button, and the iOS
-swipe-back gesture. A stack asks for the screen at an arbitrary path element
-rather than being told, so `pageAt(id:)` builds a page without navigating to it;
-the stack's path is a mirror of the model's focus, re-derived whenever either
-side moves.
-
-The two-pane layout is deliberately *not* a `NavigationSplitView`, whose sidebar
-is fixed: it would put the root's list beside a page five levels away, which is
-the arrangement the sliding window replaced.
+| app | what it is |
+|-----|------------|
+| [`leaf-dioxus`](apps/leaf-dioxus) | **Leaf**, in Rust from `main` up, for every platform Dioxus's native renderer reaches — the Mac's is `Leaf.app` (`org.diaryx.leaf`). A window per document, each a Dioxus page: the toolbar, `crates/leaf-dioxus`'s editor, the context menu and Settings, their buttons, menus and dialogs [unit](https://github.com/diaryx-org/unit)'s. What a platform does its own way is `platform/`: on the Mac an `NSDocument` per window (Open, autosave, Versions, Rename, recents, Finder's Open With), the menu bar, the spelling checker, Look Up and the print panel, through objc2. Export as PDF and Print from the editor's own layout. What it does not do yet is the task "What the Mac app does not do yet". |
+| [`leaf-dioxus-tui`](apps/leaf-dioxus-tui) | the terminal editor: the same `leaf-dioxus` editor, laid out by Blitz and painted into character cells by `blitz-tui`, with unit's menus and dialogs in their cell density. It replaces the archived `leaf-tui`; what it does not do yet is in [its proposal](docs/proposals/the-leaf-dioxus-editor-in-a-terminal.md) and the task "The terminal editor after leaf-tui". |
 
 ```sh
-cargo run -- path/to/config.toml          # the TUI
-cargo xtask mac [path/to/config.toml]     # build and launch Flower.app, the Mac app
-cargo xtask package                       # a signed, notarised Flower.app in a .dmg, in target/package/
+cargo run -p leaf-dioxus-app -- path/to/document.md
+cargo run -p leaf-dioxus-tui -- path/to/document.md
 ```
 
-### The Mac app
+Every crate and app is a member of one workspace, on Dioxus 0.8's alpha;
+the root `Cargo.toml` patches in the Blitz fork, the Mac's winit backend
+and wgpu's hardware layer for all of them.
 
-Flower for the Mac is [`apps/flower-dioxus`](apps/flower-dioxus): the
-Dioxus widget in a window drawn by Blitz, with a menu bar (muda's `NSMenu`),
-the Open and Save panels as sheets, and an application delegate that hears
-the files the Finder asks it to open. `cargo xtask mac` builds it, puts
-`Flower.app` together around the binary — `apps/flower-dioxus/Info.plist`,
-stamped with the workspace version, so a release bump has nothing else to
-move — signs it ad hoc and opens the file you name (or a copy of
-`sample.toml`) through the Finder's route. The bundle declares JSON, YAML,
-TOML and fig as types it can edit, as an alternate handler, so each appears in
-the Finder's Open With without taking over the default.
+The Mac app is a bundle put together around its binary, so it has a task in
+the runner in [`xtask/`](xtask):
 
-It replaced a SwiftUI document app over `packages/flower-swift`, which is
-still the package a SwiftUI host links. What that app had from the system's
-document machinery and this one does not yet: a window per document, autosave
-and Versions, Open Recent, and an iOS build.
-
-`cargo xtask package` signs the release bundle for Developer ID, with the
-hardened runtime and the sandbox (`apps/flower-dioxus/Flower.entitlements`:
-the files the user opens, and nothing else). It needs a Developer ID identity
-in the keychain and notary credentials in the environment; the head of
-[`xtask/src/package.rs`](xtask/src/package.rs) names them, and
-`--no-notarize` does without the second. On a pushed `v*.*.*` tag,
-[`mac-app.yml`](.github/workflows/mac-app.yml) attaches a signed, notarised
-`Flower-<version>-aarch64.dmg` to the release and points the tap's
-`flower-editor` cask at it (`brew install --cask diaryx-org/tap/flower-editor`),
-beside the `flower` formula for the TUI.
-
-The editor runs today on macOS and on the iOS simulator: Xcode's build phase
-compiles the `flower-ffi` staticlib for whichever slice it is building — fig is
-pure Rust, so any slice whose Rust target is installed builds with cargo alone.
-
-`scripts/build-xcframework.sh` has not caught up — it still assembles one slice
-(`aarch64-apple-darwin`), so a *distributable* `FlowerFFI.xcframework` covering
-macOS-x64 and a real device is the step that remains. Running from a checkout
-does not need it.
-
-- **`crates/flower-data`** — the frontend-neutral model. Depends only on `fig`
-  (with its language crates), `fig-schema` and `std`.
-  - `format.rs` — file extension → `fig::Format`.
-  - `tree.rs` — flattens a `fig::Value` into navigable `Row`s, each carrying its
-    `fig` path (a `Vec<Seg>` of `Key`/`Index`) — exactly what `fig::Editor` ops
-    take — honoring a collapsed-set.
-  - `page.rs` — the other projection: one container's children as a `Page`, with
-    a container whose subtree fits the **inline budget** (`InlineBudget` — a row
-    count and a rank depth, default: small and all-scalar) inlined into its
-    parent's page as a titled group rather than given one of its own. Raised
-    past the document's size, the root page *is* the whole document — the
-    settings-list rendering, from the same projection. Same paths, so the same
-    edits. A sequence's
-    items render alike (a list where some rows are expanded and others collapsed
-    reads as a fault), and are titled by whichever of their fields best names
-    them — `title_keys` scores coverage, distinctness, and convention, so a
-    workflow's steps list as `actions/checkout@v7` rather than as `[0]`. An
-    embedder can **demote** top-level keys (`Model::set_demoted`) so the fields
-    nothing hand-edits — a recomputed hash, a relation the sidebar owns — render
-    below the ones a reader came for; the mark covers the whole subtree, so
-    opening a demoted container stays inside the section.
-  - `model.rs` — `Model`: owns the `fig::Editor` (source of truth), the derived
-    `Value`/rows, selection, and the edit ops. Constructed from bytes; the
-    embedder owns the file.
-- **`crates/flower-ratatui`** — the widget: `draw(frame, &Model, header)` draws
-  the page projection, and `handle_key(&mut Model, KeyEvent) -> Outcome` owns the
-  key table for both modes — navigation and edits happen in the widget, while the
-  keys it cannot answer for itself come back as `Outcome::Quit` / `Outcome::Save`
-  for the host, which is the only party with a terminal and a file. A
-  third-party TUI can therefore embed flower as a pane without reimplementing
-  the app's event loop. Depends on `flower-data` + `ratatui`.
-- **`apps/flower-data-tui`** — the terminal app (binary `flower`): reads the file,
-  runs the event loop, forwards each key to the widget, and writes on
-  `Outcome::Save`. Depends on both.
-
-The read path is `fig::Document::to_value()` (a semantic `Value` tree); the write
-path is `fig::Editor`'s path-addressed ops. After every edit the model re-derives
-the tree from `Editor::source()`, so the editor's owned source is always
-canonical.
-
-### The commit-sink `Backend` trait
-
-`flower-data::Model` is generic over a `Backend` — it never touches a concrete
-editor. It builds path-addressed `EditOp`s, applies them through the backend,
-and reads the tree back via `Backend::to_value`:
-
-```rust
-pub trait Backend {
-    fn apply(&mut self, op: EditOp) -> Result<(), BackendError>;
-    fn to_value(&self) -> Result<Value, BackendError>;   // metadata region, for rendering
-    fn source(&self) -> Result<String, BackendError>;    // full bytes, for save
-}
+```sh
+cargo xtask mac              # build Leaf.app (apps/leaf-dioxus) and launch it, with a copy of the sample open
+cargo xtask mac notes.md     # …with a document of your own
+cargo xtask package          # a signed, notarised Leaf.app in a .dmg, in target/package/
 ```
 
-- `FigBackend` (in flower-data) drives a raw `fig::Editor` — a standalone config
-  file.
-- A **prov backend** (`ProvBackend`, in the [`provui`](https://github.com/diaryx-org/provui) repo) drives
-  the *metadata region* of a prov document through prov's carrier-aware
-  `MetaEditor`, leaving the prose body untouched. That composition (flower for
-  metadata + leaf for the body, over one prov document) is proven by a headless
-  test in provui.
+`cargo xtask --help` lists every task and flag. `cargo xtask package` needs a
+Developer ID identity in the keychain and notary credentials in the
+environment; the head of [`xtask/src/package.rs`](xtask/src/package.rs) names
+them, and `--no-notarize` does without the second.
 
-flower-data stays config-generic and prov stays consumer-agnostic, so the
-app-specific bridge lives in provui, not here — flower doesn't depend on prov.
+The runner holds the tasks that leave Rust; the checks and releasing are
+[`ship`](https://github.com/diaryx-org/ship). `ship ci` runs everything a
+release has to pass — rustfmt, clippy with warnings denied, the workspace
+tests, a `cargo check` of each crate alone in each feature shape a host
+actually builds, and the web host and the widget linted for the browser. `ship <patch|minor|major|X.Y.Z>` runs those checks,
+moves the version through every manifest and the lockfile, cuts the generated
+region of [`docs/CHANGELOG.md`](docs/CHANGELOG.md) into a released section,
+and commits and tags — locally. Pushing takes `--push`, and a pushed tag is a
+release: [`mac-app.yml`](.github/workflows/mac-app.yml) attaches a signed,
+notarised `Leaf-<version>-aarch64.dmg` to the release and points the tap's
+`leaf-editor` cask at it (`brew install --cask diaryx-org/tap/leaf-editor`).
+The crates are not on crates.io (0.5.0 was the last upload): provui and the
+Diaryx app name them from git, `{ git = "https://github.com/diaryx-org/leaf",
+branch = "main" }`, and lock the commit they build.
 
-## Roadmap
+`ship` is the org's release tool, which its other repositories cut releases
+with too; what makes leaf leaf is [`.config/ship.figl`](.config/ship.figl) and
+nothing else.
 
-- **Value-editing affordances**: the **enum picker** has landed — `e` on a field
-  with a vocabulary opens a filtered list, in the TUI and as a menu in the Swift
-  rows — and a reference field's candidates arrive through
-  `Backend::candidates`, the injection point a single-document core needs for a
-  list of *other* documents. A bool toggle and a number stepper are still one
-  free-text field in the TUI.
-- **Insert**: add keys / append sequence items (`fig` already exposes the ops).
-- **Reorder / move**: `move_key`, `reorder_keys`, `move_item`.
-- **Commented-out entries**: a `# port = 8080` is, to fig, the leading comment
-  of the next entry (or the container's dangling run when it was last), and
-  flower shows it as exactly that. Showing it as a *disabled entry* — a ghost
-  row with a toggle — needs fig to read and write the dangling anchor and to
-  comment a node out (and back in) at the byte level, since only fig has the
-  spans to do that losslessly. Filed as fig's
-  [`dangling-comments-and-comment-out-ops`](https://github.com/diaryx-org/fig/blob/main/docs/tasks/closed/dangling-comments-and-comment-out-ops.md)
-  and, on this side, [`disabled-entries`](docs/tasks/disabled-entries.md).
-- **Comment as help text**: the Swift page view already lets a schema
-  description win over the leading comment for the sentence under a name; the
-  TUI shows the comment only. A schema description for the TUI is part of the
-  schema layer below.
-- **Schema layer**: the big one — fig has none, so a "what keys/values are valid
-  here" layer is ours to add; unlocks completion, typed widgets, validation. It
-  also supersedes the page view's structural guesses — inline-vs-drill, and which
-  field titles a sequence item — with declared group titles and ordering. The
-  same renderer, curated. The "advanced" rank is the piece that has landed: it is
-  a set of keys the embedder names, and a schema would be where a document
-  declares its own instead.
-- **Stable identity for a sequence item**: half done. A path still addresses an
-  item by index, but the model now records what the item *was* — the backend's
-  own key (`Backend::item_key`, which a workspace-aware backend answers with a
-  link target or a record id) or, failing that, the title the row already shows
-  it by — and re-points the open page and the remembered cursors onto it after
-  every edit, undo and redo. A reorder or the deletion of an earlier sibling no
-  longer turns a page you opened into a different item. What remains is the ids
-  a *host* holds: a navigation stack's path is still indices, and the tree's row
-  ids with it, so a host that wants to survive a reorder asks `Model::item_key`
-  and re-resolves as the model does.
-- **Native frontend affordances** (`FlowerUI`): today it edits scalars in one
-  inline text field. Next: type-aware widgets (bool toggle, number stepper, enum
-  picker), keyboard navigation, insert/reorder, and comment *editing* — the
-  rows show comments, and `FlowerModel` can set them, but no control opens one
-  yet. The same roadmap the TUI has, in SwiftUI.
-- **The rest of the Apple slices**: build `flower-ffi` for macOS-x64, iOS, and
-  the simulator so `scripts/build-xcframework.sh` produces a full
-  `FlowerFFI.xcframework`.
+Sibling to [`bough`](https://github.com/diaryx-org/bough): **same backend, opposite model.** Where bough
+moves a selection through the document's AST and edits the *tree*, leaf gives you
+an ordinary text **caret**, mouse, selection, and a formatting toolbar — and
+turns every keystroke into one of twig's offset-addressed edits. The document
+stays a live, round-trippable AST the whole time you type into it, so a Markdown
+file and a Djot file are edited through the exact same operations.
 
-## Development
+Two views:
 
-CI is the `job` list in `.config/ship.figl`, not a YAML file: `ship ci` runs
-every job the workflow runs, in the same order, and `ship ci <job>` runs one.
+- **source** — the raw document with the caret in source bytes.
+- **wysiwyg** — the markup *resolved*: headings coloured, `**bold**` as real
+  bold, `==🔴 text==` as a red highlighter wash, a `` ```rust `` fence
+  syntax-highlighted, the `#` / `**` / `` ` `` delimiters hidden. The caret
+  still works because
+  every rendered glyph is tied back to the source byte it came from, so cursor
+  motion, clicks, and selection ride the *visible* text and step right over the
+  hidden delimiters. Because it reads the AST, Markdown and Djot that parse alike
+  render identically — the [`mdfried`](https://github.com/benjajaja/mdfried)
+  idea, made editable.
 
-| Job | What it runs |
-|---|---|
-| `fmt` | `cargo fmt --all --check` |
-| `clippy` | `cargo clippy --workspace --all-targets -- -D warnings` |
-| `test` | `cargo test --workspace` |
-| `package-isolation` | each crate built alone, so workspace feature unification can't hide a crate that fails on its own |
-| `bindings` | the committed UniFFI Swift binding regenerated from `crates/flower-ffi` and diffed |
-| `msrv` | a build on `workspace.package.rust-version` (1.88) |
+Every action maps onto twig's editor surface:
 
-The Swift half needs macOS and Xcode, so it is run by hand:
-`scripts/check-swift.sh` type-checks both Swift targets, `scripts/test-swift.sh`
-runs their tests, and `scripts/build-xcframework.sh` produces the distributable
-framework. The check compiles `FlowerPagesUI` first and alone, with no binding on
-the search path: the only way to keep a target FFI-free is to compile it
-somewhere an FFI import would not resolve.
-
-`flower-data`, `flower-ratatui`, and `flower-ffi` are libraries for other
-repositories to use — the binding crate because its view projection is generic
-over the `Backend`, so an embedder with its own can render a `Model` without
-reimplementing it. None of them is on crates.io (0.6.4 was the last upload): a
-consumer names them from git, `{ git = "https://github.com/diaryx-org/flower",
-branch = "main" }`, and locks the commit it builds. `flower-data-tui` moves with the
-same version number. See
-[docs/releasing.md](docs/releasing.md) for how a release is cut and
-[docs/CHANGELOG.md](docs/CHANGELOG.md) for what has changed.
+| action | twig op |
+|--------|---------|
+| type / delete | `edit_range(start, end, text)` |
+| re-anchor the caret after an edit | the returned `Change` |
+| breadcrumb / cursor context | `ancestors_at(offset)` |
+| click to place the caret | `node_at` + the flat `nodes()` snapshot |
+| **bold / italic / code / mark** | `toggle_inline(range, kind)` |
+| **heading / body** | `set_block(offset, kind)` |

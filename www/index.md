@@ -1,25 +1,24 @@
 ---
-title: flower
-nav_title: flower
-nav_order: 50
-description: flower — a structural editor for config files. Navigate the parsed tree, edit one value at a time, never hold an invalid document.
+title: leaf
+nav_title: leaf
+nav_order: 40
+description: leaf — a caret-based rich-text editor that edits the document's AST. One editing core, from terminal to iOS to the browser.
 audience: public
-part_of: '[flower](/README.md)'
-id: v817zvg
+part_of: '[leaf](/README.md)'
+id: z4z2w13
 ---
 <section class="pj-head">
   <div class="wrap">
     <p><a class="crumb" href="../about/#projects">diaryx.org / projects /</a></p>
     <div class="pj-title" style="margin-top: 1rem">
-      <h1>flower</h1>
+      <h1>leaf</h1>
       <span class="pj-tags">
-        <span class="tag-chip">Rust</span>
+        <span class="tag-chip">Rust · Swift</span>
         <span class="tag-chip">MIT / Apache-2.0</span>
       </span>
     </div>
     <p class="pj-tagline">
-      A structural editor for config files — it edits the tree, not the
-      characters.
+      A caret-based rich-text editor that edits the document's AST.
     </p>
   </div>
 </section>
@@ -28,44 +27,43 @@ id: v817zvg
 <div class="wrap pj-layout reveal">
 <div class="pj-body">
 
-Where a text editor edits characters, flower edits the tree. You
-navigate the parsed config structurally — into mappings, along
-sequences, down to scalars — and edit one value at a time. Every
-change is a path-addressed, lossless splice through fig's editor:
-the bytes you didn't touch stay byte-for-byte identical, and the
-document is only ever committed in a valid state.
+leaf gives you an ordinary text caret — mouse, selection, a
+formatting toolbar — and turns every keystroke into an
+offset-addressed edit on twig's tree. The document stays a live,
+round-trippable AST the whole time you type into it, so a Markdown
+file and a Djot file are edited through exactly the same
+operations.
 
-- **Two views of the same tree.** An indented, type-colored tree; or a settings-menu page view that sinks the fields nobody types below the ones they do.
-- **Typed scalar edits.** Booleans, numbers, nulls, and text are committed through fig's validated replace — not typed freehand.
-- **Everything fig reads.** JSON/JSONC/JSON5, YAML, TOML, ZON, and the fig dialect.
+- **Two views, one rendering path.** Source (caret in raw bytes) and WYSIWYG (`**bold**` painted bold, delimiters hidden) — every rendered glyph maps back to its source byte, so carets and clicks ride the visible text in either.
+- **One core, many frontends.** A frontend-neutral core; embeddable widgets for ratatui, gpui, AppKit/UIKit (via UniFFI), and the browser (via wasm).
+- **Thin hosts everywhere.** A terminal editor, a GUI app, an iOS host, and a web demo are all thin wrappers around the same widget.
 
 ## Where it fits
 
-flower is the config sibling of [leaf](id:dxzdkqzcw/z4z2w13):
-leaf's caret model is right for permissive document formats; a
-strict config grammar wants a structural one. It edits through
-[fig](id:dx70bkt7z/gns15jg)'s tree, and in
-[Diaryx](id:dx4hxn744/80k72t9) it's a natural front end for vault
-configuration and frontmatter.
+leaf is the editor underneath [Diaryx](id:dx4hxn744/80k72t9)'s writing
+surface — the same core that renders an entry on Mac renders it on
+iPhone. It edits documents through [twig](id:dx94n1gx2/wxmq0ww)'s
+tree. Standalone, it's embeddable anywhere a rich-text view over
+plain files belongs.
 
 ## Status
 
-Early prototype. Navigation, both views, typed edits, deletes, and
-save all work today; the roadmap in the repo says what isn't here
-yet.
+Work in progress, and open about it: caret editing, mouse,
+selection, and both views work today; soft-wrap edge cases, inline
+images, and undo/redo are the known next steps.
 
 </div>
 <aside class="pj-aside">
 <div class="install">
 <span class="install-head">Install</span>
-<div class="cmd">cargo add flower-data <small>Rust</small></div>
+<div class="cmd">cargo add leaf-core <small>Rust</small></div>
 </div>
 <div class="facts">
-<div class="row"><span class="k">Language</span><span class="v">Rust (on fig)</span></div>
-<div class="row"><span class="k">Built on</span><span class="v"><a href="../fig/index.md">fig</a></span></div>
-<div class="row"><span class="k">Used by</span><span class="v"><a href="../index.html">Diaryx</a> — config &amp; metadata editing</span></div>
-<div class="row"><span class="k">Source</span><span class="v"><a href="https://github.com/diaryx-org/flower">github.com/diaryx-org/flower</a></span></div>
-<div class="row"><span class="k">Packages</span><span class="v"><a href="https://crates.io/crates/flower-data">crates.io/crates/flower-data</a></span></div>
+<div class="row"><span class="k">Language</span><span class="v">Rust · Swift · TypeScript (web package)</span></div>
+<div class="row"><span class="k">Built on</span><span class="v"><a href="../twig/index.md">twig</a></span></div>
+<div class="row"><span class="k">Used by</span><span class="v"><a href="../index.html">Diaryx</a> — the writing surface</span></div>
+<div class="row"><span class="k">Source</span><span class="v"><a href="https://github.com/diaryx-org/leaf">github.com/diaryx-org/leaf</a></span></div>
+<div class="row"><span class="k">Packages</span><span class="v"><a href="https://crates.io/crates/leaf-core">crates.io/crates/leaf-core</a></span></div>
 <div class="row"><span class="k">License</span><span class="v">MIT or Apache-2.0</span></div>
 </div>
 </aside>

@@ -1,0 +1,74 @@
+[package]
+name = "leaf-gpui"
+version = "0.1.2"
+edition = "2024"
+description = "Embeddable gpui rich-text editor widget for leaf: the Editor view, its input/rendering, and a turnkey app runner. Built on leaf-core + twig."
+# Held back while gpui was only on the Zed monorepo, which crates.io cannot take
+# a dependency on. On gpui-pre that reason is gone; whether to publish is a
+# decision still to be made, not one this line records.
+publish = false
+
+# Standalone workspace — deliberately separate from leaf's, and `exclude`d there.
+# gpui brought 22 git-sourced crates with it, and a lockfile that carries them
+# makes every consumer that vendors rather than resolves (nix's buildRustPackage,
+# to name the one that forced this) fetch the Zed monorepo to build anything at
+# all. Keeping it here costs leaf's own lockfile 494 packages it never uses.
+[workspace]
+
+[features]
+# The `Editor` widget itself is backend-agnostic (it only touches `gpui`), so the
+# desktop platform backend is an optional, default-on dependency. A mobile host
+# (e.g. leaf-ios on gpui-mobile) depends on this crate with
+# `default-features = false` so the desktop-only `gpui_platform` is never built.
+default = ["desktop"]
+# arboard rides with the desktop backend, not with the widget: it is the only way
+# to put `text/html` on a real pasteboard (gpui's clipboard cannot carry it — see
+# `set_clipboard`), and its cfg cascade routes every unix that isn't macOS to the
+# X11/Wayland backend, iOS included. A mobile host must not build it.
+desktop = ["dep:gpui_platform", "dep:arboard"]
+
+[dependencies]
+# Explicit rather than inherited: this is its own workspace now, so there is no
+# outer [workspace.dependencies] to read them from.
+leaf-core = { path = "../leaf-core" }
+anyhow = "1"
+
+# gpui is consumed as `gpui-pre`, Longbridge's weekly crates.io snapshot of the
+# Zed monorepo (0.3.8 is zed@279fe07), renamed back to `gpui` so the source reads
+# as upstream. The snapshot crates pin each other with `=`, so every gpui-pre
+# crate in a graph — here, apps/leaf, and gpui-pre-mobile — must name the same
+# version. The `font-kit` feature on gpui_platform is REQUIRED — without it the
+# macOS backend rasterizes no glyphs (invisible text). `runtime_shaders` compiles
+# the Metal shaders when the app starts rather than at build time, which spares a
+# build the Metal Toolchain — an Xcode component `xcodebuild -downloadComponent
+# MetalToolchain` installs and Xcode 27 no longer ships by default.
+gpui = { package = "gpui-pre", version = "=0.3.8" }
+# Desktop-only backend, pulled in only by the `desktop` feature. Never compiled
+# for iOS/Android, where the host supplies gpui-mobile's platform layer instead.
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.8", features = ["font-kit", "runtime_shaders"], optional = true }
+# The system clipboard, for the desktop build only (see the `desktop` feature).
+# Same crate and the same open-fresh-per-operation discipline as leaf-tui, which
+# is what lets both frontends carry the same two flavors.
+arboard = { version = "3", optional = true }
+
+# Decoding block-level images to the BGRA frames gpui's `RenderImage` paints.
+# Pinned to the SAME version gpui itself uses (0.25) so the `image::Frame` type we
+# hand `RenderImage::new` is the exact one gpui expects — a version skew here is a
+# type mismatch, not just a rebuild. `smallvec` likewise matches gpui's, for the
+# `SmallVec<[Frame; 1]>` its constructor takes.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg", "gif", "bmp", "webp"] }
+smallvec = "1"
+
+# Math: leaf-math typesets a formula's TeX to an SVG with its baseline metrics,
+# and resvg rasterizes that SVG to the frame `paint_image` draws. resvg is the
+# version gpui already carries for its own icons, so it adds no second copy.
+leaf-math = { path = "../leaf-math" }
+resvg = "0.46"
+
+[dev-dependencies]
+# gpui's own test harness, which hands out a real `Window` (and so a text system
+# that shapes lines) with no platform window on screen. That's what lets the
+# table's geometry — column x, caret round-trips — be an actual test instead of a
+# claim: everything the widget draws is measured through a text system, and a
+# `Window` is the only way to reach one.
+gpui = { package = "gpui-pre", version = "=0.3.8", features = ["test-support"] }

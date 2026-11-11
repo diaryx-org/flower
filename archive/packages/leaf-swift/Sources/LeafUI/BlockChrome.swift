@@ -1,0 +1,332 @@
+//  BlockChrome.swift
+//
+//  The block decoration both surfaces paint *as graphics* rather than as core's
+//  monospace glyphs: a blockquote's gutter bars and a thematic break's line. The
+//  same move `TableLayout` makes for a table — core's picture is right on a
+//  terminal and sheared in a proportional font, so the GUI reads the structure
+//  out of it and draws the real thing.
+//
+//  Core still emits the glyphs (`│ ` per quote level, a row of `─` for a break)
+//  and they still carry the row's caret offsets; `AttributedRow` just draws them
+//  clear, and these routines paint over the space they hold. All CoreGraphics, so
+//  the AppKit and UIKit views share one implementation.
+
+import CoreGraphics
+import CoreText
+import Foundation
+
+#if canImport(UIKit)
+import UIKit
+#elseif canImport(AppKit)
+import AppKit
+#endif
+
+enum BlockChrome {
+    /// Paint a block media box: the picture if there is one, else a labelled chip,
+    /// plus a play badge for video and audio.
+    ///
+    /// Shared by both surfaces, and drawn into the text's own context — which is
+    /// exactly why playback isn't here. A still is pixels; a player is a subview.
+    /// See `MediaLayout` for that division and what `onOpenMedia` does about it.
+    /// `playing` means an AVKit player is installed over this box, and nothing is
+    /// drawn at all: the box belongs to the player now.
+    ///
+    /// Not merely "hide the badge". The still is a *stand-in* for a player that
+    /// isn't there yet, and a player view doesn't necessarily fill its frame edge
+    /// to edge — AVKit lays the picture out inside its own chrome — so a poster
+    /// left underneath shows as a mismatched band around the video rather than
+    /// hiding behind it.
+    static func drawMedia(_ box: MediaLayout, at rect: CGRect, theme: EditorTheme,
+                          playing: Bool = false, in ctx: CGContext) {
+        guard !playing else { return }
+        ctx.saveGState()
+        defer { ctx.restoreGState() }
+
+        let rounded = CGPath(roundedRect: rect, cornerWidth: MediaMetrics.corner,
+                             cornerHeight: MediaMetrics.corner, transform: nil)
+
+        if let still = box.still {
+            // Save/restore around the clip, so it doesn't leak into the frame and
+            // badge drawn after this — `resetClip` can't undo a clip.
+            ctx.saveGState()
+            // Clip to the rounded box so the picture's corners match the chrome's
+            // rather than poking out square behind it.
+            ctx.addPath(rounded)
+            ctx.clip()
+            // Both surfaces draw into a flipped context (AppKit's `isFlipped`,
+            // UIKit's native top-left origin) so rows can be laid out top-down;
+            // `MediaStill.draw` is written for exactly that, and does the flip a
+            // raster needs itself. A raster still decoding leaves the box its
+            // plain fill until the pixels land and the view repaints.
+            if !still.draw(in: rect, ctx: ctx) {
+                ctx.setFillColor(theme.codeBackground.cgColor)
+                ctx.fill(rect)
+            }
+            ctx.restoreGState()
+        } else {
+            // Nothing to show: a filled chip carrying the media's name, so the row
+            // says what stands there instead of going blank.
+            ctx.addPath(rounded)
+            ctx.setFillColor(theme.codeBackground.cgColor)
+            ctx.fillPath()
+            drawChipLabel(box, in: rect, theme: theme, ctx: ctx)
+        }
+
+        // A frame: solid for something real, dashed for an image that didn't load
+        // — the same signal leaf-web's dashed outline gives, for the same reason.
+        ctx.addPath(rounded)
+        ctx.setStrokeColor((box.isBroken ? theme.secondaryColor : theme.tableBorderColor).cgColor)
+        ctx.setLineWidth(1)
+        if box.isBroken { ctx.setLineDash(phase: 0, lengths: [4, 3]) }
+        ctx.strokePath()
+        ctx.setLineDash(phase: 0, lengths: [])
+
+        if box.showsPlayBadge { drawPlayBadge(in: rect, tinted: box.still == nil, theme: theme, ctx: ctx) }
+    }
+
+    /// The media's name, centred in a chip that has no picture. Left-aligned and
+    /// inset when a play badge shares the box, so the two don't overlap.
+    private static func drawChipLabel(_ box: MediaLayout, in rect: CGRect,
+                                      theme: EditorTheme, ctx: CGContext) {
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: theme.proportionalFont(size: theme.fontSize * 0.85, bold: false, italic: false),
+            .foregroundColor: theme.secondaryColor,
+        ]
+        let text = box.chipLabel as NSString
+        let size = text.size(withAttributes: attrs)
+
+        // Where the label goes depends on where the badge went. In a short chip
+        // the badge sits at the left and the name runs beside it; in a tall box
+        // the badge is centred, so the name is centred under it instead of
+        // hugging an edge the badge isn't on.
+        let x: CGFloat
+        let y: CGFloat
+        var room = rect.width - 24
+        if !box.showsPlayBadge {
+            x = rect.minX + 12
+            y = rect.midY - size.height / 2
+        } else if badgeIsCentred(in: rect) {
+            x = rect.midX - min(size.width, room) / 2
+            y = rect.midY + MediaMetrics.badge / 2 + 8
+        } else {
+            let inset = MediaMetrics.badge + 16
+            x = rect.minX + inset
+            y = rect.midY - size.height / 2
+            room = rect.width - inset - 12
+        }
+
+        // A name too long for what's left is clipped rather than spilling out of
+        // the box and over the prose beside it.
+        guard room > 0 else { return }
+        ctx.saveGState()
+        ctx.clip(to: CGRect(x: x, y: rect.minY, width: room, height: rect.height))
+        text.draw(at: CGPoint(x: x, y: y), withAttributes: attrs)
+        ctx.restoreGState()
+    }
+
+    /// Whether the play badge is centred in `rect` rather than tucked at its
+    /// left — true for a box tall enough to hold it comfortably. Shared by the
+    /// badge and the label so the two can't disagree about where it went.
+    private static func badgeIsCentred(in rect: CGRect) -> Bool {
+        rect.height >= MediaMetrics.badge * 1.5
+    }
+
+    /// A play badge — a translucent disc with a triangle — so a video or audio box
+    /// reads as something to start rather than something to look at. Centred on a
+    /// picture, left-aligned on a chip where the label takes the rest of the room.
+    ///
+    /// On a picture the disc is a translucent black, which reads over any
+    /// frame. On a chip it is `tinted`, the accent: a black disc on a chip
+    /// filled a few percent off the page vanishes in dark mode, and the badge is
+    /// the only thing saying the box can be played.
+    private static func drawPlayBadge(in rect: CGRect, tinted: Bool, theme: EditorTheme, ctx: CGContext) {
+        let d = min(MediaMetrics.badge, rect.height - 8, rect.width - 8)
+        guard d > 8 else { return }
+        // A tall picture centres the badge; a short chip keeps it at the left so
+        // the label has the rest of the width.
+        let cx = badgeIsCentred(in: rect) ? rect.midX : rect.minX + d / 2 + 8
+        let centre = CGPoint(x: cx, y: rect.midY)
+        let disc = CGRect(x: centre.x - d / 2, y: centre.y - d / 2, width: d, height: d)
+
+        if tinted {
+            ctx.setFillColor(theme.handleColor.cgColor)
+        } else {
+            ctx.setFillColor(gray: 0, alpha: 0.45)
+        }
+        ctx.fillEllipse(in: disc)
+
+        // An equilateral triangle inside the disc, nudged right so it reads as
+        // centred (a triangle's visual centre sits left of its bounding box's).
+        let s = d * 0.36
+        let ox = centre.x + s * 0.12
+        ctx.beginPath()
+        ctx.move(to: CGPoint(x: ox - s * 0.5, y: centre.y - s * 0.6))
+        ctx.addLine(to: CGPoint(x: ox - s * 0.5, y: centre.y + s * 0.6))
+        ctx.addLine(to: CGPoint(x: ox + s * 0.6, y: centre.y))
+        ctx.closePath()
+        ctx.setFillColor(gray: 1, alpha: 0.95)
+        ctx.fillPath()
+    }
+
+    /// Paint the placeholder cue in `box` — the line box `EditorLayout` says the
+    /// first typed character will take.
+    ///
+    /// Set in the theme's *body* font at the body size, because that is what the
+    /// cue is standing in for: a system-font cue in the same box sits on a
+    /// different baseline from the prose that replaces it, and the swap at the
+    /// first keystroke shows as a jump. Drawn `.usesLineFragmentOrigin` in a box
+    /// one line box tall, the same way `AttributedRow`'s real lines are, so the
+    /// two agree about where the top of a line is.
+    ///
+    /// Clipped to its box rather than wrapped: a cue is one line by construction,
+    /// and a long one running down the page would be a second paragraph the
+    /// reader never wrote.
+    static func drawPlaceholder(_ text: String, in box: CGRect, theme: EditorTheme,
+                                in ctx: CGContext) {
+        guard !text.isEmpty, box.width > 0 else { return }
+        ctx.saveGState()
+        ctx.clip(to: box)
+        NSAttributedString(string: text, attributes: [
+            .font: theme.proportionalFont(size: theme.fontSize, bold: false, italic: false),
+            .foregroundColor: theme.placeholderColor,
+        ]).draw(with: box, options: [.usesLineFragmentOrigin], context: nil)
+        ctx.restoreGState()
+    }
+
+    /// The quote bars of a whole frame, merged down the page: consecutive rows
+    /// quoted at the same level yield ONE rect, so a multi-row quote reads as a
+    /// single unbroken bar with rounded caps rather than a stack of segments.
+    ///
+    /// A row that carries no bar at some level (the paragraph after the quote, or
+    /// a table's picture rows, which draw a grid that isn't inset) ends the run
+    /// there and the next quoted row starts a fresh one.
+    static func quoteBarRuns(_ rows: [RowLayout], theme: EditorTheme) -> [CGRect] {
+        var open: [CGFloat: CGRect] = [:]   // level x → the run still growing there
+        var done: [CGRect] = []
+        for rl in rows {
+            var seen = Set<CGFloat>()
+            for bar in rl.quoteBars(theme: theme) {
+                let key = (bar.minX * 2).rounded() / 2   // same level ⇒ same x, to ½pt
+                seen.insert(key)
+                if var run = open[key], abs(run.maxY - bar.minY) < 0.5 {
+                    run.size.height = bar.maxY - run.minY
+                    open[key] = run
+                } else {
+                    if let stale = open[key] { done.append(stale) }
+                    open[key] = bar
+                }
+            }
+            for (key, run) in open where !seen.contains(key) {
+                done.append(run)
+                open[key] = nil
+            }
+        }
+        done.append(contentsOf: open.values)
+        return done.filter { $0.height > 0 }
+    }
+
+    /// Paint those runs, capsule-capped, in the theme's bar colour.
+    static func drawQuoteBars(_ rows: [RowLayout], theme: EditorTheme, in ctx: CGContext) {
+        let runs = quoteBarRuns(rows, theme: theme)
+        guard !runs.isEmpty else { return }
+        ctx.setFillColor(theme.quoteBarColor.cgColor)
+        let r = theme.quoteBarWidth / 2
+        for run in runs {
+            ctx.addPath(CGPath(roundedRect: run, cornerWidth: r, cornerHeight: r, transform: nil))
+        }
+        ctx.fillPath()
+    }
+
+    /// Mark the verse the caret stands in: a dashed hairline down the left of
+    /// its inset, the length of the block — dashed because that is what leaf
+    /// draws structure in that only the editor shows (a directive's outline, a
+    /// page break), and because a solid bar is a blockquote's, which says
+    /// someone else's words. A writer's sign only — drawn while the
+    /// caret is inside, never on paper, never on a page that isn't being
+    /// edited — that here Enter makes a line and Tab indents one, where a
+    /// paragraph would reflow. The reader's sign is the inset itself, which
+    /// core puts on every row.
+    ///
+    /// A verse's rows are the ones core gave a `hang`, its blank lines
+    /// included; `caretRow` picks the run. A run broken by a sheet edge is
+    /// marked on each sheet, as a directive's outline is.
+    static func drawVerseMark(_ rows: [RowLayout], caretRow: Int?, theme: EditorTheme, in ctx: CGContext) {
+        guard let caretRow, rows.indices.contains(caretRow), rows[caretRow].row.hang != nil else { return }
+        var start = caretRow
+        while start > 0, rows[start - 1].row.hang != nil { start -= 1 }
+        var end = caretRow + 1
+        while end < rows.count, rows[end].row.hang != nil { end += 1 }
+        // Halfway into the inset, which is the last two ems of the prefix.
+        let inset = CGFloat(2) * theme.fontSize
+        var spans: [CGRect] = []
+        for rl in rows[start..<end] {
+            let x = rl.originX + max(0, rl.shaped.prefixWidth - inset * 0.55)
+            for b in rl.bands {
+                let band = CGRect(x: x, y: b.minY, width: 0, height: b.height)
+                if let last = spans.last, abs(last.maxY - band.minY) < 0.5, abs(last.minX - band.minX) < 0.5 {
+                    spans[spans.count - 1].size.height += band.height
+                } else {
+                    spans.append(band)
+                }
+            }
+        }
+        ctx.saveGState()
+        defer { ctx.restoreGState() }
+        ctx.setStrokeColor(theme.directiveBorderColor.cgColor)
+        ctx.setLineWidth(1)
+        ctx.setLineDash(phase: 0, lengths: [3, 3])
+        let trim = theme.lineHeight * 0.2
+        for span in spans where span.height > 2 * trim {
+            ctx.move(to: CGPoint(x: span.minX, y: span.minY + trim))
+            ctx.addLine(to: CGPoint(x: span.minX, y: span.maxY - trim))
+        }
+        ctx.strokePath()
+    }
+
+    /// Paint a thematic break: a hairline across the text column, inset past any
+    /// gutter the break sits inside. `selColor` (macOS, where the view draws its
+    /// own selection) fills the row's box first, so a selection running through a
+    /// rule shows on it — the collapsed row has no glyphs of its own to highlight.
+    /// No-op on a row that isn't a break.
+    static func drawRule(_ rl: RowLayout, theme: EditorTheme,
+                         selColor: LeafColor?, in ctx: CGContext) {
+        guard let line = rl.ruleLine(theme: theme) else { return }
+        if let selColor, rl.row.runs.contains(where: { $0.sel }) {
+            ctx.setFillColor(selColor.cgColor)
+            ctx.fill(CGRect(x: line.minX, y: rl.top + rl.labelInset,
+                            width: line.width, height: rl.height - rl.labelInset))
+        }
+        ctx.setFillColor(theme.ruleColor.cgColor)
+        ctx.fill(line)
+    }
+
+    /// Paint a page break in the continuous flow: a dashed hairline where the
+    /// paper would end, in place of core's `⧉ page-break` placeholder glyphs.
+    ///
+    /// Dashed rather than solid, and the only thing here that is: a thematic
+    /// break is a division the author wrote *into the text* and draws as a solid
+    /// rule, where this is a division of the *paper* — real in the paginated view,
+    /// a promise in the scrolling one. A reader who can see both wants to tell
+    /// them apart at a glance, and dashes are what every word processor's
+    /// "page break" marker has been for thirty years.
+    ///
+    /// Nothing is drawn once the break has been spent by pagination: the row has
+    /// no height there, because the page it asked for is the drawing.
+    static func drawPageBreak(_ rl: RowLayout, theme: EditorTheme,
+                              selColor: LeafColor?, in ctx: CGContext) {
+        guard let line = rl.pageBreakLine(theme: theme) else { return }
+        if let selColor, rl.row.runs.contains(where: { $0.sel }) {
+            ctx.setFillColor(selColor.cgColor)
+            ctx.fill(CGRect(x: line.minX, y: rl.top + rl.labelInset,
+                            width: line.width, height: rl.height - rl.labelInset))
+        }
+        ctx.saveGState()
+        defer { ctx.restoreGState() }
+        ctx.setStrokeColor(theme.ruleColor.cgColor)
+        ctx.setLineWidth(theme.ruleThickness)
+        ctx.setLineDash(phase: 0, lengths: [6, 4])
+        ctx.move(to: CGPoint(x: line.minX, y: line.midY))
+        ctx.addLine(to: CGPoint(x: line.maxX, y: line.midY))
+        ctx.strokePath()
+    }
+}

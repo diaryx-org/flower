@@ -1,15 +1,20 @@
 /target
-
-# SwiftPM/Xcode build dirs for the Swift package, whose manifest lives at the
-# repo root. The UniFFI binding under packages/flower-swift/uniffi-generated/ is
-# COMMITTED (a version-resolved clone runs no generators) — regenerate it with
-# scripts/gen-bindings.sh; CI's `bindings` job diffs it against crates/flower-ffi.
+# Each spike under spikes/ is its own Cargo workspace, so its build directory
+# is not the root `/target` above. Their lockfiles *are* committed, as the
+# mermaid spike's is: a spike is a result, and it should still build.
+/spikes/*/target/
+/spikes/*/*/target/
+/.obsidian
+/.claude/*
+!/.claude/settings.json
+.playwright-mcp/
+.DS_Store
+# Build output of the archived frontends, should one be built where it lies.
+/archive/packages/leaf-web/pkg/
+/archive/packages/leaf-web/pkg-math/
+/archive/apps/leaf-web-demo/pkg-mermaid/
+/archive/packages/leaf-swift/.build/
+/archive/packages/leaf-swift/build/
 /.build/
 /.swiftpm/
-/packages/flower-swift/.build/
-packages/flower-swift/.swiftpm/xcode/xcuserdata/
-
-# Local screenshots from manual app verification.
-/.screenshots/
 .env
-.envrc

@@ -44,6 +44,7 @@ use dioxus_native::winit::window::{Window, WindowAttributes, WindowButtons, Wind
 use flower_doc_editor::Context;
 
 use crate::commands::{AppState, Command};
+use crate::data::DataInit;
 use crate::guard::guard;
 use crate::page::{DocInit, Made, Page, PageKind};
 use crate::platform::{self, DocumentRef};
@@ -453,6 +454,10 @@ impl App {
             document.show();
             return;
         }
+        if let Some(extension) = document.data() {
+            self.open_data(event_loop, document, &extension);
+            return;
+        }
         let doc = document.take_doc();
         let init = DocInit::new(doc, Shell::new(document.clone()));
         let attributes = platform::document_window(
@@ -472,6 +477,49 @@ impl App {
         FOCUSED.set(Some(id));
         init.desk.id.set(Some(id));
         let page = Rc::new(Page::new(window.clone(), runtime, PageKind::Document(init)));
+        PAGES.with_borrow_mut(|p| p.insert(id, page.clone()));
+        document.attach(id, &*window);
+        page.place();
+        page.sync();
+        poll(id);
+    }
+
+    /// A data file's window: its page over the file's model. The platform
+    /// reads only text that parses (`data::model`), so a document that has
+    /// none to give — an untitled one — opens empty.
+    fn open_data(
+        &mut self,
+        event_loop: &dyn ActiveEventLoop,
+        document: DocumentRef,
+        extension: &str,
+    ) {
+        let source = document.take_source();
+        let model = match crate::data::model(&source, extension)
+            .or_else(|_| crate::data::model("", extension))
+        {
+            Ok(m) => m,
+            Err(e) => {
+                eprintln!("{}: {e}", document.title());
+                return;
+            }
+        };
+        let init = DataInit::new(model, crate::data::Shell::new(document.clone()));
+        let attributes = platform::document_window(
+            WindowAttributes::default()
+                .with_title(document.title())
+                .with_surface_size(LogicalSize::new(DOCUMENT_SIZE.0, DOCUMENT_SIZE.1))
+                .with_min_surface_size(LogicalSize::new(DOCUMENT_MIN.0, DOCUMENT_MIN.1))
+                .with_visible(false),
+        );
+        let (window, runtime) = self.make_window(
+            event_loop,
+            crate::data::DataPage,
+            vec![Box::new(init.clone())],
+            attributes,
+        );
+        let id = window.id();
+        FOCUSED.set(Some(id));
+        let page = Rc::new(Page::new(window.clone(), runtime, PageKind::Data(init)));
         PAGES.with_borrow_mut(|p| p.insert(id, page.clone()));
         document.attach(id, &*window);
         page.place();

@@ -2498,6 +2498,8 @@ dependencies = [
  "dioxus-document",
  "dioxus-native",
  "dispatch2",
+ "flower-data",
+ "flower-data-editor",
  "flower-doc",
  "flower-doc-editor",
  "flower-pages",

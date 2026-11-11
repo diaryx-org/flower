@@ -188,9 +188,23 @@ pub fn status(c: &Command, chrome: Option<&Chrome>, app: &AppState) -> Status {
     let Some(chrome) = chrome else {
         return Status::OFF;
     };
+    let enabled = |yes| if yes { Status::ON } else { Status::OFF };
+    // A data file's window: the file's commands, the zoom, and Undo and
+    // Redo. Everything else is a document's.
+    if chrome.data {
+        return match c {
+            Command::Save | Command::SaveAs | Command::Close | Command::Zoom(_) => Status::ON,
+            Command::Chord(Key::Character(s), _, m) if s == "z" && *m == CMD => {
+                enabled(chrome.can_undo)
+            }
+            Command::Chord(Key::Character(s), _, m) if s == "z" && *m == CMD | SHIFT => {
+                enabled(chrome.can_redo)
+            }
+            _ => Status::OFF,
+        };
+    }
     let rich = !chrome.source_view;
     let mark = |k| Status::tick(chrome.marks.contains(k));
-    let enabled = |yes| if yes { Status::ON } else { Status::OFF };
     match c {
         Command::Chord(key, _, mods) => {
             let ch = match key {

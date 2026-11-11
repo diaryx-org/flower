@@ -12,8 +12,6 @@ resolver = "3"
 # under archive/ (archive/README.md), and nothing here builds them. xtask is
 # a member so `cargo xtask` shares this lockfile.
 members = ["crates/*", "apps/*", "xtask"]
-# The app the data editor had to itself, until apps/flower opens a data file.
-exclude = ["apps/flower-dioxus"]
 # A bare `cargo build` builds the libraries and the apps, not the task runner.
 default-members = ["crates/*", "apps/*"]
 

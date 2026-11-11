@@ -13,7 +13,7 @@ name: Mac app
 #   APPLE_API_KEY_ID            its key id,
 #   APPLE_API_ISSUER_ID         and its issuer id
 #
-# Then the `cask` job points `Casks/leaf-editor.rb` in diaryx-org/homebrew-tap
+# Then the `cask` job points `Casks/flower-editor.rb` in diaryx-org/homebrew-tap
 # at the new image, pushing as the diaryx-bot GitHub App (TAP_APP_ID,
 # TAP_APP_KEY).
 #
@@ -122,7 +122,7 @@ jobs:
 
     - uses: actions/upload-artifact@v4
       with:
-        name: leaf-mac-app
+        name: flower-mac-app
         path: target/package/*.dmg
         if-no-files-found: error
 
@@ -163,8 +163,8 @@ jobs:
         version="${TAG#v}"
         url="https://github.com/$REPO/releases/download/$TAG/Flower-$version-aarch64.dmg"
         sha256=$(curl -fsSL "$url" | sha256sum | cut -d' ' -f1)
-        scripts/render-cask.sh "$version" "$sha256" > "$RUNNER_TEMP/leaf-editor.rb"
-        cat "$RUNNER_TEMP/leaf-editor.rb"
+        scripts/render-cask.sh "$version" "$sha256" > "$RUNNER_TEMP/flower-editor.rb"
+        cat "$RUNNER_TEMP/flower-editor.rb"
         echo "VERSION=$version" >> "$GITHUB_ENV"
 
     - name: Mint a tap token from the GitHub App
@@ -183,14 +183,14 @@ jobs:
         set -euo pipefail
         git clone "https://x-access-token:${COMMITTER_TOKEN}@github.com/diaryx-org/homebrew-tap" tap
         mkdir -p tap/Casks
-        cp "$RUNNER_TEMP/leaf-editor.rb" tap/Casks/leaf-editor.rb
+        cp "$RUNNER_TEMP/flower-editor.rb" tap/Casks/flower-editor.rb
         cd tap
         git config user.name "diaryx-bot[bot]"
         git config user.email "306900725+diaryx-bot[bot]@users.noreply.github.com"
-        git add Casks/leaf-editor.rb
+        git add Casks/flower-editor.rb
         if git diff --cached --quiet; then
           echo "Cask unchanged — skipping commit"
         else
-          git commit -m "leaf-editor $VERSION"
+          git commit -m "flower-editor $VERSION"
           git push
         fi

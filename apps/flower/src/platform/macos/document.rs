@@ -46,6 +46,24 @@ pub const TYPES: [(&str, Format); 3] = [
 ];
 
 /// The format a type identifier names; Markdown for any other.
+/// The data files the app opens, as `Info.plist` declares them: each type's
+/// identifier, and the extension that names its format to `data.rs`.
+pub const DATA_TYPES: [(&str, &str); 5] = [
+    ("public.json", "json"),
+    ("public.yaml", "yaml"),
+    ("public.toml", "toml"),
+    ("org.ziglang.zon", "zon"),
+    ("org.diaryx.fig", "figl"),
+];
+
+/// The extension naming a data type's format; `None` for a document's type.
+pub fn data_of(type_name: &str) -> Option<&'static str> {
+    DATA_TYPES
+        .iter()
+        .find(|(t, _)| *t == type_name)
+        .map(|(_, e)| *e)
+}
+
 pub fn format_of(type_name: &str) -> Format {
     TYPES
         .iter()
@@ -105,10 +123,10 @@ define_class!(
         fn read_from_data(
             &self,
             data: &NSData,
-            _type_name: &NSString,
+            type_name: &NSString,
             error: *mut *mut NSError,
         ) -> bool {
-            self.read(data, error)
+            self.read(data, &type_name.to_string(), error)
         }
 
         #[unsafe(method_id(dataOfType:error:))]
@@ -117,7 +135,7 @@ define_class!(
             _type_name: &NSString,
             _error: *mut *mut NSError,
         ) -> Option<Retained<NSData>> {
-            self.data()
+            self.bytes()
         }
 
         #[unsafe(method(makeWindowControllers))]
@@ -159,9 +177,17 @@ define_class!(
 
 impl FlowerDocument {
     /// `readFromData:ofType:error:`: the text, for the page to take — or,
-    /// with a page already, to show in place of what it has.
-    fn read(&self, data: &NSData, error: *mut *mut NSError) -> bool {
-        let Ok(source) = String::from_utf8(data.to_vec()) else {
+    /// with a page already, to show in place of what it has. A data file's
+    /// has to parse, since its editor holds a tree and not text: one that
+    /// does not is refused here, where AppKit says so, and never opened.
+    fn read(&self, data: &NSData, type_name: &str, error: *mut *mut NSError) -> bool {
+        let source = String::from_utf8(data.to_vec()).ok().filter(|s| {
+            // With a page already, the page says why it keeps what it has
+            // (`Page::reload`).
+            self.ivars().page.get().is_some()
+                || data_of(type_name).is_none_or(|ext| crate::data::model(s, ext).is_ok())
+        });
+        let Some(source) = source else {
             if let Some(out) = unsafe { error.as_mut() } {
                 // NSFileReadCorruptFileError.
                 let e = unsafe {
@@ -185,7 +211,7 @@ impl FlowerDocument {
 
     /// `dataOfType:error:`: the page's source, or the text read if no page
     /// has taken it yet.
-    fn data(&self) -> Option<Retained<NSData>> {
+    fn bytes(&self) -> Option<Retained<NSData>> {
         let source = match self.ivars().page.get().and_then(app::page) {
             Some(page) => page.source_to_save()?,
             None => self.ivars().contents.borrow().clone().unwrap_or_default(),
@@ -206,6 +232,22 @@ impl FlowerDocument {
     /// The format, from the document's type.
     pub fn format(&self) -> Format {
         format_of(&self.fileType().map(|t| t.to_string()).unwrap_or_default())
+    }
+
+    /// A data file's extension, which names its format, from the document's
+    /// type; `None` for a document.
+    pub fn data(&self) -> Option<String> {
+        let ty = self.fileType().map(|t| t.to_string()).unwrap_or_default();
+        data_of(&ty).map(str::to_string)
+    }
+
+    /// A data file's text, the first time its page asks.
+    pub fn take_source(&self) -> String {
+        self.ivars()
+            .contents
+            .borrow_mut()
+            .take()
+            .unwrap_or_default()
     }
 
     /// Where the document is, for its pictures' relative paths: its file,

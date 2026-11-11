@@ -7,6 +7,9 @@ release_branch = main
 
 # No `verify`: before cutting, a release runs the jobs below.
 
+# The Mac app's bundle takes the workspace version when `cargo xtask mac`
+# puts it together, so a bump has nothing to move but the manifests.
+
 # Not on crates.io: flower is consumed from git, by commit, so a tag is a name
 # for a commit and the start of whatever else is listed below.
 publishes = false
@@ -16,39 +19,66 @@ publishes = false
 tag_starts
 > *
 > > workflow = mac-app.yml
-> > does = builds, signs and notarises Flower.app, attaches its disk image to the release, and writes the tap's `leaf-editor` cask
+> > does = builds, signs and notarises Flower.app, attaches its disk image to the release, and writes the tap's `flower-editor` cask
+> *
+> > workflow = homebrew.yml
+> > does = builds the `flower` CLI binaries (the terminal data editor) and writes the tap formula
 > *
 > > workflow = pages.yml
 > > does = builds Flower for the browser (`cargo xtask web`) and deploys it to https://diaryx-org.github.io/flower/, in place of what is there
 
-# The checks a release has to pass. `ship ci` runs them here, in this order,
-# with the same shell, and stops at the first that fails; `ship ci <id>` runs
-# one. No GitHub workflow runs them.
+# CI. `.github/workflows/ci.yml` asks `ship ci --matrix` for these and runs one
+# per runner, as `ship ci <id>`; `ship ci` runs them all here, in this order,
+# with the same shell, and stops at the first that fails. Changing CI is an edit
+# here and nowhere else.
 #
-# A job is `id` (what `ship ci <id>` takes), `name` (the heading a full run
-# prints) and `run` (run by `bash -eo pipefail -c` at the repository root).
+# A job is `id` (what `ship ci <id>` takes), `name` (the check GitHub shows as
+# `CI / <name>` — renaming it renames the required status check) and `run` (run
+# by `bash -eo pipefail -c` at the repository root). `runner` is the workflow's:
+# `components` are the rustup components it installs, `apt` the Ubuntu
+# packages (space-separated) it installs for a job that links a system
+# library, and `builds = false` skips restoring the cargo cache. A job's `run`
+# never installs anything itself, so `ship ci` here asks for no `sudo`.
 # Cheapest and most likely to fail first, so the run that is going to fail
 # fails in seconds rather than after everything compiles.
+#
+# Every job but the first compiles Blitz and wgpu: the workspace is one, on
+# Dioxus's native renderer. fontique, under Blitz's text, links fontconfig on
+# Linux; wayland is dlopened and the image has OpenSSL, so fontconfig is all
+# such a job installs.
+#
+# The Swift package (`packages/flower-swift`) is mostly not here: compiling it
+# needs macOS and Xcode, and `scripts/check-swift.sh` and
+# `scripts/test-swift.sh` are run by hand on a Mac. `bindings` is the exception
+# that fits a Linux runner.
 job
 > *
 > > id = fmt
 > > name = Format
 > > run = cargo fmt --all --check
+> > runner
+> > > components = rustfmt
+> > > builds = false
 > *
 > > # Warnings are errors here because they are errors in review — a lint that
-> > # only fires on someone else's machine is a lint found too late. The Dioxus
-> > # widget is linted without `system-clipboard` too (its renderer, `vello`,
-> > # turned back on: dioxus-native needs one), the shape a host with its own
-> > # clipboard builds.
+> > # only fires on someone else's machine is a lint found too late. The
+> > # document editor's widget is linted without `system-clipboard` too (its
+> > # renderer, `vello`, turned back on: dioxus-native needs one), the shape a
+> > # host with its own clipboard builds.
 > > id = clippy
 > > name = Clippy
 > > run = cargo clippy --workspace --all-targets -- -D warnings && cargo clippy -p flower-doc-editor --all-targets --no-default-features --features vello -- -D warnings
+> > runner
+> > > components = clippy
+> > > apt = libfontconfig-dev
 > *
-> > # Includes the xtask's own tests: that the two frontend bindings export the
-> > # same methods, and that every workspace member is checked alone below.
+> > # Includes the xtask's own tests: that every workspace member is checked
+> > # alone below.
 > > id = test
 > > name = Test
 > > run = cargo test --workspace
+> > runner
+> > > apt = libfontconfig-dev
 > *
 > > # Workspace feature unification means `cargo check --workspace` can pass
 > > # when a crate cannot compile on its own, so each crate is checked alone, in
@@ -56,8 +86,18 @@ job
 > > id = package-isolation
 > > name = Package isolation
 > > run = cargo xtask package-isolation
+> > runner
+> > > apt = libfontconfig-dev
 > *
-> > # The web host (apps/flower-web, the editor in a browser tab) and
+> > # The Swift package's UniFFI binding is committed, so it can go stale
+> > # against `crates/flower-ffi`. The script regenerates it from the crate's
+> > # embedded metadata and diffs; the output is arch-neutral source, so no
+> > # Swift is compiled and a Linux runner will do.
+> > id = bindings
+> > name = Swift bindings
+> > run = bash scripts/gen-bindings.sh --check
+> *
+> > # The web host (apps/flower-web, the document editor in a browser tab) and
 > > # the widget as it builds there: for `wasm32-unknown-unknown`, without the
 > > # system clipboard, on Blitz's hybrid renderer, with its Mermaid split
 > > # point. Off the web the host is empty, so the jobs above see none of it.
@@ -66,5 +106,7 @@ job
 > > # it. Last because it compiles Blitz and wgpu for another target: the
 > > # slowest job, and the least likely to be the one that fails.
 > > id = web
-> > name = Dioxus web host
+> > name = Web host
 > > run = cargo clippy -p flower-web --target wasm32-unknown-unknown --all-targets -- -D warnings && cargo clippy -p flower-doc-editor --target wasm32-unknown-unknown --no-default-features --features dioxus-native/vello-hybrid,wasm-split -- -D warnings
+> > runner
+> > > components = clippy

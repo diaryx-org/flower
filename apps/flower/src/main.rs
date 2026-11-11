@@ -15,6 +15,11 @@
 //! is [`platform`]'s: the document system, the menu bar, the spelling
 //! checker, Look Up, the clipboard and the print panel.
 //!
+//! A window holds a document — Markdown, Djot or HTML, under
+//! flower-doc-editor's caret — or a data file — JSON, YAML, TOML, ZON or
+//! figl, read as a tree by flower-data-editor ([`data`]). Which is the
+//! file's extension's to say.
+//!
 //! - [`app`]: the event loop's handler — what dioxus-native's `launch` does
 //!   for one window, done for as many as there are documents open.
 //! - [`menus`]: every menu, as data; [`commands`]: what each item does, and
@@ -38,6 +43,7 @@ mod access;
 mod app;
 mod commands;
 mod context;
+mod data;
 #[cfg(debug_assertions)]
 mod drive;
 mod guard;

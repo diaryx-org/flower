@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Print the Homebrew cask for Flower.app — `Casks/leaf-editor.rb` in
+# Print the Homebrew cask for Flower.app — `Casks/flower-editor.rb` in
 # diaryx-org/homebrew-tap — for one release:
 #
 #   scripts/render-cask.sh <version> <sha256 of Flower-<version>-aarch64.dmg>
@@ -10,7 +10,7 @@
 # heredoc in the workflow so that the cask can be rendered and `brew audit`ed
 # on a Mac before a tag depends on it.
 #
-# `leaf-editor`, not `flower`: the tap's `flower` is the terminal editor's formula,
+# `flower-editor`, not `flower`: the tap's `flower` is the terminal editor's formula,
 # and a cask of the same name would leave `brew install diaryx-org/tap/flower`
 # meaning the formula and the app needing `--cask` to be reached at all.
 set -euo pipefail
@@ -23,13 +23,13 @@ version="$1"
 sha256="$2"
 
 cat <<RUBY
-cask "leaf-editor" do
+cask "flower-editor" do
   version "$version"
   sha256 "$sha256"
 
   url "https://github.com/diaryx-org/flower/releases/download/v#{version}/Flower-#{version}-aarch64.dmg"
   name "Flower"
-  desc "Caret-based rich-text editor for Markdown, Djot, and HTML documents"
+  desc "Editor for Markdown, Djot and HTML documents and JSON, YAML and TOML data"
   homepage "https://github.com/diaryx-org/flower"
 
   depends_on arch: :arm64
@@ -38,7 +38,9 @@ cask "leaf-editor" do
   app "Flower.app"
 
   zap trash: [
+    "~/Library/Application Support/Flower",
     "~/Library/Caches/org.diaryx.flower",
+    "~/Library/Logs/Flower",
     "~/Library/Preferences/org.diaryx.flower.plist",
     "~/Library/Saved Application State/org.diaryx.flower.savedState",
   ]

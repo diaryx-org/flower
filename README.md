@@ -85,7 +85,7 @@ region of [`docs/CHANGELOG.md`](docs/CHANGELOG.md) into a released section,
 and commits and tags — locally. Pushing takes `--push`, and a pushed tag is a
 release: [`mac-app.yml`](.github/workflows/mac-app.yml) attaches a signed,
 notarised `Flower-<version>-aarch64.dmg` to the release and points the tap's
-`leaf-editor` cask at it (`brew install --cask diaryx-org/tap/leaf-editor`).
+`flower-editor` cask at it (`brew install --cask diaryx-org/tap/flower-editor`).
 The crates are not on crates.io (0.5.0 was the last upload): provui and the
 Diaryx app name them from git, `{ git = "https://github.com/diaryx-org/flower",
 branch = "main" }`, and lock the commit they build.

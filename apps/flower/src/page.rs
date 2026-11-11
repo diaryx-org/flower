@@ -1,6 +1,7 @@
-//! A window's page — a document window's toolbar and editor, or the Settings
-//! window — and the [`Page`] the app keeps for each, through which the
-//! window's events and the menus' commands reach the editor.
+//! A window's page — a document window's toolbar and editor, a data file's
+//! editor (`data.rs`), or the Settings window — and the [`Page`] the app
+//! keeps for each, through which the window's events and the menus'
+//! commands reach the editor.
 //!
 //! A document's page is the toolbar (`toolbar.rs`) over the editor, whose
 //! box ([`flower_doc_editor::Bounds`]) starts below it, all under unit's root
@@ -33,9 +34,10 @@ use unit::{Keys, Theme, Unit, UnitRoot, use_unit};
 
 use crate::app::{self, AppEvent};
 use crate::commands::Command;
+use crate::data::DataInit;
 use flower_pages::{Mode, Pages};
 
-use crate::platform;
+use crate::platform::{self, DocumentRef};
 use crate::shell::Shell;
 
 /// The toolbar's row, under the title bar's band.
@@ -76,6 +78,9 @@ pub struct Chrome {
     /// menu is built again when a choice it ticks, or an item it lists,
     /// changes.
     pub menus: u64,
+    /// The window holds a data file, not a document: of everything above,
+    /// only `dirty`, `can_undo` and `can_redo` are read off it.
+    pub data: bool,
 }
 
 impl Chrome {
@@ -100,6 +105,20 @@ impl Chrome {
             pages: false,
             reflow: false,
             menus: crate::menus::generation(),
+            data: false,
+        }
+    }
+
+    /// A data file's: whether it has unsaved changes, and anything to undo
+    /// or redo.
+    pub fn of_data(dirty: bool, can_undo: bool, can_redo: bool) -> Self {
+        Self {
+            dirty,
+            can_undo,
+            can_redo,
+            menus: crate::menus::generation(),
+            data: true,
+            ..Default::default()
         }
     }
 }
@@ -211,6 +230,8 @@ pub fn KeepUnit(props: KeepUnitProps) -> Element {
 /// What a window shows.
 pub enum PageKind {
     Document(DocInit),
+    /// A data file's window.
+    Data(DataInit),
     /// The Settings window, and its overlay once made.
     Settings(Made),
 }
@@ -260,14 +281,56 @@ impl Page {
     fn init(&self) -> Option<&DocInit> {
         match &self.kind {
             PageKind::Document(i) => Some(i),
-            PageKind::Settings(_) => None,
+            PageKind::Data(_) | PageKind::Settings(_) => None,
+        }
+    }
+
+    /// What a data file's page was made with.
+    fn data(&self) -> Option<&DataInit> {
+        match &self.kind {
+            PageKind::Data(d) => Some(d),
+            _ => None,
         }
     }
 
     fn made(&self) -> &Made {
         match &self.kind {
             PageKind::Document(i) => &i.made,
+            PageKind::Data(d) => &d.made,
             PageKind::Settings(m) => m,
+        }
+    }
+
+    /// The platform's document this window shows: a document's or a data
+    /// file's.
+    pub fn document(&self) -> Option<&DocumentRef> {
+        match &self.kind {
+            PageKind::Document(i) => Some(&i.shell.document),
+            PageKind::Data(d) => Some(&d.shell.document),
+            PageKind::Settings(_) => None,
+        }
+    }
+
+    /// A data file's editor, if the page has made it.
+    pub fn data_editor(&self) -> Option<flower_data_editor::Editor> {
+        self.data()?.editor.borrow().clone()
+    }
+
+    /// Run `f` on a data file's editor, inside its runtime.
+    pub fn with_data<R>(&self, f: impl FnOnce(&flower_data_editor::Editor) -> R) -> Option<R> {
+        let ed = self.data_editor()?;
+        Some(self.in_scope(|| f(&ed)))
+    }
+
+    /// Whether what the window shows has unsaved changes; `None` for
+    /// Settings, or while the editor has its document borrowed. Asked where
+    /// the app itself asks before closing; on the Mac, AppKit does.
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    pub fn dirty(&self) -> Option<bool> {
+        match &self.kind {
+            PageKind::Document(_) => self.with_doc(|d| d.dirty),
+            PageKind::Data(_) => self.data_editor().map(|ed| ed.model().dirty),
+            PageKind::Settings(_) => None,
         }
     }
 
@@ -320,6 +383,13 @@ impl Page {
     /// Say `message` in the status line.
     pub fn say(&self, message: &str) {
         let m = message.to_string();
+        if self.data().is_some() {
+            self.with_data(|ed| {
+                ed.model().set_status(m);
+                ed.refresh();
+            });
+            return;
+        }
         self.with_editor(|ed, _| {
             ed.doc().status = Some(m);
             ed.refresh();
@@ -354,6 +424,14 @@ impl Page {
                         return false;
                     }
                 }
+                if self.data().is_some() {
+                    // Where there is no menu bar, the keys of its commands;
+                    // the rest are the editor's.
+                    if !platform::shortcut(self, &code, m) {
+                        self.with_data(|ed| ed.key(k, code, as_command(m)));
+                    }
+                    return true;
+                }
                 if self.init().is_none() {
                     return false;
                 }
@@ -380,6 +458,10 @@ impl Page {
                 if self.unit().is_some_and(|u| u.typing()) {
                     return false;
                 }
+                if self.data().is_some() {
+                    self.with_data(|ed| ed.window_event(event));
+                    return true;
+                }
                 if self.init().is_none() {
                     return true;
                 }
@@ -402,6 +484,11 @@ impl Page {
             WindowEvent::PinchGesture { delta, .. } => self
                 .pages()
                 .is_some_and(|p| p.pinch(*delta, self.pointer())),
+            // A data file's panes scroll by the wheel themselves.
+            WindowEvent::MouseWheel { .. } if self.data().is_some() => {
+                self.with_data(|ed| ed.window_event(event));
+                false
+            }
             WindowEvent::MouseWheel { delta, phase, .. } => self.touchpad(delta, *phase),
             // A force click: the trackpad's Look Up, where the system gives
             // Look Up to one.
@@ -415,10 +502,12 @@ impl Page {
                 let s = self.window.scale_factor();
                 self.pointer.set(Some((position.x / s, position.y / s)));
                 self.with_editor(|ed, _| ed.window_event(event));
+                self.with_data(|ed| ed.window_event(event));
                 false
             }
             _ => {
                 self.with_editor(|ed, _| ed.window_event(event));
+                self.with_data(|ed| ed.window_event(event));
                 false
             }
         }
@@ -565,6 +654,13 @@ impl Page {
         if let Some(unit) = self.unit() {
             self.in_scope(|| unit.set_viewport(w, h));
         }
+        // A data file's editor has the window, below the title bar's band.
+        self.with_data(|ed| {
+            ed.set_bounds(flower_data_editor::Bounds {
+                top: platform::TITLE_BAR,
+                bottom: 0.0,
+            })
+        });
         let top = chrome_height();
         let pane = self.pages().map_or(0.0, |p| p.place());
         self.with_editor(|ed, _| {
@@ -580,6 +676,10 @@ impl Page {
     /// Bring the chrome up to date with the document, if a repaint since
     /// the last time may have changed it; and tell the platform of an edit.
     pub fn sync(&self) {
+        if self.data().is_some() {
+            self.sync_data();
+            return;
+        }
         let Some(init) = self.init() else { return };
         if !init.shell.stale.replace(false) {
             return;
@@ -619,10 +719,48 @@ impl Page {
         }
     }
 
+    /// A data file's half of [`sync`](Self::sync): the platform told of an
+    /// edit, or that the file is clean again, and the menus what there is
+    /// to undo.
+    fn sync_data(&self) {
+        let Some(init) = self.data() else { return };
+        if !init.shell.stale.replace(false) {
+            return;
+        }
+        let Some(ed) = self.data_editor() else {
+            init.shell.stale.set(true);
+            return;
+        };
+        let (dirty, seq, chrome) = {
+            let m = ed.model();
+            let chrome = Chrome::of_data(m.dirty, m.history_len() > 0, m.redo_len() > 0);
+            (m.dirty, m.edit_seq(), chrome)
+        };
+        if dirty && seq != self.reported.get() {
+            self.reported.set(seq);
+            init.shell.document.edited();
+        } else if !dirty {
+            init.shell.document.clean();
+        }
+        *self.chrome.borrow_mut() = Some(chrome);
+    }
+
     /// The source for the platform to write, and the document clean as of
     /// it; `None` if the editor has it borrowed this instant. The Mac's
     /// document system asks for it; Linux's saves through flower-doc instead.
     pub fn source_to_save(&self) -> Option<String> {
+        if let Some(init) = self.data() {
+            let ed = self.data_editor()?;
+            let source = {
+                let mut m = ed.model();
+                let source = m.source_snapshot();
+                m.mark_saved();
+                source
+            };
+            init.shell.stale.set(true);
+            app::post(AppEvent::Refresh(self.window.id()));
+            return Some(source);
+        }
         let source = self.with_doc(|d| {
             d.dirty = false;
             d.source.clone()
@@ -637,18 +775,37 @@ impl Page {
     /// The window came forward: the document looks at its file, where the
     /// platform leaves that to the app.
     pub fn focused(&self) {
-        if let Some(init) = self.init() {
-            init.shell.document.focused(self);
+        if let Some(document) = self.document() {
+            document.focused(self);
         }
     }
 
     /// Redraw: the status line says what changed outside the editor.
     pub fn refresh(&self) {
         self.with_editor(|ed, _| ed.refresh());
+        self.with_data(|ed| ed.refresh());
     }
 
     /// The document read its file again.
     pub fn reload(&self, source: String) {
+        if let Some(init) = self.data() {
+            // A file changed into text that does not parse is not taken:
+            // the window keeps what it has, and says why.
+            let read = init
+                .shell
+                .document
+                .data()
+                .ok_or_else(|| "not a data file".to_string())
+                .and_then(|ext| crate::data::model(&source, &ext));
+            self.with_data(|ed| match read {
+                Ok(model) => ed.install(model),
+                Err(e) => {
+                    ed.model().set_status(format!("not reloaded: {e}"));
+                    ed.refresh();
+                }
+            });
+            return;
+        }
         let Some(init) = self.init() else { return };
         let mut doc = init.shell.document.take_doc_from(source);
         doc.dirty = false;
@@ -657,6 +814,11 @@ impl Page {
 
     /// The document's file moved or was named.
     pub fn moved(&self) {
+        // A data file's name is the root of its breadcrumb.
+        if let Some(init) = self.data() {
+            self.with_data(|ed| ed.set_look(init.shell.look()));
+            return;
+        }
         let Some(init) = self.init() else { return };
         let path = init.shell.document.path();
         self.with_editor(|ed, _| {
@@ -689,22 +851,28 @@ impl Page {
     /// at once.
     pub fn close_requested(&self) {
         flower_doc_editor::trace(|| format!("close requested {:?}", self.window.id()));
-        match self.init() {
-            Some(init) => init.shell.document.ask_to_close(self),
+        match self.document() {
+            Some(document) => document.ask_to_close(self),
             None => app::post(AppEvent::Close(self.window.id())),
         }
     }
 
     /// The window has gone: so does its document.
     pub fn closed(&self) {
-        if let Some(init) = self.init() {
+        if self.init().is_some() {
             platform::spelling::closed(self.window.id());
-            init.shell.document.close();
+        }
+        if let Some(document) = self.document() {
+            document.close();
         }
     }
 
     /// A command from a menu or the toolbar, for this window.
     pub fn command(&self, c: Command) {
+        if self.data().is_some() {
+            self.data_command(c);
+            return;
+        }
         match c {
             Command::Link => crate::context::prompt_link(self),
             Command::InstallTemplate => crate::templates::prompt_install(self),
@@ -721,13 +889,13 @@ impl Page {
                 }
             }
             Command::Save => {
-                if let Some(s) = self.shell() {
-                    s.document.save();
+                if let Some(d) = self.document() {
+                    d.save();
                 }
             }
             Command::SaveAs => {
-                if let Some(s) = self.shell() {
-                    s.document.save_as();
+                if let Some(d) = self.document() {
+                    d.save_as();
                 }
             }
             Command::Close => self.close_requested(),
@@ -768,6 +936,55 @@ impl Page {
             }
         }
     }
+}
+
+impl Page {
+    /// A command for a data file's window: the file's own (Save, Save As,
+    /// Close), the app's, the zoom, and a chord replayed as a key — Undo and
+    /// Redo among them. The rest are a document's, and do nothing here.
+    fn data_command(&self, c: Command) {
+        match c {
+            Command::Save => {
+                if let Some(d) = self.document() {
+                    d.save();
+                }
+            }
+            Command::SaveAs => {
+                if let Some(d) = self.document() {
+                    d.save_as();
+                }
+            }
+            Command::Close => self.close_requested(),
+            Command::Zoom(z) => {
+                if let Some(init) = self.data() {
+                    let z = match z {
+                        flower_doc_editor::ZoomCommand::In => flower_data_editor::ZoomCommand::In,
+                        flower_doc_editor::ZoomCommand::Out => flower_data_editor::ZoomCommand::Out,
+                        flower_doc_editor::ZoomCommand::Reset => {
+                            flower_data_editor::ZoomCommand::Reset
+                        }
+                    };
+                    self.with_data(|ed| init.shell.zoom(ed, z));
+                }
+            }
+            Command::Chord(k, code, m) => {
+                self.with_data(|ed| ed.key(k, code, as_command(m)));
+            }
+            c if c.is_app() => app::run_app(c),
+            _ => {}
+        }
+    }
+}
+
+/// A chord's modifiers as the data editor reads them: its command key is ⌘
+/// everywhere (flower-data-editor's `input.rs`), where off the Mac the
+/// menus' is Ctrl.
+fn as_command(m: dioxus::html::Modifiers) -> dioxus::html::Modifiers {
+    use dioxus::html::Modifiers;
+    if cfg!(target_os = "macos") || !m.contains(Modifiers::CONTROL) {
+        return m;
+    }
+    (m - Modifiers::CONTROL) | Modifiers::META
 }
 
 /// A touchpad's scroll, followed for the throw its fingers leave as they

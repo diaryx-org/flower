@@ -27,6 +27,10 @@ path = "src/main.rs"
 [dependencies]
 # The editor: everything drawn in a document window but the toolbar.
 flower-doc-editor = { path = "../../crates/flower-doc-editor" }
+# A data file's window (`data.rs`): the structural editor for JSON, YAML,
+# TOML, ZON and figl, and its model, which reads a file's text into a tree.
+flower-data-editor = { path = "../../crates/flower-data-editor" }
+flower-data.workspace = true
 # diaryx-org's components for Dioxus, which work on Blitz and are read by
 # assistive tech: the toolbar's buttons and menus, the context menu, the
 # Link prompt, the Settings window; and the pages' scrolling and zoom

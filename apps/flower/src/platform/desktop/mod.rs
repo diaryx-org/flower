@@ -79,8 +79,8 @@ pub fn launched() {
 pub fn open_file(path: &Path) -> bool {
     let path = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     let open = app::pages().into_iter().find(|p| {
-        p.shell()
-            .is_some_and(|s| s.document.file().as_deref() == Some(path.as_path()))
+        p.document()
+            .is_some_and(|d| d.file().as_deref() == Some(path.as_path()))
     });
     if let Some(p) = open {
         p.window.focus_window();
@@ -105,7 +105,7 @@ pub fn open_file(path: &Path) -> bool {
 pub fn open_panel() {
     let folder = main_page()
         .and_then(app::page)
-        .and_then(|p| p.shell().and_then(|s| s.document.file()))
+        .and_then(|p| p.document().and_then(|d| d.file()))
         .and_then(|f| f.parent().map(Path::to_path_buf));
     spawn_dialog(
         move || {
@@ -113,9 +113,13 @@ pub fn open_panel() {
             let all: Vec<&str> = document::TYPES
                 .iter()
                 .flat_map(|(_, _, e)| e.iter().copied())
+                .chain(crate::data::extensions())
                 .collect();
-            d = d.add_filter("Documents", &all);
+            d = d.add_filter("Documents and data", &all);
             for (_, name, exts) in document::TYPES {
+                d = d.add_filter(name, exts);
+            }
+            for (name, exts) in crate::data::TYPES {
                 d = d.add_filter(name, exts);
             }
             if let Some(f) = folder {

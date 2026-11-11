@@ -53,6 +53,10 @@ pub struct Document {
     dirty: Cell<bool>,
     /// Whether it opens on the bundled sample.
     sample: bool,
+    /// A data file's extension, which names its format (`data.rs`), and
+    /// its text until the page takes it; `None` for a document.
+    data: Option<String>,
+    source: RefCell<Option<String>>,
 }
 
 impl Document {
@@ -65,12 +69,17 @@ impl Document {
             page: Cell::new(None),
             dirty: Cell::new(false),
             sample,
+            data: None,
+            source: RefCell::new(None),
         })
     }
 
     /// The document in the file at `path`, in the format its extension
     /// names.
     pub fn read(path: &Path) -> Result<Rc<Self>, String> {
+        if flower_data::detect(path).is_some() {
+            return Self::read_data(path);
+        }
         let doc = Doc::open(path.to_path_buf()).map_err(|e| format!("{e:#}"))?;
         Ok(Rc::new(Self {
             file: RefCell::new(Some(path.to_path_buf())),
@@ -79,7 +88,43 @@ impl Document {
             page: Cell::new(None),
             dirty: Cell::new(false),
             sample: false,
+            data: None,
+            source: RefCell::new(None),
         }))
+    }
+
+    /// The data file at `path`: its text, which has to parse, since the
+    /// editor holds a tree and not text.
+    fn read_data(path: &Path) -> Result<Rc<Self>, String> {
+        let extension = path
+            .extension()
+            .and_then(|e| e.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        let source =
+            std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+        crate::data::model(&source, &extension).map_err(|e| format!("{}: {e}", path.display()))?;
+        Ok(Rc::new(Self {
+            file: RefCell::new(Some(path.to_path_buf())),
+            format: Format::Markdown,
+            opened: RefCell::new(None),
+            page: Cell::new(None),
+            dirty: Cell::new(false),
+            sample: false,
+            data: Some(extension),
+            source: RefCell::new(Some(source)),
+        }))
+    }
+
+    /// A data file's extension, which names its format; `None` for a
+    /// document.
+    pub fn data(&self) -> Option<String> {
+        self.data.clone()
+    }
+
+    /// A data file's text, the first time its page asks.
+    pub fn take_source(&self) -> String {
+        self.source.borrow_mut().take().unwrap_or_default()
     }
 
     /// The file, if it has one.
@@ -207,9 +252,9 @@ impl Document {
                     let path = path.clone();
                     app::on_turn(move || {
                         if let Some(page) = app::page(id)
-                            && let Some(shell) = page.shell()
+                            && let Some(document) = page.document()
                         {
-                            shell.document.write(&page, path);
+                            document.write(&page, path);
                         }
                     });
                 }
@@ -221,24 +266,29 @@ impl Document {
     /// the new one from then on.
     pub fn save_as(&self) {
         let Some(id) = self.page() else { return };
-        let suggested = self.file().map_or_else(
-            || {
-                let ext = TYPES.iter().find(|(f, ..)| *f == self.format);
-                format!("Untitled.{}", ext.map_or("md", |(_, _, e)| e[0]))
-            },
-            |_| self.title(),
-        );
+        // A file is saved in the format it was read in: the dialog offers
+        // its own kind alone.
+        let (name, exts) = match &self.data {
+            Some(ext) => crate::data::TYPES
+                .iter()
+                .find(|(_, e)| e.contains(&ext.as_str()))
+                .copied()
+                .unwrap_or(crate::data::TYPES[0]),
+            None => TYPES
+                .iter()
+                .find(|(f, ..)| *f == self.format)
+                .map(|(_, n, e)| (*n, *e))
+                .unwrap_or(("Markdown", &["md"])),
+        };
+        let suggested = self
+            .file()
+            .map_or_else(|| format!("Untitled.{}", exts[0]), |_| self.title());
         let folder = self.file().and_then(|p| p.parent().map(Path::to_path_buf));
-        let (name, exts) = TYPES
-            .iter()
-            .find(|(f, ..)| *f == self.format)
-            .map(|(_, n, e)| (*n, *e))
-            .unwrap_or(("Markdown", &["md"]));
         super::save_dialog(&suggested, folder, (name, exts), move |path| {
             if let Some(page) = app::page(id)
-                && let Some(shell) = page.shell()
+                && let Some(document) = page.document()
             {
-                shell.document.write(&page, path);
+                document.write(&page, path);
             }
         });
     }
@@ -247,13 +297,20 @@ impl Document {
     /// it saved only once the bytes have landed, and says in the status line
     /// if they did not. `path` is the document's file from then on.
     fn write(&self, page: &Page, path: PathBuf) {
-        let landed = page
-            .with_editor(|ed, _| {
+        let landed = if self.data.is_some() {
+            page.with_data(|ed| {
+                let landed = write_data(&mut ed.model(), &path);
+                ed.refresh();
+                landed
+            })
+        } else {
+            page.with_editor(|ed, _| {
                 let landed = ed.doc().save_as(path.clone());
                 ed.refresh();
                 landed
             })
-            .unwrap_or(false);
+        }
+        .unwrap_or(false);
         if !landed {
             return;
         }
@@ -300,7 +357,7 @@ impl Document {
     /// not been saved would be lost.
     pub fn ask_to_close(&self, page: &Page) {
         let id = page.window.id();
-        let dirty = page.with_doc(|d| d.dirty).unwrap_or(true);
+        let dirty = page.dirty().unwrap_or(true);
         if !dirty {
             app::post(AppEvent::Close(id));
             return;
@@ -328,9 +385,64 @@ impl Document {
     }
 }
 
+/// Write a data file's text to `path`, beside it and renamed over, so a
+/// write that fails leaves the file as it was; the model is told how it
+/// went, and is clean only once the bytes have landed.
+fn write_data(model: &mut flower_data::Model<flower_data::FigBackend>, path: &Path) -> bool {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let beside = path.with_file_name(format!(".{name}.flower-save-{}", std::process::id()));
+    let written = std::fs::write(&beside, model.source_snapshot())
+        .and_then(|()| std::fs::rename(&beside, path));
+    match written {
+        Ok(()) => {
+            model.mark_saved();
+            model.set_status(format!("saved {name}"));
+            true
+        }
+        Err(e) => {
+            let _ = std::fs::remove_file(&beside);
+            model.set_status(format!("save failed: {e}"));
+            false
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_data_file_is_read_as_data_and_one_that_does_not_parse_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "name = \"flower\"\n").unwrap();
+        let d = Document::read(&path).unwrap();
+        assert_eq!(d.data().as_deref(), Some("toml"));
+        assert_eq!(d.take_source(), "name = \"flower\"\n");
+        let broken = dir.path().join("broken.json");
+        std::fs::write(&broken, "{ \"a\": ").unwrap();
+        assert!(Document::read(&broken).is_err());
+        let note = dir.path().join("note.md");
+        std::fs::write(&note, "# a note\n").unwrap();
+        assert_eq!(Document::read(&note).unwrap().data(), None);
+    }
+
+    #[test]
+    fn a_data_file_is_written_whole_and_its_model_is_clean_after() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "a = 1\n").unwrap();
+        let mut model = crate::data::model("a = 2\n", "toml").unwrap();
+        model.dirty = true;
+        assert!(write_data(&mut model, &path));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "a = 2\n");
+        assert!(!model.dirty);
+        let left: Vec<_> = std::fs::read_dir(dir.path()).unwrap().collect();
+        assert_eq!(left.len(), 1, "nothing is left beside the file");
+    }
 
     #[test]
     fn an_untitled_document_is_named_so_and_finds_pictures_in_the_resources() {

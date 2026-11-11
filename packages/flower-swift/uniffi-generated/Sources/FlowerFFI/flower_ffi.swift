@@ -3330,7 +3330,7 @@ private let initializationResult: InitializationResult = {
     if (uniffi_flower_ffi_checksum_method_flowerdoc_set_annotations() != 35901) {
         return InitializationResult.apiChecksumMismatch
     }
-    if (uniffi_flower_ffi_checksum_method_flowerdoc_set_inline_budget() != 1648) {
+    if (uniffi_flower_ffi_checksum_method_flowerdoc_set_inline_budget() != 9813) {
         return InitializationResult.apiChecksumMismatch
     }
     if (uniffi_flower_ffi_checksum_method_flowerdoc_set_value() != 34284) {

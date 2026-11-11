@@ -42,6 +42,10 @@ tag_starts
 # Cheapest and most likely to fail first, so the run that is going to fail
 # fails in seconds rather than after everything compiles.
 #
+# The lanes that compile go through scripts/cargo.sh: corgi where it is
+# installed (corgi.toml: one build store for every checkout, the one unit and
+# diaryx build in), cargo where it is not, as on GitHub's runners.
+#
 # Every job but the first compiles Blitz and wgpu: the workspace is one, on
 # Dioxus's native renderer. fontique, under Blitz's text, links fontconfig on
 # Linux; wayland is dlopened and the image has OpenSSL, so fontconfig is all
@@ -67,7 +71,7 @@ job
 > > # host with its own clipboard builds.
 > > id = clippy
 > > name = Clippy
-> > run = cargo clippy --workspace --all-targets -- -D warnings && cargo clippy -p flower-doc-editor --all-targets --no-default-features --features vello -- -D warnings
+> > run = scripts/cargo.sh clippy --workspace --all-targets -- -D warnings && scripts/cargo.sh clippy -p flower-doc-editor --all-targets --no-default-features --features vello -- -D warnings
 > > runner
 > > > components = clippy
 > > > apt = libfontconfig-dev
@@ -76,7 +80,7 @@ job
 > > # alone below.
 > > id = test
 > > name = Test
-> > run = cargo test --workspace
+> > run = scripts/cargo.sh test --workspace
 > > runner
 > > > apt = libfontconfig-dev
 > *
@@ -107,6 +111,6 @@ job
 > > # slowest job, and the least likely to be the one that fails.
 > > id = web
 > > name = Web host
-> > run = cargo clippy -p flower-web --target wasm32-unknown-unknown --all-targets -- -D warnings && cargo clippy -p flower-doc-editor --target wasm32-unknown-unknown --no-default-features --features dioxus-native/vello-hybrid,wasm-split -- -D warnings
+> > run = scripts/cargo.sh clippy --root web -p flower-web --target wasm32-unknown-unknown --all-targets -- -D warnings && scripts/cargo.sh clippy --root web-widget -p flower-doc-editor --target wasm32-unknown-unknown --no-default-features --features dioxus-native/vello-hybrid,wasm-split -- -D warnings
 > > runner
 > > > components = clippy

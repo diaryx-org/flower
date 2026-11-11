@@ -262,13 +262,13 @@ pub fn resources() -> PathBuf {
         .and_then(|e| e.parent().map(|d| d.join("resources")));
     match installed {
         Some(dir) if dir.join("Sample.md").exists() => dir,
-        _ => PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/resources/Media")),
+        _ => crate::manifest_dir().join("resources/Media"),
     }
 }
 
 /// The bundled sample document's text.
 pub fn sample() -> String {
-    let dev = concat!(env!("CARGO_MANIFEST_DIR"), "/resources/Sample.md");
+    let dev = crate::manifest_dir().join("resources/Sample.md");
     std::fs::read_to_string(resources().join("Sample.md"))
         .or_else(|_| std::fs::read_to_string(dev))
         .unwrap_or_else(|_| "# flower\n\nThe sample document is missing.\n".into())

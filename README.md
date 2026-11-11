@@ -2,6 +2,7 @@
 part_of: id:dx4hxn744/kv2bv2m
 title: flower
 contents:
+- '[AGENTS](/AGENTS.md)'
 - '[Sample](sample.md)'
 - '[flower on diaryx.org](/www/index.md)'
 - '[Audiences](/vocab/audiences.md)'

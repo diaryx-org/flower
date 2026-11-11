@@ -44,6 +44,13 @@ page on opening, and every keystroke after it, 30 typed at 5 ms apart, at 3
 to 17 ms a frame. Minimized, menu commands painted at 8 to 190 ms a frame. No
 acquisition waited on `nextDrawable`.
 
+## One more line
+
+`src/lib.rs` allows `clippy::useless_borrows_in_formatting`, a lint the pinned
+toolchain's clippy has and upstream's code predates. `corgi clippy` lints
+this crate with the workspace's `-D warnings`, as it is a path dependency;
+cargo does not. Nothing else differs from upstream but the patch above.
+
 ## Upstream
 
 Not sent. The change is wgpu's to take: counting drawables in flight instead

@@ -58,11 +58,21 @@ const ISOLATED: &[&[&str]] = &[
     &["-p", "xtask"],
 ];
 
+/// What builds a check: `scripts/cargo.sh`, which is corgi where corgi is
+/// installed and cargo where it is not.
+fn builder() -> std::process::Command {
+    let script = crate::util::root().join("scripts/cargo.sh");
+    if script.is_file() {
+        return crate::util::cmd(script);
+    }
+    cargo()
+}
+
 pub fn run_task() -> Result<()> {
     for spec in ISOLATED {
         let mut args = vec!["check"];
         args.extend_from_slice(spec);
-        run(cargo().args(&args))?;
+        run(builder().args(&args))?;
     }
     Ok(())
 }

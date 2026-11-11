@@ -783,9 +783,21 @@ mod tests {
         assert!(f.lines().any(|l| l.trim() == "Hi ▏Text."), "{f}");
     }
 
+    /// The checkout's picture, found from where the test runs: the package's
+    /// directory as the process has it, so the binary names no checkout.
+    fn picture() -> String {
+        let dir = std::env::var_os("CARGO_MANIFEST_DIR")
+            .map(std::path::PathBuf::from)
+            .or_else(|| std::env::current_dir().ok())
+            .expect("a working directory");
+        let png = dir.join("../../leaf-gpui.png");
+        let png = png.canonicalize().unwrap_or(png);
+        png.display().to_string()
+    }
+
     #[test]
     fn a_picture_is_recorded_and_the_status_line_covers_its_last_row() {
-        let png = concat!(env!("CARGO_MANIFEST_DIR"), "/../../leaf-gpui.png");
+        let png = picture();
         let (dir, path) = scratch(&format!("Top.\n\n![shot]({png})\n"));
         let s = Session::new(path, 80, 12).unwrap();
         let g = s.paint();
@@ -863,7 +875,7 @@ mod tests {
 
     #[test]
     fn a_menu_opened_over_a_picture_is_not_painted_over() {
-        let png = concat!(env!("CARGO_MANIFEST_DIR"), "/../../leaf-gpui.png");
+        let png = picture();
         let (dir, path) = scratch(&format!("Top.\n\n![shot]({png})\n"));
         let mut s = Session::new(path, 80, 24).unwrap();
         let (key, code, _) = term::char_key('p');

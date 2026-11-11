@@ -205,6 +205,10 @@
 #![no_std]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 #![allow(
+    // Not upstream's: a lint new in the toolchain flower pins, which fires on
+    // upstream's own code. corgi lints a path dependency with the workspace's
+    // flags, where cargo lints only the workspace (PATCH.md).
+    clippy::useless_borrows_in_formatting,
     // this happens on the GL backend, where it is both thread safe and non-thread safe in the same code.
     clippy::arc_with_non_send_sync,
     // We don't use syntax sugar where it's not necessary.

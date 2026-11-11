@@ -21,9 +21,9 @@ use std::process::Command;
 ///
 /// Cargo sets `CARGO_MANIFEST_DIR` in the environment of what it runs, so the
 /// alias in `.cargo/config.toml` hands us the truth for free. The walk up from
-/// the executable covers a binary invoked directly out of `target/`, and the
-/// compile-time value is the last resort — right whenever the tree hasn't moved,
-/// which is the ordinary case.
+/// the executable covers a binary invoked directly out of `target/`. There is
+/// no compile-time last resort: a binary that named its checkout could not be
+/// kept in corgi's store, which every checkout builds from.
 pub fn root() -> PathBuf {
     from_manifest_dir(std::env::var_os("CARGO_MANIFEST_DIR").map(PathBuf::from))
         .or_else(|| {
@@ -31,13 +31,11 @@ pub fn root() -> PathBuf {
                 .ok()
                 .and_then(|exe| ancestor_root(&exe))
         })
-        .or_else(|| from_manifest_dir(Some(PathBuf::from(env!("CARGO_MANIFEST_DIR")))))
         .unwrap_or_else(|| {
             panic!(
-                "could not locate the repo root: no CARGO_MANIFEST_DIR, nothing \
-                 named xtask/Cargo.toml above the executable, and the compile-time \
-                 root ({}) is gone — run this through `cargo xtask`",
-                env!("CARGO_MANIFEST_DIR")
+                "could not locate the repo root: no CARGO_MANIFEST_DIR, and nothing \
+                 named xtask/Cargo.toml above the executable — run this through \
+                 `cargo xtask`"
             )
         })
 }

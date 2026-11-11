@@ -70,6 +70,17 @@ mod text;
 mod toolbar;
 mod typeset;
 
+/// The package's directory in a checkout, for what a run from one reads out
+/// of it (the sample, a test's pictures): cargo's and corgi's
+/// `CARGO_MANIFEST_DIR` as the process has it, not as the compiler did, so
+/// the binary names no checkout and one build serves them all. Without it,
+/// where the process runs: a test's working directory is its package's.
+pub(crate) fn manifest_dir() -> std::path::PathBuf {
+    std::env::var_os("CARGO_MANIFEST_DIR")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+}
+
 fn main() {
     // Run again as a typesetter, for a template not twig-export's own
     // (`typeset.rs`): no window, a request a line on stdin, set here.

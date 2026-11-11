@@ -57,7 +57,8 @@ mod tests {
     /// one written into it as a `data:` URL.
     #[test]
     fn the_sample_sets() {
-        let dir = concat!(env!("CARGO_MANIFEST_DIR"), "/resources");
+        let dir = crate::manifest_dir().join("resources");
+        let dir = dir.display();
         let src = std::fs::read_to_string(format!("{dir}/Sample.md")).unwrap();
         let path = std::path::PathBuf::from(format!("{dir}/Media/Untitled.md"));
         let ty = Type {

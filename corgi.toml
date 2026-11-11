@@ -1,0 +1,236 @@
+# corgi: one build store for the machine, shared by every checkout
+# (https://corgi.build). Cargo reads none of this; it is corgi's alone.
+#
+# The libraries and the Python are unit's and diaryx's corgi.toml's, to the
+# hash, so what flower shares with them (Blitz, Stylo, fontconfig) is built
+# once for all three. CI builds with cargo, and so does a machine without
+# corgi.
+
+# The glibc a Linux build links against, as diaryx's.
+glibc = "2.38"
+
+# Files a package reads beyond the `.rs` files in its own directory, relative
+# to the package. A test's file missing here is a cached pass that outlives an
+# edit to it.
+# Files a package reads beyond the `.rs` files in its own directory, relative
+# to the package. A test's file missing here is a cached pass that outlives an
+# edit to it.
+[extra-inputs]
+# The sample and its pictures, which an untitled document and the PDF tests
+# read, the corpus, and the bundle's property list, which build.rs reads.
+flower-app = ["Info.plist", "resources/*", "resources/Media/*", "corpus/*"]
+# The picture its tests draw in cells.
+flower-tui = ["../../leaf-gpui.png"]
+# The document the browser opens on, compiled in.
+flower-web = ["demo.md"]
+# The face its text tests measure with, compiled in.
+flower-doc-editor = ["tests/faces/*"]
+# The patched wgpu-hal (patches/wgpu-hal): the shaders its GLES backend
+# compiles in.
+wgpu-hal = ["src/gles/shaders/*"]
+# The workspace it checks: every member has a row in `ISOLATED`.
+xtask = ["../Cargo.toml", "../crates/*/Cargo.toml", "../apps/*/Cargo.toml"]
+
+# fontconfig and what it is linked with (Blitz's text, through
+# yeslogic-fontconfig-sys), and OpenSSL (dioxus-native's `net`).
+[libraries.libfontconfig-dev]
+url = "https://snapshot.debian.org/archive/debian/20250408T205804Z/pool/main/f/fontconfig/libfontconfig-dev_2.15.0-2.3_arm64.deb"
+sha256 = "900c6ec77004811e24ca5e014f663e910802ee505c3c29dbd93a8c8325085af8"
+targets = ["aarch64-unknown-linux-gnu"]
+
+[libraries.libfontconfig1]
+url = "https://snapshot.debian.org/archive/debian/20250408T205804Z/pool/main/f/fontconfig/libfontconfig1_2.15.0-2.3_arm64.deb"
+sha256 = "872781cf62926b68c34a4302a3caae334ff8d4d83a2b2477f8fb454460aadc99"
+targets = ["aarch64-unknown-linux-gnu"]
+
+[libraries.libfreetype-dev]
+url = "https://snapshot.debian.org/archive/debian/20260319T144518Z/pool/main/f/freetype/libfreetype-dev_2.13.3+dfsg-1+deb13u1_arm64.deb"
+sha256 = "967117e243f1ac18cb822db246ff6c4f482fd272e89ea8b3b7760871ca74b3fe"
+targets = ["aarch64-unknown-linux-gnu"]
+
+[libraries.libfreetype6]
+url = "https://snapshot.debian.org/archive/debian/20260319T144518Z/pool/main/f/freetype/libfreetype6_2.13.3+dfsg-1+deb13u1_arm64.deb"
+sha256 = "0c426e83f1af816b9a4df9056fd2238463d1cd07969ee640965da9fb6ecaf107"
+targets = ["aarch64-unknown-linux-gnu"]
+
+[libraries.libexpat1-dev]
+url = "https://snapshot.debian.org/archive/debian/20260819T030017Z/pool/main/e/expat/libexpat1-dev_2.8.3-1~deb13u1_arm64.deb"
+sha256 = "a9b760a2291295ab70d45123926d800f5333bbdf7da0f132fb72268a377f8c6d"
+targets = ["aarch64-unknown-linux-gnu"]
+
+[libraries.libexpat1]
+url = "https://snapshot.debian.org/archive/debian/20260819T030017Z/pool/main/e/expat/libexpat1_2.8.3-1~deb13u1_arm64.deb"
+sha256 = "c3248c4beb721c8290e6e34527ae56b1fc965aa6a14982ca602df4458ef0854e"
+targets = ["aarch64-unknown-linux-gnu"]
+
+[libraries.zlib1g-dev]
+url = "https://snapshot.debian.org/archive/debian/20241103T025904Z/pool/main/z/zlib/zlib1g-dev_1.3.dfsg+really1.3.1-1+b1_arm64.deb"
+sha256 = "745ebcf1fa115e230af76216355d7290a24f1790fe3780249b519c0e4d30534f"
+targets = ["aarch64-unknown-linux-gnu"]
+
+[libraries.zlib1g]
+url = "https://snapshot.debian.org/archive/debian/20241103T025904Z/pool/main/z/zlib/zlib1g_1.3.dfsg+really1.3.1-1+b1_arm64.deb"
+sha256 = "209aa5cf671e97b9eb0410844fa6df4cae2e75b0c72e7802ab6c8ece13e6ddef"
+targets = ["aarch64-unknown-linux-gnu"]
+
+[libraries.libpng-dev]
+url = "https://snapshot.debian.org/archive/debian/20260510T204219Z/pool/main/libp/libpng1.6/libpng-dev_1.6.48-1+deb13u5_arm64.deb"
+sha256 = "a212fde02b2930302edcc959eaa2079bb459def3a92741cc09f6f55c250b8ca0"
+targets = ["aarch64-unknown-linux-gnu"]
+
+[libraries.libpng16-16t64]
+url = "https://snapshot.debian.org/archive/debian/20260510T204219Z/pool/main/libp/libpng1.6/libpng16-16t64_1.6.48-1+deb13u5_arm64.deb"
+sha256 = "11096ad43504ca24e8044bcc89e922d932a2812ff25568613b28d22235190ba5"
+targets = ["aarch64-unknown-linux-gnu"]
+
+[libraries.libbrotli-dev]
+url = "https://snapshot.debian.org/archive/debian/20250227T025207Z/pool/main/b/brotli/libbrotli-dev_1.1.0-2+b7_arm64.deb"
+sha256 = "6c1fb26205d7241406511b0b3e9b05d87d25c2288ac4dcc9d5d2ab3af5bd9116"
+targets = ["aarch64-unknown-linux-gnu"]
+
+[libraries.libbrotli1]
+url = "https://snapshot.debian.org/archive/debian/20250227T025207Z/pool/main/b/brotli/libbrotli1_1.1.0-2+b7_arm64.deb"
+sha256 = "10270398c4842e71c72b4081fa1761728b3225d6c8dce7c58d5baafe58a5e18f"
+targets = ["aarch64-unknown-linux-gnu"]
+
+[libraries.libbz2-dev]
+url = "https://snapshot.debian.org/archive/debian/20240819T204354Z/pool/main/b/bzip2/libbz2-dev_1.0.8-6_arm64.deb"
+sha256 = "580ca6907c86073e275241fc25448bd7867938d0c326cc3975a9ea84f8a7ba0f"
+targets = ["aarch64-unknown-linux-gnu"]
+
+[libraries."libbz2-1.0"]
+url = "https://snapshot.debian.org/archive/debian/20240819T204354Z/pool/main/b/bzip2/libbz2-1.0_1.0.8-6_arm64.deb"
+sha256 = "3537fe4fc577a60c8a9568873cd577db7ebc135eb8bb1825f18caf8972d9d2f2"
+targets = ["aarch64-unknown-linux-gnu"]
+
+[libraries.libssl-dev]
+url = "https://snapshot.debian.org/archive/debian/20260930T023522Z/pool/main/o/openssl/libssl-dev_3.6.5-1_arm64.deb"
+sha256 = "8bd916da011f9ab665eaf15b96b1865d38ec510306917dc2f0a5219ce915626f"
+targets = ["aarch64-unknown-linux-gnu"]
+
+[libraries.libssl3t64]
+url = "https://snapshot.debian.org/archive/debian/20260930T023522Z/pool/main/o/openssl/libssl3t64_3.6.5-1_arm64.deb"
+sha256 = "76770c099cfb06cd48cb0764ac3a7771c8b38e17d25780010d55772dce6b36f8"
+targets = ["aarch64-unknown-linux-gnu"]
+
+# The same libraries for an x86_64 Linux host (hbox): the amd64 builds of
+# each package above, from the same snapshot.
+
+[libraries."libfontconfig-dev-amd64"]
+url = "https://snapshot.debian.org/archive/debian/20250408T205804Z/pool/main/f/fontconfig/libfontconfig-dev_2.15.0-2.3_amd64.deb"
+sha256 = "e7c533d87da316da3b127d136c0d1f0238a936c4b0797cb5ab67ebac3cf7151e"
+targets = ["x86_64-unknown-linux-gnu"]
+
+[libraries."libfontconfig1-amd64"]
+url = "https://snapshot.debian.org/archive/debian/20250408T205804Z/pool/main/f/fontconfig/libfontconfig1_2.15.0-2.3_amd64.deb"
+sha256 = "7ae91ec59857cc8e375eb2bdd371a4a69daea38f7787d06d474a847867d852b1"
+targets = ["x86_64-unknown-linux-gnu"]
+
+[libraries."libfreetype-dev-amd64"]
+url = "https://snapshot.debian.org/archive/debian/20260319T144518Z/pool/main/f/freetype/libfreetype-dev_2.13.3+dfsg-1+deb13u1_amd64.deb"
+sha256 = "f58107859d9fa44206e64cf35bdbd4febdec66a33e456ce2e5e3712f01b6c895"
+targets = ["x86_64-unknown-linux-gnu"]
+
+[libraries."libfreetype6-amd64"]
+url = "https://snapshot.debian.org/archive/debian/20260319T144518Z/pool/main/f/freetype/libfreetype6_2.13.3+dfsg-1+deb13u1_amd64.deb"
+sha256 = "e4947f3291528f03d574f2b01d5c5fc45c58c47480f32888a5cdf0f231ab584e"
+targets = ["x86_64-unknown-linux-gnu"]
+
+[libraries."libexpat1-dev-amd64"]
+url = "https://snapshot.debian.org/archive/debian/20260819T030017Z/pool/main/e/expat/libexpat1-dev_2.8.3-1~deb13u1_amd64.deb"
+sha256 = "13f69f5290374c8403d2114b91cc8d0e6bb7b74e9e2512b7e04557546c922749"
+targets = ["x86_64-unknown-linux-gnu"]
+
+[libraries."libexpat1-amd64"]
+url = "https://snapshot.debian.org/archive/debian/20260819T030017Z/pool/main/e/expat/libexpat1_2.8.3-1~deb13u1_amd64.deb"
+sha256 = "38abe0e710a07688e9c149d74536e67cfee0364bdb64dd6d644c32a1cfad389f"
+targets = ["x86_64-unknown-linux-gnu"]
+
+[libraries."zlib1g-dev-amd64"]
+url = "https://snapshot.debian.org/archive/debian/20241103T025904Z/pool/main/z/zlib/zlib1g-dev_1.3.dfsg+really1.3.1-1+b1_amd64.deb"
+sha256 = "76ed5c858e1aef38b7be93acce5910e457e77bd6271471b9d05fb42e78826224"
+targets = ["x86_64-unknown-linux-gnu"]
+
+[libraries."zlib1g-amd64"]
+url = "https://snapshot.debian.org/archive/debian/20241103T025904Z/pool/main/z/zlib/zlib1g_1.3.dfsg+really1.3.1-1+b1_amd64.deb"
+sha256 = "015be740d6236ad114582dea500c1d907f29e16d6db00566ca32fb68d71ac90d"
+targets = ["x86_64-unknown-linux-gnu"]
+
+[libraries."libpng-dev-amd64"]
+url = "https://snapshot.debian.org/archive/debian/20260510T204219Z/pool/main/libp/libpng1.6/libpng-dev_1.6.48-1+deb13u5_amd64.deb"
+sha256 = "9027d5ace59ce266124c87054302805f49f9cb1ec4a6c8264a64596c7916fbff"
+targets = ["x86_64-unknown-linux-gnu"]
+
+[libraries."libpng16-16t64-amd64"]
+url = "https://snapshot.debian.org/archive/debian/20260510T204219Z/pool/main/libp/libpng1.6/libpng16-16t64_1.6.48-1+deb13u5_amd64.deb"
+sha256 = "2465b4e9fa85cff54dc10a6da3e64074d8d9292c86e4a8f989b809d6b158e97e"
+targets = ["x86_64-unknown-linux-gnu"]
+
+[libraries."libbrotli-dev-amd64"]
+url = "https://snapshot.debian.org/archive/debian/20250227T025207Z/pool/main/b/brotli/libbrotli-dev_1.1.0-2+b7_amd64.deb"
+sha256 = "7149124783ccc38764f8b869ea2e4bde319c3d0872b248b7ab472b47d41c5176"
+targets = ["x86_64-unknown-linux-gnu"]
+
+[libraries."libbrotli1-amd64"]
+url = "https://snapshot.debian.org/archive/debian/20250227T025207Z/pool/main/b/brotli/libbrotli1_1.1.0-2+b7_amd64.deb"
+sha256 = "0fb79f88db210afbd69282ab9649e525f393ec6950ca34da1a6b359250b8d7db"
+targets = ["x86_64-unknown-linux-gnu"]
+
+[libraries."libbz2-dev-amd64"]
+url = "https://snapshot.debian.org/archive/debian/20240819T204354Z/pool/main/b/bzip2/libbz2-dev_1.0.8-6_amd64.deb"
+sha256 = "b395471bf69087a18a6baa04d68a9d50497b20f8a2602d9729c7069f820bbe6b"
+targets = ["x86_64-unknown-linux-gnu"]
+
+[libraries."libbz2-1.0-amd64"]
+url = "https://snapshot.debian.org/archive/debian/20240819T204354Z/pool/main/b/bzip2/libbz2-1.0_1.0.8-6_amd64.deb"
+sha256 = "cba4cda04244b5e481bb15524bc3c983a7d1b6f330013b9b381706a2fcb65310"
+targets = ["x86_64-unknown-linux-gnu"]
+
+[libraries."libssl-dev-amd64"]
+url = "https://snapshot.debian.org/archive/debian/20260930T023522Z/pool/main/o/openssl/libssl-dev_3.6.5-1_amd64.deb"
+sha256 = "83c567b06fa1344075e80f7e24320ac52d9103986eab908d38809e84c7b00236"
+targets = ["x86_64-unknown-linux-gnu"]
+
+[libraries."libssl3t64-amd64"]
+url = "https://snapshot.debian.org/archive/debian/20260930T023522Z/pool/main/o/openssl/libssl3t64_3.6.5-1_amd64.deb"
+sha256 = "0a0ec84fe860c5c93c74d53cbb071aea0793327a3761b483080e9d7b73c21b37"
+targets = ["x86_64-unknown-linux-gnu"]
+
+# Stylo's Python on an x86_64 Linux host.
+[tools.python3-x86_64]
+version = "3.13.18"
+url = "https://github.com/astral-sh/python-build-standalone/releases/download/20261026/cpython-3.13.18%2B20261026-x86_64-unknown-linux-gnu-install_only.tar.gz"
+sha256 = "126343c54daff4068efc1ac269518d0cc202d57857794948103dd1454e8881be"
+bin = "python/bin/python3"
+command = "python3"
+env = "PYTHON3"
+packages = ["stylo"]
+targets = ["x86_64-unknown-linux-gnu"]
+
+# Stylo (Blitz's CSS engine) generates its style system with Python.
+[tools.python3]
+version = "3.13.18"
+url = "https://github.com/astral-sh/python-build-standalone/releases/download/20261026/cpython-3.13.18%2B20261026-aarch64-unknown-linux-gnu-install_only.tar.gz"
+sha256 = "b48451865bde9a39e2f3e71d7fdcbf1f32615f50f24d78dc50d04ede6501cf81"
+bin = "python/bin/python3"
+env = "PYTHON3"
+packages = ["stylo"]
+# The targets Stylo is built for on this host: the Python runs on the host
+# whichever one it is, so the browser's build (`web` in .config/ship.figl)
+# takes it too. An x86_64 host's entry above would need the same, on a
+# machine that has corgi.
+targets = ["aarch64-unknown-linux-gnu", "wasm32-unknown-unknown"]
+
+# Feature roots: the package sets features are resolved across. Without one,
+# corgi resolves the whole workspace as one, which is how every lane but the
+# browser's builds it. In a browser the host and the widget are each built
+# alone, as `cargo clippy -p` builds them: `web` is the host
+# (apps/flower-web), which takes the widget without the system clipboard and
+# on the hybrid renderer, and `web-widget` the widget by itself, in the
+# features a browser host gives it. `.config/ship.figl`'s `web` job passes
+# them; scripts/cargo.sh drops `--root` where it runs cargo.
+[roots.web]
+packages = ["flower-web"]
+
+[roots.web-widget]
+packages = ["flower-doc-editor"]

@@ -43,18 +43,18 @@ colour the names do not cover, and who takes the portability cost knowingly.
 
 ## The picture
 
-The [presentation vocabulary](presentation-vocabulary.md) shipped in leaf
+The [presentation vocabulary](presentation-vocabulary.md) shipped in flower
 0.2.0 writes names and never measurements: `data-size="large"`, not `14pt`;
 `data-font="serif"`, not `Garamond`; `data-color="red"`, not `#c0392b`;
 `data-line-height="1.5"` from a menu of three. The reasons still hold, and
 this proposal does not argue with them. A step outlives a theme change, a
 generic face opens on every machine, and a closed set is what a stylesheet
-can render with no leaf present.
+can render with no flower present.
 
 What the names cannot do is be exact. A letterhead is set in the firm's
 face; a brief is 12 point because the court says so; a brand colour is a
 hex triple and not "the nearest of seven". An author with one of those needs
-has, today, a `style` attribute twig will carry and leaf will ignore, and a
+has, today, a `style` attribute twig will carry and flower will ignore, and a
 document that draws differently in the editor than it will anywhere else.
 
 That proposal's own doc comments already imagine the extension. `from_attr`

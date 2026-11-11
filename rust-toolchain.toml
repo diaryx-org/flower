@@ -7,7 +7,7 @@
 # `versions.rust` explains it at length.
 #
 # It is also the number diaryx-org/nix publishes as `versions.rust` for the whole
-# org, for this reason and named as leaf's. The two are meant to agree.
+# org, for this reason and named as flower's. The two are meant to agree.
 [toolchain]
 channel = "1.98.1"
 profile = "minimal"

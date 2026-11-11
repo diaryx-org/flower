@@ -1,24 +1,24 @@
-//! `cargo xtask mac` — build `Leaf.app` from `apps/leaf-dioxus` and launch it.
+//! `cargo xtask mac` — build `Flower.app` from `apps/flower` and launch it.
 //!
 //! The Mac app is a cargo binary, so its bundle is put together here rather
-//! than by Xcode: the binary, `apps/leaf-dioxus/Info.plist` with the app's
+//! than by Xcode: the binary, `apps/flower/Info.plist` with the app's
 //! version stamped in, the icon compiled from the Icon Composer source the iOS
 //! app uses (`actool`, which reads a `.icon` with no Xcode project around it),
 //! and the bundled sample with its pictures, side by side in `Resources` where
 //! an untitled document resolves them. The bundle is signed ad hoc, which is
 //! what lets a Mac run it; `cargo xtask package` signs it again for others.
 //!
-//! `LEAF_BUNDLE_ID` names another bundle identifier, so a build under test
+//! `FLOWER_BUNDLE_ID` names another bundle identifier, so a build under test
 //! keeps its own preferences, recents and autosaves, apart from the copy of
-//! Leaf the Mac has installed.
+//! Flower the Mac has installed.
 
 use crate::util::{cargo, cmd, require_tool, root, run, run_ignoring_failure};
 use anyhow::{Context, Result};
 use std::path::{Path, PathBuf};
 
-pub const APP: &str = "Leaf";
+pub const APP: &str = "Flower";
 /// The app's package, as `-p` names it.
-const PACKAGE: &str = "leaf-dioxus-app";
+const PACKAGE: &str = "flower-app";
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -54,7 +54,7 @@ pub fn version() -> Result<String> {
     crate::util::workspace_version()
 }
 
-/// Build the binary and put `Leaf.app` together around it, in
+/// Build the binary and put `Flower.app` together around it, in
 /// `target/<profile>/`. Answers the bundle's path.
 pub fn bundle(release: bool) -> Result<PathBuf> {
     require_tool("xcrun", "install Xcode and its command-line tools")?;
@@ -80,7 +80,7 @@ pub fn bundle(release: bool) -> Result<PathBuf> {
 
     std::fs::copy(out.join(APP), macos.join(APP)).context("the built binary")?;
     let plist = contents.join("Info.plist");
-    std::fs::copy(root.join("apps/leaf-dioxus/Info.plist"), &plist)?;
+    std::fs::copy(root.join("apps/flower/Info.plist"), &plist)?;
     let buddy = |command: String| -> Result<()> {
         run(cmd("/usr/libexec/PlistBuddy")
             .arg("-c")
@@ -88,14 +88,14 @@ pub fn bundle(release: bool) -> Result<PathBuf> {
             .arg(&plist))
     };
     buddy(format!("Set :CFBundleShortVersionString {}", version()?))?;
-    if let Ok(id) = std::env::var("LEAF_BUNDLE_ID") {
+    if let Ok(id) = std::env::var("FLOWER_BUNDLE_ID") {
         buddy(format!("Set :CFBundleIdentifier {id}"))?;
     }
     std::fs::write(contents.join("PkgInfo"), "APPL????")?;
 
     // The icon: Assets.car for the system's own rendering, leaf.icns for
     // older readers, both named by Info.plist.
-    let sources = root.join("apps/leaf-dioxus/resources");
+    let sources = root.join("apps/flower/resources");
     let partial = out.join("leaf-icon.plist");
     run(cmd("xcrun")
         .arg("actool")
@@ -130,7 +130,7 @@ pub fn bundle(release: bool) -> Result<PathBuf> {
 pub fn sample_copy() -> Result<PathBuf> {
     let dir = root().join("target/leaf-sample");
     std::fs::create_dir_all(&dir)?;
-    let app = root().join("apps/leaf-dioxus/resources");
+    let app = root().join("apps/flower/resources");
     std::fs::copy(app.join("Sample.md"), dir.join("Sample.md"))?;
     for entry in std::fs::read_dir(app.join("Media"))? {
         let entry = entry?;

@@ -20,7 +20,7 @@ no longer one the two paths can answer differently. Pinned by
 `doc/tests/rich_view.rs`, and the div document is back in
 `incremental_build_matches_a_fresh_build_across_edits`'s corpus.
 
-**Where.** `crates/leaf-core`: `wysiwyg::build_spliced` and `build_cached`
+**Where.** `crates/flower-doc`: `wysiwyg::build_spliced` and `build_cached`
 against `build`, and whatever twig reports for the shape below.
 
 **What.** In Markdown, `</div>` followed directly by a line of text, with no

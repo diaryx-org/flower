@@ -1,10 +1,10 @@
-//! `cargo xtask web` — build Leaf for the browser (`apps/leaf-dioxus-web`)
+//! `cargo xtask web` — build Flower for the browser (`apps/flower-web`)
 //! into its `pkg/`: the workspace's `web` profile, fat LTO, through
 //! `wasm-bindgen`, its custom sections stripped.
 //!
 //! `--split` puts the Mermaid renderer in a wasm module of its own, fetched
 //! the first time a diagram is drawn. It is not the default because it is
-//! not sound: code leaf-core shares with the renderer moves into that module,
+//! not sound: code flower-doc shares with the renderer moves into that module,
 //! and until the module arrives a call to it does nothing rather than wait —
 //! the demo's picture drew no label row, and so no picture, until a document
 //! was opened after a diagram had loaded. Kept for finding out why.
@@ -33,13 +33,13 @@ use anyhow::{Context, Result, bail};
 
 use crate::util::{cargo, cmd, root, run};
 
-const APP: &str = "apps/leaf-dioxus-web";
+const APP: &str = "apps/flower-web";
 /// The app's package, as `-p` names it.
-const PACKAGE: &str = "leaf-dioxus-web";
+const PACKAGE: &str = "flower-web";
 /// The profile a page is served from: the workspace's `web`.
 const PROFILE: &str = "web";
 /// The binary's name, which names the wasm and wasm-bindgen's output.
-const BIN: &str = "leaf_dioxus_web";
+const BIN: &str = "flower_web";
 
 #[derive(clap::Args)]
 pub struct Args {
@@ -313,7 +313,7 @@ mod tests {
         let glue = r#"import { initSync } from "./main.js";
 export const a = makeLoad("/harness/split/module_0_f.wasm", [], fusedImports, initSync);"#;
         let out = point_glue(glue);
-        assert!(out.contains(r#"from "./leaf_dioxus_web.js""#));
+        assert!(out.contains(r#"from "./flower_web.js""#));
         assert!(out.contains(
             r#"makeLoad(new URL(import.meta.url).href.replace(/[^/]*$/, "") + "module_0_f.wasm""#
         ));

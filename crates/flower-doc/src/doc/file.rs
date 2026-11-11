@@ -1,0 +1,382 @@
+//! The file on disk: save, save as, reload, and noticing an external change.
+
+use super::*;
+
+impl Doc {
+    // ── the file ──────────────────────────────────────────────────────────────
+
+    /// Whether the bytes landed: an untitled document, or a failed write,
+    /// is `false`, with the status saying why.
+    #[cfg(feature = "fs")]
+    pub fn save(&mut self) -> bool {
+        if self.is_untitled() {
+            // No path to write and no name to invent: ⌘S on an untitled document
+            // is a Save As, and only a frontend has a picker to ask with. Say so
+            // rather than failing at the filesystem with an empty path.
+            self.status = Some("untitled — save as…".into());
+            return false;
+        }
+        let path = self.path.clone();
+        let landed = self.write(&path);
+        if landed {
+            self.mark_saved();
+        }
+        landed
+    }
+
+    /// Save As: write the document to `path` and *move* it there — `self.path`
+    /// becomes `path`, and every later [`Doc::save`] writes the new file. That's
+    /// what Save As means; a copy would leave the user editing a document whose
+    /// name is no longer where their keystrokes go.
+    ///
+    /// The move only happens if the bytes actually landed. A failed write leaves
+    /// the path, `dirty`, and the disk watermark exactly as they were, with the
+    /// same `save failed: …` status a failed [`Doc::save`] sets — the document
+    /// must never come away believing it was saved.
+    ///
+    /// An existing `path` is overwritten, and the caller is the one that knows
+    /// whether to ask first: a Save As picker has already run that prompt, and a
+    /// second confirmation from down here would be the same question twice.
+    ///
+    /// `format` does **not** follow the new extension. The buffer is parsed as
+    /// the format it was opened with, and re-reading it as another one is a
+    /// conversion — a different, lossy operation that would throw away the undo
+    /// history — not a rename. So `notes.md` saved as `notes.dj` holds Markdown
+    /// in a `.dj` file, and `format_name()` keeps honestly saying `markdown`
+    /// until it's reopened.
+    ///
+    /// Whether the bytes landed, as [`Doc::save`].
+    #[cfg(feature = "fs")]
+    pub fn save_as(&mut self, path: PathBuf) -> bool {
+        if !self.write(&path) {
+            return false;
+        }
+        self.path = path;
+        self.mark_saved();
+        true
+    }
+
+    /// Put `source` on disk at `path`, reporting whether it got there. The one
+    /// place flower writes a document, so a save and a Save As can't disagree
+    /// about what a failure looks like.
+    ///
+    /// Whole or not at all: see [`replace_file`].
+    #[cfg(feature = "fs")]
+    fn write(&mut self, path: &Path) -> bool {
+        match replace_file(path, self.source.as_bytes()) {
+            Ok(()) => true,
+            Err(e) => {
+                self.status = Some(format!("save failed: {e}"));
+                false
+            }
+        }
+    }
+
+    /// Re-base the document's saved watermark to the current bytes: clears
+    /// `dirty`, records `source` as the new clean state (so undoing back to here
+    /// clears the flag again), and re-stamps the on-disk hash.
+    ///
+    /// [`Doc::save`]/[`Doc::save_as`] call this after a write lands. It is also
+    /// the hook a **filesystem-free host** calls itself once it has persisted
+    /// [`Doc::source`] its own way (a browser download, `localStorage`, a backend
+    /// `PUT`) — which is why it is public and touches no filesystem: the bytes
+    /// are already where that host wants them, and this just tells the model they
+    /// are safe.
+    pub fn mark_saved(&mut self) {
+        self.clean_source = self.source.clone();
+        self.dirty = false;
+        // The bytes on disk are now ours, so this is the new watermark: without
+        // re-stamping it, every save would report its own work as an external
+        // change forever after.
+        self.disk_hash = Some(hash_bytes(self.source.as_bytes()));
+        self.status = Some(format!("saved {}", self.file_name()));
+    }
+
+    /// [`Doc::mark_saved`] for a host whose write is not instantaneous: `saved`
+    /// is the source it read before writing, and the edits made since are
+    /// still unsaved.
+    ///
+    /// A host that reads [`Doc::source`], hands it to a write that takes a
+    /// while, and then calls `mark_saved` loses whatever was typed meanwhile:
+    /// the flag is cleared over text that never reached the disk, so nothing
+    /// saves it again. Here `saved` becomes the clean state and the disk
+    /// watermark, and `dirty` is whether the buffer has moved on from it.
+    pub fn mark_saved_as(&mut self, saved: &str) {
+        self.clean_source = saved.to_string();
+        self.dirty = self.source != self.clean_source;
+        self.disk_hash = Some(hash_bytes(saved.as_bytes()));
+        if !self.dirty {
+            self.status = Some(format!("saved {}", self.file_name()));
+        }
+    }
+
+    /// What the file looks like now against the bytes flower last read or wrote.
+    ///
+    /// Reads the file and hashes it (see `disk_hash` for why it isn't an mtime),
+    /// so this is a filesystem round-trip, not a per-frame question — ask it
+    /// when a window regains focus, on a timer, or before a save.
+    ///
+    /// This *only* reports the file. Whether the document also has unsaved edits
+    /// is `dirty`, and the interesting case is the conjunction: `dirty` plus
+    /// [`DiskState::Changed`] means a save overwrites someone's work and a
+    /// [`Doc::reload`] discards the user's. flower-doc deliberately won't choose —
+    /// it has no way to ask — so it hands a frontend both halves and lets it put
+    /// the question to the person who can answer it.
+    #[cfg(feature = "fs")]
+    pub fn disk_state(&self) -> DiskState {
+        let Some(want) = self.disk_hash else {
+            return DiskState::Untitled;
+        };
+        match std::fs::read(&self.path) {
+            Ok(bytes) if hash_bytes(&bytes) == want => DiskState::Unchanged,
+            Ok(_) => DiskState::Changed,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => DiskState::Missing,
+            Err(_) => DiskState::Unreadable,
+        }
+    }
+
+    /// Re-read the file and replace the document with what's there — the other
+    /// answer to a [`DiskState::Changed`].
+    ///
+    /// **Discards unsaved changes, unconditionally.** It doesn't check `dirty`
+    /// first: a frontend that wants to protect unsaved work asks (`dirty` +
+    /// [`Doc::disk_state`]) *before* calling this, and one reloading a clean
+    /// document shouldn't have to argue with a guard.
+    ///
+    /// **The undo history survives, and the reload is one step in it.** The
+    /// whole buffer is spliced with the file's bytes through the same door every
+    /// other edit goes through, as an [`EditKind::Other`] that coalesces with
+    /// nothing on either side — so ^Z after a formatter or a `git checkout` has
+    /// swapped the document out from under a reader gives them back what they
+    /// were looking at, marked dirty, and ^Z again carries on into whatever they
+    /// had done before it. This used to build a fresh parse and drop the stack,
+    /// on the reasoning that twig's history belongs to the buffer and these are
+    /// different bytes; that is true of *rebasing* a step onto them and not of
+    /// recording the swap itself as one, which is all this is. A splice twig
+    /// won't take falls back to the fresh parse, and only that path still costs
+    /// the history.
+    ///
+    /// The caret keeps its byte offset, clamped to the new length; the selection
+    /// is dropped. Anything cleverer would be a lie: flower doesn't know how the
+    /// file changed, so it can't know where the caret "still" is. Clamping keeps
+    /// it where the user left it in the common case (a change further down the
+    /// file, or none in the text they're sitting in), and never puts it
+    /// somewhere invalid. A selection has two such offsets and no such excuse —
+    /// silently reinterpreting one over changed bytes would arm the *next*
+    /// keystroke to delete something the user never selected.
+    ///
+    /// Nothing is touched unless the whole reload succeeds; a failure leaves the
+    /// document alone with a status.
+    #[cfg(feature = "fs")]
+    pub fn reload(&mut self) {
+        if self.is_untitled() {
+            self.status = Some("no file to reload".into());
+            return;
+        }
+        let bytes = match std::fs::read(&self.path) {
+            Ok(b) => b,
+            Err(e) => {
+                self.status = Some(format!("reload failed: {e}"));
+                return;
+            }
+        };
+        let Ok(source) = String::from_utf8(bytes) else {
+            self.status = Some("reload failed: file is not UTF-8".into());
+            return;
+        };
+        // Already these bytes — someone saved a file back unchanged, or flower's
+        // own write is being read back. Re-baseline against it and stop: a
+        // splice of the text onto itself would put an undo step on the stack for
+        // something nobody did.
+        if source == self.source {
+            self.disk_hash = Some(hash_bytes(source.as_bytes()));
+            self.clean_source = source;
+            self.dirty = false;
+            self.status = Some(format!("reloaded {}", self.file_name()));
+            return;
+        }
+        let caret = self.caret;
+        // The pre-reload caret, so undoing the swap puts it back where the
+        // reader was standing — the same bracketing `splice_exact` does.
+        self.record_caret();
+        // Only what differs, so the ops a host takes are the change and not
+        // the whole file, and the undo step holds no more.
+        if self.editor.apply(&Op::diff(&self.source, &source)).is_ok() {
+            self.refresh();
+        } else {
+            // twig wouldn't take the splice. Start over from the bytes, which is
+            // what this always did, and is the one path that still costs the
+            // history — `format` is the format this document *is*, not what the
+            // (unchanged) name now says, see `save_as`.
+            match new_editor(source.as_bytes(), self.format) {
+                Ok(editor) => {
+                    self.editor = editor;
+                    // A fresh editor, and so a fresh history — with no
+                    // step in it for an open group to fold into.
+                    self.undo_steps = 0;
+                    self.redo_steps = 0;
+                    if let Some(g) = &mut self.undo_group {
+                        g.has_step = false;
+                    }
+                    let before = std::mem::replace(&mut self.source, source.clone());
+                    // A new editor, whose revisions start again: the change
+                    // is the diff of the two texts.
+                    self.record_ops(&before);
+                    // Not going through `refresh`, so the revision has to move
+                    // here or every frontend keeps painting the old file from
+                    // cache.
+                    self.revision += 1;
+                }
+                Err(e) => {
+                    self.status = Some(format!("reload failed: {e}"));
+                    return;
+                }
+            }
+        }
+        self.disk_hash = Some(hash_bytes(source.as_bytes()));
+        self.clean_source = self.source.clone();
+        self.caret = caret.min(self.source.len());
+        self.anchor = None;
+        self.goal_col = None;
+        self.last_edit_kind = None;
+        self.dirty = false;
+        self.status = Some(format!("reloaded {}", self.file_name()));
+        self.clamp_caret();
+        // And the post-reload caret, so a redo restores it.
+        self.record_caret();
+    }
+
+    /// Re-read the source from twig after it has changed the document. The one
+    /// funnel every edit, undo, and redo comes through — so it's where the
+    /// revision moves, and anything cached against the text dies here.
+    pub(super) fn refresh(&mut self) {
+        let before = match self.editor.source_str() {
+            Ok(s) => std::mem::replace(&mut self.source, s),
+            Err(_) => self.source.clone(),
+        };
+        self.record_ops(&before);
+        self.revision += 1;
+        // An edit is a step onto the history and the end of anything undone;
+        // `undo`/`redo` come through here too and correct this after.
+        self.undo_steps = (self.undo_steps + 1).min(UNDO_CAP);
+        self.redo_steps = 0;
+        // Inside a group, fold each step into the group's first as it lands.
+        // Not for `undo`/`redo`, which close the group before they get here.
+        if let Some(g) = &mut self.undo_group {
+            if g.has_step {
+                self.fold_last_undo();
+            } else {
+                g.has_step = true;
+            }
+        }
+        self.clamp_caret();
+    }
+
+    /// Whether [`undo`](Self::undo) has a step to take back — for a native
+    /// Edit menu to enable its item by, and exactly when `undo` would move.
+    pub fn can_undo(&self) -> bool {
+        !self.read_only && self.undo_steps > 0
+    }
+
+    /// Whether [`redo`](Self::redo) has an undone step to restore.
+    pub fn can_redo(&self) -> bool {
+        !self.read_only && self.redo_steps > 0
+    }
+}
+
+/// Put `bytes` at `path` whole or not at all. They are written to a file
+/// beside it and renamed over it, so a write that fails partway (a full
+/// disk, a lost mount) leaves the last saved file as it was, where
+/// `std::fs::write` truncates it first.
+///
+/// - A symbolic link is followed, even to a target that is not there yet,
+///   so the file it names is the one written and the link stays a link.
+/// - A file already there keeps its permissions; a new one is made as
+///   `File::create` makes it, under the umask.
+/// - The temporary file's name is short and fixed in shape, so a target
+///   whose own name is near the filesystem's limit can still be saved.
+/// - The new bytes, then (on Unix) the folder's entry for them, are flushed
+///   to the disk before this returns, so a save reported done survives a
+///   power cut.
+#[cfg(feature = "fs")]
+pub(crate) fn replace_file(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    use std::io::Write as _;
+    let target = follow_links(path)?;
+    let dir = target
+        .parent()
+        .filter(|d| !d.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let (temp, mut file) = create_beside(dir)?;
+    let written = (|| {
+        if let Ok(meta) = std::fs::metadata(&target) {
+            file.set_permissions(meta.permissions())?;
+        }
+        file.write_all(bytes)?;
+        file.sync_all()?;
+        drop(file);
+        std::fs::rename(&temp, &target)
+    })();
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temp);
+        return written;
+    }
+    sync_dir(dir)
+}
+
+/// `path` with every symbolic link at its end followed, whether or not the
+/// last target exists: the file a save should write. A relative target is
+/// read from the link's own folder. Links through the folders above are
+/// left for the rename to follow.
+#[cfg(feature = "fs")]
+fn follow_links(path: &Path) -> std::io::Result<PathBuf> {
+    let mut at = path.to_path_buf();
+    // The kernel's own limit on a chain of links (Linux's MAXSYMLINKS).
+    for _ in 0..40 {
+        match std::fs::symlink_metadata(&at) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                let to = std::fs::read_link(&at)?;
+                at = match at.parent() {
+                    Some(dir) if to.is_relative() => dir.join(to),
+                    _ => to,
+                };
+            }
+            _ => return Ok(at),
+        }
+    }
+    Err(std::io::Error::other(format!(
+        "{}: too many levels of symbolic links",
+        path.display()
+    )))
+}
+
+/// A new file in `dir` for a save to be written to before it is renamed:
+/// `.leaf-save-<process>-<n>`, never one that is already there.
+#[cfg(feature = "fs")]
+fn create_beside(dir: &Path) -> std::io::Result<(PathBuf, std::fs::File)> {
+    static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    loop {
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        let temp = dir.join(format!(".leaf-save-{}-{n}", std::process::id()));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp)
+        {
+            Ok(file) => return Ok((temp, file)),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+/// Flush `dir`'s entries to the disk, so a rename in it survives a power
+/// cut. Unix only: Windows cannot open a folder to flush it, and commits a
+/// rename's metadata itself.
+#[cfg(feature = "fs")]
+fn sync_dir(dir: &Path) -> std::io::Result<()> {
+    #[cfg(unix)]
+    std::fs::File::open(dir)?.sync_all()?;
+    #[cfg(not(unix))]
+    let _ = dir;
+    Ok(())
+}

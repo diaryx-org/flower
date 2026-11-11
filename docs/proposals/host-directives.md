@@ -27,19 +27,19 @@ What the text below did not foresee:
   (`403c084`). Backspace and Delete at a stop also treat the directive the way
   they treat a picture.
 - Djot cannot round-trip two of the shapes twig writes: a bare attribute, and
-  a label. leaf writes a bare attribute as `key=""` and refuses a label in
+  a label. flower writes a bare attribute as `key=""` and refuses a label in
   djot. The twig-side half is twig's task
   `djot-insert-directive-round-trip`.
 - `Capabilities::directives` is false for HTML and AsciiDoc. twig writes both,
   but the walker reads neither back as a directive by name.
 - leaf-swift and leaf-android lay out in points, so, like media, they never
   report heights through `set_directive_rows`. Only the terminal reports them.
-- On Android, a hardware Ctrl+Z under Gboard bypasses leaf's undo
+- On Android, a hardware Ctrl+Z under Gboard bypasses flower's undo
   ([task](/docs/tasks/closed/ctrl-z-under-gboard.md)). The on-screen undo is correct.
 
 ## The picture
 
-leaf reads every directive a document carries and draws none of them for
+flower reads every directive a document carries and draws none of them for
 real. A leaf directive (`::embed{src=…}`) is a `⧉ embed` placeholder row that
 the caret steps over; a container (`:::warning` … `:::`) is a dashed panel
 with a `.warning` label and editable prose inside. Both bindings already
@@ -47,7 +47,7 @@ publish each leaf directive in `DocView.directives` — its rows, name, label
 and attributes — "so a renderer that knows the host app's vocabulary can
 paint the real thing", and no frontend lets a host do so. The one directive
 that draws as something is `::page-break`, and it does because the name is
-leaf's own.
+flower's own.
 
 Nor can an author write one without typing its syntax. `Doc::insert_page_break`
 calls twig's `insert_directive` with one fixed name. twig's gesture takes any
@@ -57,11 +57,11 @@ format reads back, and refuses a format that cannot spell it.
 So the pieces are all there. What is missing is the way for a host to say
 *which* directives it has, and *how each one looks*.
 
-## Why not a general insert in leaf's own UI
+## Why not a general insert in flower's own UI
 
 A free-form "Insert directive…" that asks for a name and attributes would
-write markup leaf cannot interpret. The presentation vocabulary kept to the
-rule that leaf writes only names it knows how to draw, and left `style="…"`
+write markup flower cannot interpret. The presentation vocabulary kept to the
+rule that flower writes only names it knows how to draw, and left `style="…"`
 carried and ignored for exactly this reason. A directive with no one to draw
 it is the `⧉ name` row, which tells the author only that something is there.
 Whoever knows the syntax can already type `::name` or `:::name` in the source.
@@ -77,7 +77,7 @@ Three parts, and each one works without the others.
 `insert_page_break`'s caret placement: a paragraph parts around it, and the
 caret lands on a line under it. `insert_page_break` becomes one call to it.
 A `Capabilities::directives` flag answers twig's
-`supports_with(Gesture::InsertDirective)` under leaf's parse extensions. It is
+`supports_with(Gesture::InsertDirective)` under flower's parse extensions. It is
 true for Markdown and djot, and false for HTML and AsciiDoc until the walker
 reads their spellings of an arbitrary name back, as it now reads their page
 break. A name or label twig refuses sets a status and writes nothing. Both
@@ -136,18 +136,18 @@ with no hook, is drawn exactly as it is today.
   many rows, as `DirectiveMark::rows` has always said a terminal frontend would.
   The lines are drawn over the reserved rows. They hold no caret.
 
-In every frontend the host's drawing is display-only as far as leaf is
+In every frontend the host's drawing is display-only as far as flower is
 concerned. What it does with a click, a tap or a key of its own is the host's.
 The directive's source is edited by deleting it or through the host, not by a
 caret inside the drawing. A host that wants a "reconfigure" gesture gets the
 directive's name and attributes with the view, and writes the change back with
 the ordinary replace-source path.
 
-### What stays leaf's
+### What stays flower's
 
 `::page-break` keeps its own drawing and its own button, and the hook
 is never asked about it. The name is
-leaf's, and a page opening there is a layout fact, not a picture.
+flower's, and a page opening there is a layout fact, not a picture.
 
 ## What a host's directive looks like elsewhere
 
@@ -159,7 +159,7 @@ the most a closed vocabulary can promise.
 
 ## Containers, later
 
-A container directive holds prose, and prose is leaf's to lay out, so a host
+A container directive holds prose, and prose is flower's to lay out, so a host
 cannot replace one. What it can do is *style* one: a tint, a border, an icon
 and a title in place of the `.warning` label. That wants two things this pass
 does not build.
@@ -196,4 +196,4 @@ does not build.
 
 The kind each app paints is a demonstration, not a vocabulary: an
 `::embed{src=…}` drawn as a titled card holding the URL, the same in all four,
-so the apps show the hook without leaf adopting a name.
+so the apps show the hook without flower adopting a name.

@@ -7,10 +7,10 @@ updated: 2026-10-26
 ---
 # What iOS does not do yet
 
-**Where.** `apps/leaf-dioxus` (it has no iOS module under `src/platform/`
-yet), `crates/leaf-dioxus`, and the patched winit-uikit under `patches/`.
+**Where.** `apps/flower` (it has no iOS module under `src/platform/`
+yet), `crates/flower-doc-editor`, and the patched winit-uikit under `patches/`.
 
-**What.** Leaf for iOS was `archive/apps/leaf-editor` over LeafUI's UIKit
+**What.** Flower for iOS was `archive/apps/leaf-editor` over LeafUI's UIKit
 view, `archive/packages/leaf-swift/Sources/LeafUI/LeafTextViewiOS.swift`.
 What it did that the Dioxus path does not, with where the archived code shows
 how:
@@ -25,7 +25,7 @@ how:
   lines 762–823). Return arrives as `insertText("\n")`; check that the editor
   takes a committed `"\n"` as a new line.
 - **Selection.** `UITextInteraction`'s loupe, long-press select, and the edit
-  menu with leaf's own items (`textInteraction`, `UIEditMenuInteraction`).
+  menu with flower's own items (`textInteraction`, `UIEditMenuInteraction`).
   The editor draws its own handles (`touch.rs`, `row.rs`) and gives hooks for
   a menu (`Editor::dragging_grip`, `drawn_rect_of`), which no host uses yet.
 - **The keyboard.** The formatting row over the keyboard, the panel that

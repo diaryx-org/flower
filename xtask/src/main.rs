@@ -3,7 +3,7 @@
 //! every developer already has the only toolchain it needs.
 //!
 //! What earns a task here is work that leaves Rust, or work that must be done
-//! the same way every time: Leaf.app is a bundle, signed, its version stamped
+//! the same way every time: Flower.app is a bundle, signed, its version stamped
 //! in, and a release of it is notarised in a disk image. The tasks for the
 //! archived frontends (Swift, web, Android) are in `archive/xtask/`.
 //!
@@ -27,7 +27,7 @@ use clap::{Parser, Subcommand};
 #[derive(Parser)]
 #[command(
     name = "cargo xtask",
-    about = "Build and package Leaf.app, and the checks too big for one command",
+    about = "Build and package Flower.app, and the checks too big for one command",
     disable_help_subcommand = true
 )]
 struct Cli {
@@ -37,11 +37,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Task {
-    /// Build Leaf.app from apps/leaf-dioxus and launch it.
+    /// Build Flower.app from apps/flower and launch it.
     Mac(mac::Args),
-    /// Build a signed, notarised Leaf.app in a .dmg for other Macs (target/package/).
+    /// Build a signed, notarised Flower.app in a .dmg for other Macs (target/package/).
     Package(package::Args),
-    /// Build Leaf for the browser into apps/leaf-dioxus-web/pkg, split.
+    /// Build Flower for the browser into apps/flower-web/pkg, split.
     Web(web::Args),
 
     /// Check each crate alone, in each feature shape a host builds.

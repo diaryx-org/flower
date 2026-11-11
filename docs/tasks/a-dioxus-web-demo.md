@@ -7,14 +7,14 @@ updated: 2026-10-27
 ---
 # A web demo drawn by the Dioxus editor
 
-**Where.** `crates/leaf-dioxus`, a new web host, and a Pages workflow.
+**Where.** `crates/flower-doc-editor`, a new web host, and a Pages workflow.
 
-**What.** The web demo at <https://diaryx-org.github.io/leaf/> is the
+**What.** The web demo at <https://diaryx-org.github.io/flower/> is the
 archived leaf-web editor (`archive/packages/leaf-web`, over
 `archive/crates/leaf-wasm`), as deployed from the last release. Its workflow
 is at `archive/.github/workflows/pages.yml`, so no new tag replaces it. The
 Dioxus editor has no web target: `dioxus-native` draws through Blitz on
-wgpu, and nothing in `crates/leaf-dioxus` builds for `wasm32`.
+wgpu, and nothing in `crates/flower-doc-editor` builds for `wasm32`.
 
 Two routes, to be weighed first:
 
@@ -35,7 +35,7 @@ and plain text; drag and drop, with files dropped in; `prefers-color-scheme`;
 a print stylesheet; and touch pointers for links and footnotes.
 
 **Since 2026-10-26.** Settled for Blitz in the browser, and begun:
-`apps/leaf-dioxus-web` runs the editor in a canvas through WebGPU, its
+`apps/flower-web` runs the editor in a canvas through WebGPU, its
 README saying why and what does not work yet. The widget builds for wasm32
 with `clock.rs` (no `std::time::Instant` or tokio timer there) and reads the
 command key from the browser; the Blitz fork's `add_svg_fonts` gives SVG
@@ -69,10 +69,10 @@ Left:
 - **Faces for other scripts and colour emoji**: CJK and emoji draw as boxes,
   since Blitz sees only the faces the page brings.
 - **The split** (`cargo xtask web --split`), off until it is sound: code
-  leaf-core shares with the Mermaid renderer moves into its module and does
+  flower-doc shares with the Mermaid renderer moves into its module and does
   nothing until it arrives (`xtask/src/web.rs`).
 - **Tried only in headless Chrome on Linux**: Safari, Firefox, a phone's
   keyboard and a screen reader are not.
 
-**Done when.** A release deploys a demo drawn by the leaf-dioxus editor, or
+**Done when.** A release deploys a demo drawn by the flower-doc-editor editor, or
 the web is deliberately left to the archived editor's last deploy.

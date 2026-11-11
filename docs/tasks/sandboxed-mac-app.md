@@ -7,13 +7,13 @@ part_of: '[Tasks](/docs/tasks/tasks.md)'
 # The Mac app runs unsandboxed
 
 **Where.** `cargo xtask package` (`xtask/src/package.rs`), which would sign
-with the sandbox's entitlement, and `LeafDocument::path`
-(`apps/leaf-dioxus/src/platform/macos/document.rs`), where the editor learns
+with the sandbox's entitlement, and `FlowerDocument::path`
+(`apps/flower/src/platform/macos/document.rs`), where the editor learns
 the document's folder.
 
-**What.** Leaf is a document app — an `NSDocument` per window, declared
+**What.** Flower is a document app — an `NSDocument` per window, declared
 document types, an icon, a marketing version — and `cargo xtask package`
-makes a Developer ID–signed, notarised and stapled `Leaf.app` in a `.dmg`.
+makes a Developer ID–signed, notarised and stapled `Flower.app` in a `.dmg`.
 But it is signed without the App Sandbox entitlement, and turning that on has
 a consequence the app does not answer yet.
 

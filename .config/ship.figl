@@ -1,13 +1,13 @@
-# What ship needs to know about leaf: its release, and its CI. Everything not
+# What ship needs to know about flower: its release, and its CI. Everything not
 # stated here is ship's default — the manifest, the changelog path, the cliff
 # config, and that this is a Cargo workspace.
-name = leaf
-url = https://github.com/diaryx-org/leaf
+name = flower
+url = https://github.com/diaryx-org/flower
 release_branch = main
 
 # No `verify`: before cutting, a release runs the jobs below.
 
-# Not on crates.io: leaf is consumed from git, by commit, so a tag is a name
+# Not on crates.io: flower is consumed from git, by commit, so a tag is a name
 # for a commit and the start of whatever else is listed below.
 publishes = false
 
@@ -16,10 +16,10 @@ publishes = false
 tag_starts
 > *
 > > workflow = mac-app.yml
-> > does = builds, signs and notarises Leaf.app, attaches its disk image to the release, and writes the tap's `leaf-editor` cask
+> > does = builds, signs and notarises Flower.app, attaches its disk image to the release, and writes the tap's `leaf-editor` cask
 > *
 > > workflow = pages.yml
-> > does = builds Leaf for the browser (`cargo xtask web`) and deploys it to https://diaryx-org.github.io/leaf/, in place of what is there
+> > does = builds Flower for the browser (`cargo xtask web`) and deploys it to https://diaryx-org.github.io/flower/, in place of what is there
 
 # The checks a release has to pass. `ship ci` runs them here, in this order,
 # with the same shell, and stops at the first that fails; `ship ci <id>` runs
@@ -42,7 +42,7 @@ job
 > > # clipboard builds.
 > > id = clippy
 > > name = Clippy
-> > run = cargo clippy --workspace --all-targets -- -D warnings && cargo clippy -p leaf-dioxus --all-targets --no-default-features --features vello -- -D warnings
+> > run = cargo clippy --workspace --all-targets -- -D warnings && cargo clippy -p flower-doc-editor --all-targets --no-default-features --features vello -- -D warnings
 > *
 > > # Includes the xtask's own tests: that the two frontend bindings export the
 > > # same methods, and that every workspace member is checked alone below.
@@ -57,7 +57,7 @@ job
 > > name = Package isolation
 > > run = cargo xtask package-isolation
 > *
-> > # The web host (apps/leaf-dioxus-web, the editor in a browser tab) and
+> > # The web host (apps/flower-web, the editor in a browser tab) and
 > > # the widget as it builds there: for `wasm32-unknown-unknown`, without the
 > > # system clipboard, on Blitz's hybrid renderer, with its Mermaid split
 > > # point. Off the web the host is empty, so the jobs above see none of it.
@@ -67,4 +67,4 @@ job
 > > # slowest job, and the least likely to be the one that fails.
 > > id = web
 > > name = Dioxus web host
-> > run = cargo clippy -p leaf-dioxus-web --target wasm32-unknown-unknown --all-targets -- -D warnings && cargo clippy -p leaf-dioxus --target wasm32-unknown-unknown --no-default-features --features dioxus-native/vello-hybrid,wasm-split -- -D warnings
+> > run = cargo clippy -p flower-web --target wasm32-unknown-unknown --all-targets -- -D warnings && cargo clippy -p flower-doc-editor --target wasm32-unknown-unknown --no-default-features --features dioxus-native/vello-hybrid,wasm-split -- -D warnings

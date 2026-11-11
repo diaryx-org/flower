@@ -1,11 +1,11 @@
 ---
-title: HTML containers leaf does not author fold to atoms
+title: HTML containers flower does not author fold to atoms
 status: draft
 created: 2026-09-09
 updated: 2026-09-09
 part_of: '[Proposals](/docs/proposals/proposals.md)'
 ---
-# HTML containers leaf does not author fold to atoms
+# HTML containers flower does not author fold to atoms
 
 ## The picture
 
@@ -37,15 +37,15 @@ of it.
 discard the rest, show a clean document. That is the templating step run
 backwards, and it is wrong for an editor twice over. Which node is "the
 content" is a heuristic, and the heuristic is wrong often enough that
-Readability ships a corpus of exceptions. Worse, leaf is a caret editor over
+Readability ships a corpus of exceptions. Worse, flower is a caret editor over
 source rows: every visual row maps to a source span and back. A transform
 that produces a cleaner document has no map to the file it will be asked to
 save.
 
-**Fold.** Keep every node in the map and change only how the ones leaf does
-not author are drawn. This is what leaf already does for a directive: a
+**Fold.** Keep every node in the map and change only how the ones flower does
+not author are drawn. This is what flower already does for a directive: a
 `:::name{.class}` container draws as a tinted panel with a label, its rows
-marked `directive`, its prose still editable inside; a leaf `::name{…}`
+marked `directive`, its prose still editable inside; a flower `::name{…}`
 directive draws as a `⧉ name` placeholder atom that the caret steps over and a
 frontend may paint over, with `rows_span` reserving its room. Since twig 2.8 an
 unknown HTML element and a directive are one `container` kind, told apart by
@@ -71,7 +71,7 @@ a media placeholder):
   .hero`, through the same `directive_label` a `:::` block uses. The prose
   inside stays editable, because it is prose.
 - **An attributed paragraph stays a paragraph.** `<p class="eyebrow">` is a
-  paragraph leaf authors. Its class may ride the row as a label, the way a
+  paragraph flower authors. Its class may ride the row as a label, the way a
   code fence's language does, but it is not a container and does not fold.
 
 The Swift view already paints a directive panel and its label
@@ -87,7 +87,7 @@ With the fold in place a stricter view is a rule rather than a heuristic:
 show inline only what is inside `<main>`, else `<article>`, else `<body>`,
 and draw everything outside it as an atom. A page you control always
 satisfies it; a page saved into a book from elsewhere degrades honestly, with
-what leaf does not understand opaque and steppable, never silently editable or
+what flower does not understand opaque and steppable, never silently editable or
 silently dropped. This is not part of the proposal's core and can wait until
 someone asks for it.
 

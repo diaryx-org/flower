@@ -10,7 +10,7 @@ part_of: '[Proposals](/docs/proposals/proposals.md)'
 
 **Since the archive (2026-10-26).** The implementation is LeafUI's, now under
 `archive/packages/leaf-swift`. The Mac's categories exist in the Dioxus app
-(`apps/leaf-dioxus/src/toolbar.rs`); the iOS row and panel are a gap, in "What
+(`apps/flower/src/toolbar.rs`); the iOS row and panel are a gap, in "What
 iOS does not do yet".
 
 ## Status
@@ -97,7 +97,7 @@ restructure a list without calling the keyboard back up. Keys with more than
 one form (heading level, list kind, code) carry a small ▾ and open their
 variants on a long press.
 
-**Obsidian** keeps everything on one scrolling toolbar, much as leaf does
+**Obsidian** keeps everything on one scrolling toolbar, much as flower does
 today, and makes that bearable by letting the user choose and reorder what is
 on it. It shows that reordering works, and also what it costs: the default
 row is long, and the fix is left to the user.

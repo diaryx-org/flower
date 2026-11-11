@@ -7,13 +7,13 @@ updated: 2026-11-04
 ---
 # What Linux and Windows do not do yet
 
-**Where.** `apps/leaf-dioxus/src/platform/desktop` and
-`crates/leaf-dioxus/src/input.rs`.
+**Where.** `apps/flower/src/platform/desktop` and
+`crates/flower-doc-editor/src/input.rs`.
 
 **Done (2026-10-27).** The app runs on Linux: `platform/desktop` keeps its
 own files (Open and Save through the XDG portal's dialogs, a `*` in the
 title while there are unsaved changes, and a Discard/Cancel question before
-such a window closes), stores settings in `<config>/leaf/settings`, uses
+such a window closes), stores settings in `<config>/flower/settings`, uses
 the system clipboard, and exports a PDF through twig-export. A File menu
 in the toolbar and the Ctrl keys stand in for the menu bar. Windows
 compiles the same module, untried. Still to do:
@@ -23,17 +23,17 @@ compiles the same module, untried. Still to do:
 - **No Print.** Export as PDF, then print from the viewer.
 - **No spelling checker and no Look Up.**
 
-Since then (2026-10-27): the document reads and saves through leaf-core's
+Since then (2026-10-27): the document reads and saves through flower-doc's
 file API, as the terminal editor does, so a save is written beside the file
 and renamed over it, undoing back to what was saved clears the title's `*`,
 a window coming forward takes what another program wrote to a clean
 document (and warns a dirty one), and Save over such a change asks first.
 File ▸ PDF Preview (Ctrl+Alt+P, or the toolbar's PDF) shows the pages
 Export as PDF writes beside the editor, set again as it is edited
-(`crates/leaf-pages`); tried on Linux, not yet on the Mac or Windows.
+(`crates/flower-pages`); tried on Linux, not yet on the Mac or Windows.
 
 **What.** The desktop app off the Mac was gpui's,
-`archive/apps/leaf` over `archive/crates/leaf-gpui`. What it did that the
+`archive/apps/flower` over `archive/crates/leaf-gpui`. What it did that the
 Dioxus path does not:
 
 - **The app.** Done (above): the Open dialog, the guard before a window

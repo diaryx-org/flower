@@ -36,7 +36,7 @@ nothing. The terminal draws text colour in its own inks rather than the
 highlight's washes, and leaf-swift likewise keeps a contrast-checked pair per
 name, because a wash that reads *under* text does not read *as* text. And
 twig 3.6's new attribute axis of diagnostics reported an HTML link's `href`
-and an image's `src` as attributes Markdown drops, which leaf's paste gate
+and an image's `src` as attributes Markdown drops, which flower's paste gate
 read as a lossy paste; the gate now asks the question it meant to
 (`232a84c`), and the two twig defects behind it are tasks in twig.
 
@@ -44,7 +44,7 @@ read as a lossy paste; the gate now asks the question it meant to
 [presentation as attributes](https://github.com/diaryx-org/twig/blob/main/docs/proposals/presentation-as-attributes.md)
 is `implemented` at `e956f9f`, with `Editor::set_block_attrs` and
 `Editor::wrap_range_attrs` in the Rust binding and `html_elements` as the
-Markdown spelling's gate — a flag leaf has had on since it first framed a
+Markdown spelling's gate — a flag flower has had on since it first framed a
 `<picture>`. Built against the twig checkout through
 `~/diaryx/.cargo/config.toml`; the `twig-doc` pin moves once twig names the
 version.
@@ -61,21 +61,21 @@ leaf-swift's paginated view is a document editor in the shape a word
 processor has, and a word processor lets an author centre a heading, set a
 run of words larger, pick a face for a pull quote, open up a paragraph's
 line spacing, colour a warning red, and put a page break where a chapter
-ends. leaf draws none of these, because until twig 3.5 the document had
-nowhere to carry them: a Markdown file has no attribute syntax, and leaf's
+ends. flower draws none of these, because until twig 3.5 the document had
+nowhere to carry them: a Markdown file has no attribute syntax, and flower's
 `Style` records what a glyph *is* — a heading, code, a link — and leaves what
 it looks like to the frontend's theme.
 
 Twig now carries the attribute. `set_block_attrs` replaces the attribute set
 of the paragraph or heading the caret is in; `wrap_range_attrs` wraps a
 selection in an attributed span or re-styles the one it already lies in;
-both spell the pair in every format leaf opens — djot's `{.center}` line,
+both spell the pair in every format flower opens — djot's `{.center}` line,
 HTML's `class="center"`, AsciiDoc's `[.center]`, and for Markdown a raw
 `<div class="center">` around the block and a `<span …>` around the run,
 which every Markdown renderer passes through and twig's parser pairs back
 into a container under `html_elements`. Twig interprets none of it. What
-`center` means, which keys leaf writes, and how a frontend draws a run whose
-`data-size` says `large` are leaf's to decide, and this proposal decides
+`center` means, which keys flower writes, and how a frontend draws a run whose
+`data-size` says `large` are flower's to decide, and this proposal decides
 them.
 
 Page breaks are the one property that is not an attribute of an existing
@@ -86,7 +86,7 @@ the same toolbar and lands in the same release.
 
 ## The principle: names, not values; the theme owns the number
 
-Everything leaf writes into an attribute is a *name* — a token a native
+Everything flower writes into an attribute is a *name* — a token a native
 renderer can switch on and a stylesheet can select — never a measurement.
 That is the rule `MarkColor` already follows: twig records `red`, not a hex
 triple, and each frontend picks the red that suits its palette and its
@@ -99,9 +99,9 @@ appearance. Three reasons to hold to it for the rest:
   theme. The same holds for a face: a document that names `Georgia` is a
   document that renders in the fallback everywhere Georgia is not installed,
   which is every Linux terminal and most of the web.
-- **A stylesheet can only enumerate.** leaf publishes a stylesheet so that
-  HTML built from a leaf document — by plates, by GitHub, by anything that
-  passes raw HTML through — renders these attributes without leaf present.
+- **A stylesheet can only enumerate.** flower publishes a stylesheet so that
+  HTML built from a flower document — by plates, by GitHub, by anything that
+  passes raw HTML through — renders these attributes without flower present.
   CSS selects on an attribute's *value* and cannot read it into a property
   (`attr()` in `font-size` is one browser, this year), so a vocabulary the
   stylesheet can render is a closed one.
@@ -111,9 +111,9 @@ appearance. Three reasons to hold to it for the rest:
   background; a text colour named from the same seven gets the same care for
   free.
 
-The cost is that leaf is not a general typesetter. An author who needs
+The cost is that flower is not a general typesetter. An author who needs
 exactly 13.5pt or exactly Garamond has a `style` attribute twig will carry
-and leaf will ignore, and the last section says why that stays out.
+and flower will ignore, and the last section says why that stays out.
 
 ## The vocabulary
 
@@ -132,7 +132,7 @@ read on any block beneath a `div` that carries them:
 | alignment | `class` | `center`, `right`, `justify` | the theme's default, which is `left` |
 | line spacing | `data-line-height` | `1.15`, `1.5`, `2` | the theme's `lineHeight`, which is `1` |
 
-`class` is a space-separated token list in every format, and leaf reads the
+`class` is a space-separated token list in every format, and flower reads the
 one token it knows and leaves the rest — a paragraph that arrives as
 `class="lead center"` is centred and keeps `lead`. There is no `left` token
 because absence is left, and a document that wants to say so has no reason
@@ -189,8 +189,8 @@ red.
 
 `::page-break`, a leaf directive with no label and no attributes. twig's
 `insert_directive` writes it in every format that names a leaf container —
-Markdown with `directives` on, which leaf has, and djot, where it spells as
-an empty `::: page-break` fence whose name comes back as a class. leaf's
+Markdown with `directives` on, which flower has, and djot, where it spells as
+an empty `::: page-break` fence whose name comes back as a class. flower's
 walker draws it as the `⧉ page-break` placeholder row every leaf directive
 gets, and each frontend that paginates reads the row's `DirectiveMark` and
 opens a page there. A break at the very start of a document is a row and no
@@ -212,12 +212,12 @@ winning: a span's `data-size` inside a block with its own applies to the
 span.
 
 **Each gesture edits one key and keeps the rest.** Twig's replace-not-merge
-contract is the reason leaf can: a gesture reads the node's attributes,
+contract is the reason flower can: a gesture reads the node's attributes,
 removes its own key (and for alignment, its own tokens from `class`), adds
 the new value or nothing, and passes the list back whole. A paragraph that
 came in as `class="lead center" id="intro" data-line-height="1.5"` and is
 right-aligned goes out as `class="lead right" id="intro"
-data-line-height="1.5"`. Nothing leaf did not write is touched, which is what
+data-line-height="1.5"`. Nothing flower did not write is touched, which is what
 lets a document from elsewhere pass through the editor unharmed.
 
 **Clearing is the same gesture with `None`.** Each takes an `Option`; `None`
@@ -240,13 +240,13 @@ document reads the same way with no div at all.
 ## What core carries, and what each frontend does with it
 
 `Style` gains three fields beside `role`, each an `Option` of a small enum in
-[`style.rs`](../../crates/leaf-core/src/style.rs) with a `from_attrs` and a
+[`style.rs`](../../crates/flower-doc/src/style.rs) with a `from_attrs` and a
 `name`, as `MarkColor` has: `size: Option<SizeStep>`, `font:
 Option<FontFamily>`, `color: Option<MarkColor>`. `VRow` gains two, carried on
 every row of the block the way `heading` is: `align: Option<Align>` and
 `line_height: Option<LineSpacing>`. A `Capabilities` flag per property —
 `alignment`, `line_spacing`, `font_size`, `font_family`, `text_color`,
-`page_break` — answered by twig's `supports_with` under leaf's parse
+`page_break` — answered by twig's `supports_with` under flower's parse
 extensions, and a query per property at the caret for the toolbar's state.
 Both bindings export the same six gestures and five queries, and
 `the_two_bindings_export_the_same_methods` holds them level.
@@ -265,7 +265,7 @@ honest answer differs by surface:
 - **leaf-web** honours all of it through the same tokens as CSS classes and
   `data-` attributes on the row and run elements, and the package ships
   `presentation.css`, the stylesheet that renders those tokens — the same
-  file a page built from a leaf document links to.
+  file a page built from a flower document links to.
 - **leaf-ratatui** honours alignment (by padding the row into the width),
   colour (an ANSI hue per name, the highlight's own), and the page break (a
   dashed rule). It ignores size and face, because a cell has one size and one
@@ -295,7 +295,7 @@ honest answer differs by surface:
 
 The colours are custom properties with a fallback, so a page that has a
 palette overrides them and one that does not still reads. The file is the
-whole of what a consumer needs to render a leaf document's presentation in
+whole of what a consumer needs to render a flower document's presentation in
 a browser, and it is published with the package because that is where the
 web frontend's own tokens are already defined.
 
@@ -303,7 +303,7 @@ web frontend's own tokens are already defined.
 
 - **It does not carry a measurement.** No `14pt`, no `#c00`, no `Garamond`
   in the vocabulary, for the reasons under **The principle**. A `style`
-  attribute is carried by twig and ignored by leaf.
+  attribute is carried by twig and ignored by flower.
 - **It does not set a document's default.** A default face, size and line
   height are the theme's, and a document that wants its own has front matter
   for it. The attributes here are per-block and per-run overrides.
@@ -314,7 +314,7 @@ web frontend's own tokens are already defined.
   it. Roles and the vocabulary compose rather than compete.
 - **It does not touch AsciiDoc's inline gap.** Twig refuses
   `wrap_range_attrs` in AsciiDoc because `[.a]#text#` keeps a role and drops
-  a `data-` key; leaf's three run-level buttons dim there, and the block-level
+  a `data-` key; flower's three run-level buttons dim there, and the block-level
   form of the same properties still works.
 
 ## Sequence

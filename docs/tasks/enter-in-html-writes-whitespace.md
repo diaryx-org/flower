@@ -27,7 +27,7 @@ twig's join, which spells it as a newline, a space to HTML, drawn as a line
 break in Preserve flow. Hand-written whitespace between or inside elements
 is still drawn as Markdown would draw it.
 
-**Where.** `crates/leaf-core`: `Doc::newline` and the visual map.
+**Where.** `crates/flower-doc`: `Doc::newline` and the visual map.
 
 **What.** In an HTML document, Enter writes what it writes in Markdown:
 blank lines, or in Preserve flow a lone newline. HTML keeps neither.

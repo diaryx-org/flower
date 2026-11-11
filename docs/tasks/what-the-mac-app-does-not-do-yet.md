@@ -7,11 +7,11 @@ updated: 2026-10-26
 ---
 # What the Mac app does not do yet
 
-**Where.** `apps/leaf-dioxus` (the app, and `src/platform/macos`, its AppKit
-half) and `crates/leaf-dioxus` (the editor).
+**Where.** `apps/flower` (the app, and `src/platform/macos`, its AppKit
+half) and `crates/flower-doc-editor` (the editor).
 
-**What.** Leaf for the Mac moved from LeafUI's AppKit editor to the
-leaf-dioxus editor, first in a SwiftUI document app and then in a Rust one,
+**What.** Flower for the Mac moved from LeafUI's AppKit editor to the
+flower-doc-editor editor, first in a SwiftUI document app and then in a Rust one,
 its windows Dioxus pages and its AppKit reached through objc2. The document
 system (Open, autosave in place, Versions, Rename, Move To, Revert, Open
 Recent, Finder's Open With, an untitled document's question as it closes),

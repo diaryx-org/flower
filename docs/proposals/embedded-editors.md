@@ -28,31 +28,31 @@ clients on the web and in the leaf-editor app:
   internals. The Swift layout asks the open region for the formula's
   picture, so the stand-in TeX and `MathStore.open` are gone.
 - **Mermaid** on the web demo (`845750f`) and in the leaf-editor app
-  (`e534037`). leaf depends on none of it.
+  (`e534037`). flower depends on none of it.
 
 What the text below did not foresee, or decided:
 
 - **Inline host views** (open question). Not built. A host may name only
   `fence:` kinds, and every fence is a block. Inline regions are pictures from
-  a leaf session.
+  a flower session.
 - **Android and the terminal** (open questions). Not touched. Neither calls
   `set_owned_regions`, so both draw formulas and fences as before.
 - **Where the Mermaid editor lives** (open question). In each demo app
   (`apps/leaf-web-demo/mermaid-editor.js`, `apps/leaf-editor/App/MermaidFence.swift`),
-  as the reference for Diaryx. It is not a leaf package.
+  as the reference for Diaryx. It is not a flower package.
 - **Rendering Mermaid on Apple** (open question). First answered with one
   `WKWebView` per diagram and mermaid.js from a CDN. Now native, everywhere:
   a spike (`spikes/mermaid-native/`) measured mmdr, a Mermaid renderer in
-  Rust, against mermaid.js. `crates/leaf-mermaid` wraps it, from a fork
+  Rust, against mermaid.js. `crates/flower-mermaid` wraps it, from a fork
   carrying upstream's open PRs for wasm and for host text metrics until they
   merge. leaf-ffi exports `render_mermaid`, which the app calls with Core
   Text measuring the labels, and LeafUI's `SVGView` draws the result as
   vectors. On the web, `leaf-mermaid-wasm` is a module of its own that the
   demo loads in a worker, measuring labels on a canvas. The npm package does
-  not carry it. leaf's frontends still draw no diagrams. So for now, on the
-  user's choice, Mermaid is a leaf crate behind the bindings. That question is
+  not carry it. flower's frontends still draw no diagrams. So for now, on the
+  user's choice, Mermaid is a flower crate behind the bindings. That question is
   now decided: under [Renderers and editors](#renderers-and-editors), Mermaid
-  moves out of leaf's default build.
+  moves out of flower's default build.
 - **Persistence of the open state** (open question). An open region does not
   survive a view being rebuilt, as before.
 - **A fence's content** is its lines between the fences, each with its
@@ -61,7 +61,7 @@ What the text below did not foresee, or decided:
   splice on its content would write over them.
 - **Bytes on the wire.** Splices are in UTF-8 bytes of the content, as
   `edit_source` is. Because a text widget speaks in its own units, the host
-  half also has `replace(content)`, which leaf diffs into one splice.
+  half also has `replace(content)`, which flower diffs into one splice.
 - **Host views and history.** A host's view stays open across undo and redo
   (`host.undo()`), and gets the change as `reload`. A formula closes and
   then undoes, as in the spike.
@@ -100,7 +100,7 @@ A second review, of core and the web, found more, fixed in the commit after
   fires them.
 
 Step 3 has begun, with the math editor's "Not done" list in
-`crates/leaf-math-edit/README.md`:
+`crates/flower-math-edit/README.md`:
 
 - Selection, copy, cut, paste and delete-forward (`fbcfeaf`). The region
   protocol gained `copy` and `paste` for them.
@@ -123,11 +123,11 @@ Steps 4–7 of [How to get there](#how-to-get-there) are built, on the
   bitmap or by hand. A picture with no width takes the column's. The layout
   places it inline (an attachment, as a formula was) or as a block box
   (`PictureLayout`), and draws it with the text. So pictures page, print and
-  go into a PDF. `MathGlyph` and `MathLayout` are gone; leaf's `math` renderer
-  is leaf-math through `MathRenderer`. Each view caches pictures by kind,
+  go into a PDF. `MathGlyph` and `MathLayout` are gone; flower's `math` renderer
+  is flower-math through `MathRenderer`. Each view caches pictures by kind,
   content, size, ink and appearance, and `redrawRegions(kind:)` forgets them.
   The app's Mermaid fence is a renderer.
-- **Mermaid out of leaf** (`1ec775f`). `render_mermaid` moved to
+- **Mermaid out of flower** (`1ec775f`). `render_mermaid` moved to
   leaf-mermaid-ffi, which leaf-ffi links only under its `mermaid` feature.
   This follows the resvg-uniffi pattern, since a second Rust archive would
   duplicate `std`. Its Swift module, `LeafMermaidFFI`, is generated beside the
@@ -141,17 +141,17 @@ Steps 4–7 of [How to get there](#how-to-get-there) are built, on the
 - **Directives, Swift** (`f3d3217`). `directiveView` and `DirectiveHost` are
   gone. The one host view left is the open region's (`HostedLayout`). The
   app's `::embed` card is a picture drawn in Core Graphics.
-- **One Rust session** (`b2a9833`). leaf-session puts every editor leaf runs
+- **One Rust session** (`b2a9833`). flower-session puts every editor flower runs
   behind one trait, and `open(kind, …)` chooses one by kind. Both bindings
   export it as `EditSession` in place of `MathSession`. Math is its one kind.
 
 Decided while building them:
 
 - **Inline directives** (open question). Not published. Core makes a region
-  only of a leaf (block) directive. A `:name[…]` in a line stays as it was,
+  only of a flower (block) directive. A `:name[…]` in a line stays as it was,
   until something needs to draw one.
 - **A host's math editor.** Refused, on both platforms. A host may replace
-  the `math` renderer, but leaf's session edits a formula inside a line,
+  the `math` renderer, but flower's session edits a formula inside a line,
   where no host view can stand. `directive:page-break` is refused as a
   renderer kind and as an editor kind.
 - **Synchronous on Swift, a promise on the web.** A Swift renderer is called
@@ -213,7 +213,7 @@ Left:
 **Mermaid's cost on the Mac** (`e22ae47`, `c850508`). The 230–340 ms
 reported for a large flowchart was mmdr's layout, much of it the debug build.
 Label measuring was small, and the SVG round trip smaller. mmdr layout, as the
-`timing` example in `crates/leaf-mermaid` measures it, Apple M-series:
+`timing` example in `crates/flower-mermaid` measures it, Apple M-series:
 
 | Diagram | Debug before | Release before | After (debug or release) |
 |---|---|---|---|
@@ -270,9 +270,9 @@ Decided or changed while building them:
   text view's coordinates, so the host is also given the view, weakly, to
   anchor its popover to.
 - **The caret on Apple is the system's**, placed at the session's caret:
-  `NSTextInsertionIndicator` on the Mac (leaf's drawn bar before macOS 14),
+  `NSTextInsertionIndicator` on the Mac (flower's drawn bar before macOS 14),
   and UIKit's caret through `caretRect(for:)` on iOS, which no longer clears
-  its tint while a formula is open. Leaf draws the selection rects and the
+  its tint while a formula is open. Flower draws the selection rects and the
   composition.
 - **IME on the web** composes in a hidden `textarea` at the caret, since
   composing into the document's own element would push the picture aside.
@@ -314,7 +314,7 @@ knows only about math:
 
 | Layer | Math-specific piece |
 |---|---|
-| leaf-core | `Doc::set_edits_math`. `MathInfo` / `MathView` carry the formula's end and its TeX range |
+| flower-doc | `Doc::set_edits_math`. `MathInfo` / `MathView` carry the formula's end and its TeX range |
 | bindings | `MathSession`, exported by `leaf-math-wasm` and again by `leaf-ffi` |
 | leaf-swift (macOS) | `openFormula` in `LeafTextView`, with checks added to `doCommand`, `insertText`, `mouseDown`, `undo`/`redo` and caret drawing |
 | leaf-swift (iOS) | The same routing again in `LeafTextViewiOS` |
@@ -346,16 +346,16 @@ Most of the spike is not about math:
 
 The modes we can foresee divide by who owns the focus while the region is open.
 
-1. **Leaf runs the session.** The view passes keys and text to a session object
+1. **Flower runs the session.** The view passes keys and text to a session object
    and draws the picture the session returns. Math is this kind. The session is
    Rust, so one implementation serves the web, Swift, Android and, in time, the
    terminal.
-2. **The host's view runs it.** Leaf places a view the host supplied over the
+2. **The host's view runs it.** Flower places a view the host supplied over the
    region, gives it the focus, applies the splices it sends back, and takes the
    focus back when it closes. Mermaid is this kind: its likely editors (source
    text with a live preview, or a node editor) are platform UI, and rendering
    Mermaid is mermaid.js on the web and probably a web view on Apple. Diaryx
-   should be able to plug this in without leaf depending on Mermaid.
+   should be able to plug this in without flower depending on Mermaid.
    `directiveView` / `DirectiveHost` already size and place host views over
    block placeholder rows. This kind extends that to views that edit.
 
@@ -396,7 +396,7 @@ natively.
 - The layout asks the open session for its picture directly. This replaces the
   fake TeX string and `MathStore.open`.
 - The host registers editors by region kind, as it registers `directiveView`.
-  Leaf ships math. Diaryx (or the leaf-editor app, as a demo) supplies Mermaid.
+  Flower ships math. Diaryx (or the leaf-editor app, as a demo) supplies Mermaid.
 
 ## How to get there
 
@@ -407,13 +407,13 @@ with two clients from the first commit:
    (`MathEditingTests`, the web tests, the core tests) must still pass.
 2. A minimal Mermaid fence editor, run by a host view: the fence's source in a
    text view with a rendered preview, writing back through splices. On the web
-   and in the leaf-editor demo app, not in leaf's own frontends.
+   and in the leaf-editor demo app, not in flower's own frontends.
 
 With one client, the protocol would end up shaped like math. With two clients
 that differ in who owns the focus, it has to be general.
 
 Only then work through the spike's own "Not done" list in
-`crates/leaf-math-edit/README.md`: selection, copy/paste and delete-forward
+`crates/flower-math-edit/README.md`: selection, copy/paste and delete-forward
 inside a formula, IME, matrices and environments, `\left(` pairing, removing
 empty scripts, user colours, and caching the layout of the open formula.
 
@@ -421,8 +421,8 @@ Then split rendering from editing, as
 [Renderers and editors](#renderers-and-editors) sets out:
 
 4. The public picture, and renderers by kind on every platform that draws
-   regions. Math's renderer is leaf-math, unchanged in what it draws.
-5. Mermaid as a host renderer. `leaf-mermaid` leaves the default `leaf-ffi`
+   regions. Math's renderer is flower-math, unchanged in what it draws.
+5. Mermaid as a host renderer. `flower-mermaid` leaves the default `leaf-ffi`
    and npm package, and the leaf-editor app and web demo register it.
 6. Directives as regions, with `directiveView` and `DirectiveHost` folded in.
    Every frontend that draws directives today, Android and the terminal
@@ -434,8 +434,8 @@ Then open the picture session to hosts, as
 out:
 
 8. Inline directives published by core as `directive:<name>` regions.
-9. The public picture session on Swift and the web. Leaf draws the caret and
-   selection, leaf composes IME text, keys can be added without breaking
+9. The public picture session on Swift and the web. Flower draws the caret and
+   selection, flower composes IME text, keys can be added without breaking
    hosts, `RegionHost` gives the caret's rect, typing coalesces into one undo
    step, and sessions give an accessibility value. Math moves onto it, with no
    change in behaviour beyond its caret.
@@ -447,11 +447,11 @@ Decided 2026-10-12, after Mermaid was drawn natively. The protocol built in
 steps 1 and 2 can be extended in one direction only: a host can add a block
 fence edited by a view of its own. A host cannot claim any other kind of
 region. It cannot draw anything inline. It also cannot hand the layout a
-picture: a closed region is drawn either by leaf's placeholder or by a live
+picture: a closed region is drawn either by flower's placeholder or by a live
 view laid over it, and a live view does not paginate, print or export.
 Directives meanwhile have a second, parallel host-view mechanism
-(`directiveView` / `DirectiveHost`). And `leaf-ffi` depends on `leaf-mermaid`,
-so leaf ships a Mermaid renderer it does not use.
+(`directiveView` / `DirectiveHost`). And `leaf-ffi` depends on `flower-mermaid`,
+so flower ships a Mermaid renderer it does not use.
 
 So each region kind gets two parts. Both are registered by kind, and both are
 open to a host.
@@ -464,15 +464,15 @@ open to a host.
   baseline, in whatever form each platform draws cheaply: a display list or
   SVG on Apple (LeafUI's `SVGView` already draws SVG), an element or SVG on
   the web. `MathGlyph` becomes the math renderer's picture, not a type the
-  layout knows by name. A kind with no renderer keeps leaf's placeholder row.
-- **An editor**, optional. It is what `open` is today: a session leaf draws,
+  layout knows by name. A kind with no renderer keeps flower's placeholder row.
+- **An editor**, optional. It is what `open` is today: a session flower draws,
   which answers keys and returns a picture (math), or a session a host runs in
   a view of its own. Only an open region is ever a live view. Inline regions
-  are edited only by sessions leaf draws.
+  are edited only by sessions flower draws.
 
 Kinds:
 
-- `math`, inline or block. Leaf registers its renderer and its editor by
+- `math`, inline or block. Flower registers its renderer and its editor by
   default, and a host may replace either.
 - `fence:<lang>`, block.
 - `directive:<name>`, block, as `::name[label]{attrs}`. The region carries the
@@ -491,7 +491,7 @@ publishes those regions.
 The bindings export one Rust session type, chosen by kind, in place of
 `MathSession`. A second editor written in Rust then needs no new binding.
 
-Mermaid leaves leaf's default build. `leaf-mermaid` stays a crate in this
+Mermaid leaves flower's default build. `flower-mermaid` stays a crate in this
 workspace, but `render_mermaid` moves behind a cargo feature or into its own
 small FFI module, and `leaf-mermaid-wasm` stays out of the npm package. The
 leaf-editor app and the web demo register it as the renderer for
@@ -500,25 +500,25 @@ leaf-editor app and the web demo register it as the renderer for
 ## Editors a host draws as pictures
 
 Decided 2026-10-12. Editing is open to a host in one form only: a view over a
-block. A session that leaf drives with keys and draws as a picture, the only
-kind that can sit in a line of text, is leaf's alone. The type is internal
+block. A session that flower drives with keys and draws as a picture, the only
+kind that can sit in a line of text, is flower's alone. The type is internal
 (`RegionPictureSession`), only `math` has one, and `RegionSlot.edits` names it.
 
 So the picture session becomes public on every platform with region editing:
 a Swift protocol, and a JS interface in `editor.d.ts`. `RegionEditor.open` may
-return one, for any kind, inline or block. Leaf's math editor is registered
+return one, for any kind, inline or block. Flower's math editor is registered
 through the same door as a host's. A host may replace it, and
 `RegionSlot.edits` asks whether a kind has an editor. Rust editors in
-`leaf-session` stay one implementation behind it (`LeafRegionSession`), so a
+`flower-session` stay one implementation behind it (`LeafRegionSession`), so a
 registry of Rust editors can come later without changing the protocol.
 
-What a session leaf does not write needs from the protocol:
+What a session flower does not write needs from the protocol:
 
-- **Leaf draws the caret and selection.** A session's picture comes with a
-  caret rect and selection rects, in the picture's coordinates. Leaf draws
+- **Flower draws the caret and selection.** A session's picture comes with a
+  caret rect and selection rects, in the picture's coordinates. Flower draws
   them, with its own blink, caret colour and selection colour. Math moves to
   this as well and stops drawing a caret in its SVG.
-- **Leaf composes IME text.** Marked text is shown by leaf, at the caret, over
+- **Flower composes IME text.** Marked text is shown by flower, at the caret, over
   the picture. The session gets only committed text, through `type`. A session
   may opt in to composition later.
 - **Keys can be added without breaking hosts.** Add word moves, line moves,
@@ -527,7 +527,7 @@ What a session leaf does not write needs from the protocol:
   web, keys are names.
 - **Popovers are the host's.** `RegionHost` gives the caret's rect and the
   region's rect in view coordinates, so a host can anchor its own completion
-  list or calendar. Leaf draws no popups.
+  list or calendar. Flower draws no popups.
 - **Pictures are cheap while a region is open.** An open session's picture is
   asked for on every keystroke, synchronously. The asynchronous renderers are
   for closed regions only. A kind whose drawing is slow edits through a view.
@@ -542,7 +542,7 @@ mentions, dates, tags. Android and the terminal keep drawing them as they do
 now.
 
 The second client, as Mermaid was for host views, is a **date chip**, in the
-leaf-editor app and the web demo, not in leaf. `:date[2026-10-12]` is drawn as
+leaf-editor app and the web demo, not in flower. `:date[2026-10-12]` is drawn as
 a pill. ← and → move between year, month and day. ↑ and ↓ change the field
 under the caret. Digits overwrite it. A calendar popover opens at the caret's
 rect. It uses every item in the list above, and it is inline.
@@ -550,7 +550,7 @@ rect. It uses every item in the list above, and it is inline.
 ## Open questions
 
 - **Inline host views.** Should an inline region ever be a host view, or are
-  inline regions always pictures from a leaf session? Pictures only is simpler,
+  inline regions always pictures from a flower session? Pictures only is simpler,
   and nothing foreseen needs more.
 - **Android.** Should Android get the protocol now (`docs/tasks/closed/android-block-views.md`
   is related) or follow later?
@@ -558,7 +558,7 @@ rect. It uses every item in the list above, and it is inline.
   host-view region looks like there. Probably a placeholder plus "open in
   $EDITOR".
 - **Where the Mermaid editor lives.** In Diaryx only, in the leaf-editor app
-  as the reference, or as an optional leaf package.
+  as the reference, or as an optional flower package.
 - **Rendering Mermaid on Apple.** A web view per diagram, a shared offscreen
   renderer, or a native renderer if a good one exists. Measure before choosing.
 - **Bring your own renderer.** Decided 2026-10-12: yes. See

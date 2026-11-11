@@ -1,11 +1,11 @@
 ---
 title: Proposals
-description: Arguments for a change to leaf, one file each — a case that may lose
+description: Arguments for a change to flower, one file each — a case that may lose
 created: 2026-09-07
 updated: 2026-10-11
 contents:
-- '[HTML containers leaf does not author fold to atoms](html-containers-fold-to-atoms.md)'
-- '[Math in leaf](math-rendering.md)'
+- '[HTML containers flower does not author fold to atoms](html-containers-fold-to-atoms.md)'
+- '[Math in flower](math-rendering.md)'
 - '[SVG as vectors in leaf-swift, through usvg](svg-as-vectors-on-apple.md)'
 - '[A presentation vocabulary](presentation-vocabulary.md)'
 - '[Exact values beside the presentation names](exact-presentation-values.md)'
@@ -13,16 +13,16 @@ contents:
 - '[Directives a host names, inserts and draws](host-directives.md)'
 - '[Editors inside a document](embedded-editors.md)'
 - '[A shared, patched winit for the Dioxus work](/docs/proposals/a-shared-patched-winit-for-the-dioxus-work.md)'
-- '[The leaf-dioxus editor in a terminal](/docs/proposals/the-leaf-dioxus-editor-in-a-terminal.md)'
-- '[An edit format shared by leaf and the core](/docs/proposals/an-edit-format-shared-by-leaf-and-the-core.md)'
+- '[The flower-doc-editor editor in a terminal](/docs/proposals/the-flower-doc-editor-editor-in-a-terminal.md)'
+- '[An edit format shared by flower and the core](/docs/proposals/an-edit-format-shared-by-leaf-and-the-core.md)'
 - '[What you see is what twig-export sets](/docs/proposals/what-you-see-is-what-twig-export-sets.md)'
 - '[Prestructured pages: Typst sets every view, from templates](/docs/proposals/prestructured-pages.md)'
-part_of: '[leaf](/README.md)'
+part_of: '[flower](/README.md)'
 ---
 # Proposals
 
 A document lands here when it argues for a change rather than describing what
-leaf already does. It is the place an idea is discussed *before* it is settled
+flower already does. It is the place an idea is discussed *before* it is settled
 and the record of the argument *after*, so a proposal that lost is still worth
 keeping — the reasoning is the value, and the outcome is part of it.
 

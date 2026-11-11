@@ -1,6 +1,6 @@
 ---
 title: Tasks
-description: Deferred work on leaf, one file each — a commitment with a done state
+description: Deferred work on flower, one file each — a commitment with a done state
 created: 2026-09-04
 updated: 2026-10-04
 contents:
@@ -15,15 +15,15 @@ contents:
 - '[Closed tasks](/docs/tasks/closed/closed.md)'
 - '[What the Mac app does not do yet](/docs/tasks/what-the-mac-app-does-not-do-yet.md)'
 - '[Try Libero again](/docs/tasks/try-libero-again.md)'
-- '[Leaf''s Dioxus app on unit](/docs/tasks/leafs-dioxus-app-on-unit.md)'
-- '[Ship the Dioxus terminal editor as leaf](/docs/tasks/ship-the-dioxus-terminal-editor.md)'
+- '[Flower''s Dioxus app on unit](/docs/tasks/leafs-dioxus-app-on-unit.md)'
+- '[Ship the Dioxus terminal editor as flower](/docs/tasks/ship-the-dioxus-terminal-editor.md)'
 - '[A web demo drawn by the Dioxus editor](/docs/tasks/a-dioxus-web-demo.md)'
 - '[What iOS does not do yet](/docs/tasks/what-ios-does-not-do-yet.md)'
 - '[What Android does not do yet](/docs/tasks/what-android-does-not-do-yet.md)'
 - '[What Linux and Windows do not do yet](/docs/tasks/what-linux-and-windows-do-not-do-yet.md)'
 - '[A quote''s bar breaks a line Blitz was told not to wrap](/docs/tasks/a-quotes-bar-breaks-a-line-blitz-was-told-not-to-wrap.md)'
 - '[Tests leave their fixtures in the temp directory](/docs/tasks/tests-leave-their-fixtures-in-temp.md)'
-part_of: '[leaf](/README.md)'
+part_of: '[flower](/README.md)'
 ---
 # Tasks
 

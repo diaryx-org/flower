@@ -1,6 +1,6 @@
 name: Mac app
-# Ship Leaf, the Mac document app in apps/leaf-dioxus (Rust from `main` up:
-# the leaf-dioxus editor in Dioxus windows, AppKit through objc2; `cargo
+# Ship Flower, the Mac document app in apps/flower (Rust from `main` up:
+# the flower-doc-editor editor in Dioxus windows, AppKit through objc2; `cargo
 # xtask mac` puts the bundle together), as a Developer ID–signed,
 # notarised and stapled .dmg attached to the tag's GitHub Release. The work is
 # `cargo xtask package`'s — this workflow only gives it a keychain holding the
@@ -43,7 +43,7 @@ env:
 
 jobs:
   package:
-    name: Sign and notarise Leaf.app
+    name: Sign and notarise Flower.app
     # Apple Silicon: the image is aarch64 only, as cargo builds it for the runner.
     runs-on: macos-latest
     if: inputs.cask-tag == ''
@@ -114,7 +114,7 @@ jobs:
       env: { TAG: "${{ github.ref_name }}" }
       run: |
         set -euo pipefail
-        expected="target/package/Leaf-${TAG#v}-aarch64.dmg"
+        expected="target/package/Flower-${TAG#v}-aarch64.dmg"
         if [ ! -f "$expected" ]; then
           echo "::error::expected $expected, found: $(ls target/package)"
           exit 1
@@ -161,7 +161,7 @@ jobs:
       run: |
         set -euo pipefail
         version="${TAG#v}"
-        url="https://github.com/$REPO/releases/download/$TAG/Leaf-$version-aarch64.dmg"
+        url="https://github.com/$REPO/releases/download/$TAG/Flower-$version-aarch64.dmg"
         sha256=$(curl -fsSL "$url" | sha256sum | cut -d' ' -f1)
         scripts/render-cask.sh "$version" "$sha256" > "$RUNNER_TEMP/leaf-editor.rb"
         cat "$RUNNER_TEMP/leaf-editor.rb"

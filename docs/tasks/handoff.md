@@ -10,13 +10,13 @@ part_of: '[Tasks](/docs/tasks/tasks.md)'
 (`archive/apps/leaf-editor`); the iOS end is now the Dioxus app on iOS, which
 has no iOS platform module yet.
 
-**Where.** `apps/leaf-dioxus/Info.plist` and `apps/leaf-editor/project.yml`
+**Where.** `apps/flower/Info.plist` and `apps/leaf-editor/project.yml`
 (the document types), and the scene in `apps/leaf-editor/App/LeafApp.swift`
 that would receive an activity on iOS.
 
-**What.** Leaf advertises no `NSUserActivity` for the document a window has
-open, so Handoff never offers it on a nearby device. The Mac's `LeafDocument` is an
-`NSDocument` (`apps/leaf-dioxus/src/platform/macos/document.rs`), and `NSDocument`
+**What.** Flower advertises no `NSUserActivity` for the document a window has
+open, so Handoff never offers it on a nearby device. The Mac's `FlowerDocument` is an
+`NSDocument` (`apps/flower/src/platform/macos/document.rs`), and `NSDocument`
 makes a document's activity only for a file in iCloud, and only when the
 document type in `CFBundleDocumentTypes` names an
 `NSUbiquitousDocumentUserActivityType`. Neither half is cheap here, for three
@@ -36,6 +36,6 @@ reasons this checkout cannot settle alone:
   scene, resolving the URL through the document browser's security scope.
 
 **Done when.** With both apps release-signed and a Markdown file in iCloud
-Drive open on the Mac, the Leaf icon appears in the iPhone's app switcher,
+Drive open on the Mac, the Flower icon appears in the iPhone's app switcher,
 and tapping it opens the same file at the same place — and a document
 outside iCloud offers nothing.

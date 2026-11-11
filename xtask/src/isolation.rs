@@ -20,7 +20,7 @@ use anyhow::bail;
 /// host actually builds it.
 ///
 /// The `--no-default-features` rows are not thoroughness for its own sake:
-/// `leaf-core` without `fs` is what a host with no files to read links, and
+/// `flower-doc` without `fs` is what a host with no files to read links, and
 /// what the Dioxus widget takes, turning on only the features it uses.
 ///
 /// The Dioxus widget's second shape is a host's that brings its own
@@ -30,26 +30,26 @@ use anyhow::bail;
 ///
 /// A new workspace member belongs in this list; the test below is what says so.
 const ISOLATED: &[&[&str]] = &[
-    &["-p", "leaf-core"],
-    &["-p", "leaf-core", "--no-default-features"],
-    &["-p", "leaf-raster"],
-    &["-p", "leaf-math"],
-    &["-p", "leaf-math-edit"],
-    &["-p", "leaf-math-edit", "--features", "wasm"],
-    &["-p", "leaf-session"],
-    &["-p", "leaf-mermaid"],
-    &["-p", "leaf-dioxus"],
+    &["-p", "flower-doc"],
+    &["-p", "flower-doc", "--no-default-features"],
+    &["-p", "flower-raster"],
+    &["-p", "flower-math"],
+    &["-p", "flower-math-edit"],
+    &["-p", "flower-math-edit", "--features", "wasm"],
+    &["-p", "flower-session"],
+    &["-p", "flower-mermaid"],
+    &["-p", "flower-doc-editor"],
     &[
         "-p",
-        "leaf-dioxus",
+        "flower-doc-editor",
         "--no-default-features",
         "--features",
         "vello",
     ],
-    &["-p", "leaf-pages"],
-    &["-p", "leaf-dioxus-app"],
-    &["-p", "leaf-dioxus-tui"],
-    &["-p", "leaf-dioxus-web"],
+    &["-p", "flower-pages"],
+    &["-p", "flower-app"],
+    &["-p", "flower-tui"],
+    &["-p", "flower-web"],
     &["-p", "xtask"],
 ];
 

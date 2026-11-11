@@ -1,12 +1,12 @@
 ---
-title: Leaf's Dioxus app on unit
+title: Flower's Dioxus app on unit
 part_of: '[Tasks](/docs/tasks/tasks.md)'
 status: open
 created: 2026-10-20
 ---
-# Leaf's Dioxus app on unit
+# Flower's Dioxus app on unit
 
-**Where.** `apps/leaf-dioxus` (the toolbar's menus, the context menu, the
+**Where.** `apps/flower` (the toolbar's menus, the context menu, the
 Link prompt, Settings), and `crates/leaf-dioxus-ui`, which unit replaces.
 
 **What.** [unit](https://github.com/diaryx-org/unit), diaryx-org's
@@ -25,7 +25,7 @@ fork's `leaf` branch, which the app builds on, and those change two things
 the app may notice: a press focuses a focusable element, and a click goes to
 the nearest element the press and the release share.
 
-**What was found, 2026-10-20** (unit at 8bcc067, leaf at 77e3886b). The
+**What was found, 2026-10-20** (unit at 8bcc067, flower at 77e3886b). The
 app and unit already build on the same Blitz (the fork's `leaf` branch at
 d78620c, diaryx-org/blitz#1 merged) and the same Dioxus (0.8.0-alpha.3),
 and every name the app takes from `leaf-dioxus-ui` has a counterpart in
@@ -47,7 +47,7 @@ keep their shapes). What unit does not yet do for the app:
   every descendant. The editor sets it where it lays out by measure; that
   nothing else in its rows moves is unchecked.
 - **Two themes.** The app themes its chrome by rewriting
-  `prefers-color-scheme` (`leaf_dioxus::themed`) and tests the toolbar's
+  `prefers-color-scheme` (`flower_doc_editor::themed`) and tests the toolbar's
   palette against the editor's; unit's colours are a `Theme` scoped to
   `.unit-root`, chosen by `data-appearance`. The app would pass its
   appearance to `UnitRoot` and a `Theme` in its own colours.

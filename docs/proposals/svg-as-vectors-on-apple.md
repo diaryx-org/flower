@@ -14,12 +14,12 @@ resvg-swift`. The renderer is its own repository,
 [resvg-swift](https://github.com/diaryx-org/resvg-swift) 0.1.0 — a usvg →
 display list crate held to resvg's own test suite (1,697 cases, 1,676
 byte-identical), a UniFFI binding, and a `CGContext` replayer — because nothing
-in it is leaf's. leaf's part was the task
+in it is flower's. flower's part was the task
 [SVG through resvg-swift](/docs/tasks/closed/svg-through-resvg-swift.md).
 
 ## The picture
 
-`![logo](logo.svg)` in a document. The TUI shows the logo: `leaf-raster`
+`![logo](logo.svg)` in a document. The TUI shows the logo: `flower-raster`
 rasterizes it with resvg and the terminal paints the pixels. The macOS and iOS
 views show a dashed box.
 
@@ -47,8 +47,8 @@ cases beside the resvg the TUI uses: a document would render one way in the
 terminal and another on a Mac, and each disagreement would be a bug to chase
 in a codebase that isn't ours.
 
-**Route leaf-raster through the FFI.** resvg's bitmap over UniFFI — what
-`leaf-raster::load_svg` already does for the terminal. Consistent with the
+**Route flower-raster through the FFI.** resvg's bitmap over UniFFI — what
+`flower-raster::load_svg` already does for the terminal. Consistent with the
 TUI, trivial to wire. But a bitmap: rasterized at some scale, soft when the
 column is wider or the display sharper than it guessed, and a bitmap in the
 PDF `DocumentPDF` writes. The TUI has no choice; the Apple views do.
@@ -64,7 +64,7 @@ of draw operations is a few hundred lines; replaying the list into a
 
 That gives the Apple views what neither alternative does: **the same parse as
 the terminal** (one set of edge cases, one answer to "what does this SVG look
-like in leaf") and **vector output** — crisp at any size and real paths in the
+like in flower") and **vector output** — crisp at any size and real paths in the
 PDF. Filters, masks and pattern paint, which CoreGraphics has no primitive
 for, are rendered by resvg at the exact scale they will be shown at and
 arrive as pixels inside the otherwise-vector list; the consumer picks the
@@ -77,21 +77,21 @@ translation of that replayer, one match arm at a time.
 
 ## Why a separate repository
 
-Nothing in it is about leaf. A display-list crate over usvg is useful to any
+Nothing in it is about flower. A display-list crate over usvg is useful to any
 Rust → native-canvas bridge, and the Swift replayer is generic over
 `CGContext`. The org's test for a sibling rather than a part — *usable without
 the parent at all* — is met, and the org's dependency rule (crates.io by
-version, never a path across repos) means leaf takes it as a pin either way.
-gpui's leaf view doesn't render SVG today either (`leaf-gpui` treats it as a
+version, never a path across repos) means flower takes it as a pin either way.
+gpui's flower view doesn't render SVG today either (`leaf-gpui` treats it as a
 failed decode); a second replayer for gpui's path API belongs next to the
-first, not in leaf.
+first, not in flower.
 
-## What leaf does
+## What flower does
 
 Small. `MediaStore` gains a second decode path — `.svg` by extension, or bytes
 ImageIO refuses — producing an `SVGPicture` rather than a `CGImage`;
 `MediaLayout` takes its intrinsic size from the document; the box draws it
-vector into the view and into the PDF. `leaf-raster::load_svg` stays as the
+vector into the view and into the PDF. `flower-raster::load_svg` stays as the
 terminal's path. The linking constraint is the one thing to get right: two
 Rust staticlibs can't share an executable, so `leaf-ffi` takes `resvg-uniffi`
 as a Cargo dependency and the app keeps force-loading the one archive it

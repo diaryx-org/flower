@@ -11,16 +11,16 @@ part_of: '[Proposals](/docs/proposals/proposals.md)'
 
 ## Status
 
-`draft`, 2026-10-27, argued from leaf `main` at `f64c4c6`. It follows
+`draft`, 2026-10-27, argued from flower `main` at `f64c4c6`. It follows
 [What you see is what twig-export sets](/docs/proposals/what-you-see-is-what-twig-export-sets.md),
 whose C1 (a preview set by twig-export) and a first C2 (the page view, edited
 on Typst's glyphs) are built, and takes the step that proposal left open:
-whether the flowing editor stays leaf's own. Adam has decided three things
+whether the flowing editor stays flower's own. Adam has decided three things
 (**Decisions**); the rest is argued here and listed under **To settle**.
 
 Built since: step 1 and most of step 3 of **Order of work**. twig-export ships
 three templates, Classic, Modern and Editorial, each a Typst package with a
-paged and a reflowed layout; leaf has a Reflow view and a Template menu. A
+paged and a reflowed layout; flower has a Reflow view and a Template menu. A
 template is loaded as a package, so it reads only its own files, never the
 document's folder. Beyond the proposal, templates can be added at runtime
 (**To settle**, 5): View ▸ Template ▸ Install Template… fetches a Typst
@@ -34,7 +34,7 @@ so a template that loops or eats memory stops without the app.
 ## The ask
 
 Adam, 2026-10-27: can Typst set a reflowable view as well as pages, and if it
-can, should leaf follow "prestructured WYSIWYG"
+can, should flower follow "prestructured WYSIWYG"
 ([John Gruber, 2026-10](https://daringfireball.net/2026/10/prestructured_wysiwyg)):
 a default set of styles rather than fonts and sizes, in the faces Diaryx
 already sets every page in, with templates for different kinds of document,
@@ -58,10 +58,10 @@ Adam, 2026-10-27:
   the flowing editor does (**What the flowing editor still does**). There is
   then one layout engine for every view that shows a document as it reads.
 - **The source view stays a different thing**: the document as plain text,
-  edited as text, in leaf's own rows, beside the Typst views and not one of
+  edited as text, in flower's own rows, beside the Typst views and not one of
   them.
 - **Math is edited in a dialog for now.** The Swift app edited a formula in
-  place, as it reads (leaf-math-edit is that editor, without its frontend);
+  place, as it reads (flower-math-edit is that editor, without its frontend);
   that comes back on the page later. Until then a formula on the page opens a
   dialog with its TeX and a live picture of it.
 
@@ -70,7 +70,7 @@ Adam, 2026-10-27:
 **Yes, Typst sets a reflowable view.** A page as wide as the view and
 `height: auto` is one page as tall as the document: Typst breaks its lines
 and nothing else, with no running heads and no page numbers, and its
-footnotes go at the end of it. The page view (`crates/leaf-pages/src/view.rs`)
+footnotes go at the end of it. The page view (`crates/flower-pages/src/view.rs`)
 already draws pages of any size with the caret on them, so a reflowed view
 is the same view on one tall page whose width follows the window.
 
@@ -84,8 +84,8 @@ by one engine.
 
 ## What exists
 
-**Three views, two engines.** The flowing editor is leaf's rows, laid out by
-parley (`crates/leaf-dioxus/src/text.rs`) in whatever faces Settings names.
+**Three views, two engines.** The flowing editor is flower's rows, laid out by
+parley (`crates/flower-doc-editor/src/text.rs`) in whatever faces Settings names.
 The page view and the preview beside the editor are twig-export's pages, set
 by Typst with the words as content spanned to the source, the caret drawn on
 Typst's glyphs and every key still the editor's. The source view is the rows
@@ -134,8 +134,8 @@ template, and differ only in the template's `layout`:
 | Breaks | lines | lines and pages |
 
 Both draw the caret, the selection and a press as the page view does now.
-Every edit is still leaf-core's, through the editor; the editor's moves by
-line already go by the pages' lines (`leaf_dioxus::Lines`), and its pointer
+Every edit is still flower-doc's, through the editor; the editor's moves by
+line already go by the pages' lines (`flower_doc_editor::Lines`), and its pointer
 handling by the byte a press lands on (`Target::Offset`).
 
 **What it costs.** A keystroke sets the document again, as the page view
@@ -145,7 +145,7 @@ line out again, so a resize sets once the width has settled, not at every
 step of a drag.
 
 **What does not change.** The source view, which is the document as plain
-text and stays leaf's rows. And the terminal editor, which paints into
+text and stays flower's rows. And the terminal editor, which paints into
 character cells and cannot draw Typst's pages: it keeps the rows too, and
 their look follows the template's styles as far as cells can.
 
@@ -223,7 +223,7 @@ do. Today, on the pages:
 - **The input method:** the candidate window is placed by the editor's
   hidden rows, not by the caret on the page.
 - **Assistive tech:** the rows give AccessKit the document's text and its
-  lines' boxes (`crates/leaf-dioxus/src/access.rs`); the pages give nothing
+  lines' boxes (`crates/flower-doc-editor/src/access.rs`); the pages give nothing
   yet, and must give the same before the rows go.
 
 Each is a task once this is accepted, and the flowing editor goes when the
@@ -237,7 +237,7 @@ last is done.
    width).
 2. **The faces**, embedded in twig-export's typesetter and the app, once
    where they live is settled (**To settle**, 1).
-3. **The reflowed view in leaf**, beside the page view, with the resize
+3. **The reflowed view in flower**, beside the page view, with the resize
    settling before it sets; Settings and the style menus prestructured.
 4. **The math dialog.**
 5. **The gaps** in **What the flowing editor still does**, accessibility
@@ -249,10 +249,10 @@ last is done.
 ## To settle
 
 1. **Where the faces live.** `diaryx_faces` is in Diaryx, which is private,
-   and twig-export and leaf are public. The fonts are open (OFL), but moving
+   and twig-export and flower are public. The fonts are open (OFL), but moving
    code from Diaryx to a public repository is Adam's decision under the org's
    rules. The alternatives: a public repository of its own for the four
-   faces, which Diaryx, leaf and twig-export all take; or twig-export taking
+   faces, which Diaryx, flower and twig-export all take; or twig-export taking
    the faces as an input, and each host bringing its own files.
 2. **A face by name.** Diaryx's `font:` also takes a family by name. Under
    this proposal no menu writes one, and a template sets a name it does not

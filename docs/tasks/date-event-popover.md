@@ -26,10 +26,10 @@ turned down: it raises Calendar's "This calendar contains a new event" import
 dialog in another app, not a card beside the text, and makes a one-hour
 event where `NSTextView` makes an all-day one.
 
-**How.** A popover of leaf's own over EventKit, anchored to the date's glyphs
+**How.** A popover of flower's own over EventKit, anchored to the date's glyphs
 as a footnote peek is: the title, the date (all day unless the text named a
 time), a calendar picker, and Add, which saves through `EKEventStore`. It
-needs calendar access, so every host — Leaf and Diaryx — declares
+needs calendar access, so every host — Flower and Diaryx — declares
 `NSCalendarsWriteOnlyAccessUsageDescription` (or the full-access key, to list
 calendars) and shows the system prompt the first time. The detectors' public
 API does not say whether the text gave a time; telling a date from a date

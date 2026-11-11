@@ -2,7 +2,7 @@
 //! launched.
 //!
 //! The app is a cargo binary, so its bundle is put together here rather than
-//! by Xcode, as leaf's is: the binary as `Contents/MacOS/Flower`, and
+//! by Xcode, as flower's is: the binary as `Contents/MacOS/Flower`, and
 //! `apps/flower-dioxus/Info.plist` with the workspace's version stamped in —
 //! so the version is stated once, in the workspace manifest, and a release
 //! bump has nothing else to move. The bundle is signed ad hoc, which is what

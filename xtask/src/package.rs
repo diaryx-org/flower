@@ -1,5 +1,5 @@
-//! `cargo xtask package` — Leaf for Macs other than the one that built it: a
-//! Developer ID–signed, notarised and stapled `Leaf.app` inside a signed,
+//! `cargo xtask package` — Flower for Macs other than the one that built it: a
+//! Developer ID–signed, notarised and stapled `Flower.app` inside a signed,
 //! notarised and stapled `.dmg`, written to `target/package/`.
 //!
 //! The bundle is `cargo xtask mac`'s, built in release and signed ad hoc,

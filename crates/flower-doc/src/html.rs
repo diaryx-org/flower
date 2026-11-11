@@ -1,0 +1,935 @@
+//! The clipboard's rich flavor: source ⇄ HTML, both directions through twig.
+//!
+//! twig parses HTML and renders it, so a copy can publish `text/html` beside the
+//! Markdown source and a paste can take the HTML back. What twig does *not* do is
+//! defend itself against the clipboard: `Format::Html` is a document parser aimed
+//! at real HTML documents, and the HTML on a pasteboard is neither real nor a
+//! document. It is a fragment, wrapped in whatever the source app felt like —
+//! Word ships its `<head>` and a stylesheet, Google Docs a `<meta>` and a
+//! `<b style="font-weight:normal">` that means the opposite of bold, Slack a
+//! `<div>` per line.
+//!
+//! Handed that raw, twig is faithful to a fault and the Markdown comes out wrong
+//! in three distinct ways, the first two verified against twig-doc 2.1.0 and the
+//! third against 3.6.0:
+//!
+//!   - **Djot leaks in.** A `<div>` is a fenced div, and the Markdown serializer
+//!     spells it `::: … :::` — syntax Markdown does not have, so Slack's HTML
+//!     pastes as literal colons around your text.
+//!   - **Unknown elements pass through raw.** `<meta>`, `<script>`, `<style>`,
+//!     `<table>` (twig builds no table from HTML) survive into the output as the
+//!     tags themselves, dropping markup into a prose document.
+//!   - **A styling attribute comes back as a `<div>`.** Since twig 3.6 a block
+//!     carrying any attribute is written inside a literal `<div …>` … `</div>`
+//!     pair, Markdown having no attribute syntax of its own — so Word's
+//!     `<p class=MsoNormal>` pastes as that tag around the sentence.
+//!
+//! So the paste direction is three steps, not one: [`sanitize`] rewrites the
+//! clipboard's dialect into the subset twig reads faithfully, twig's
+//! `diagnostics` says whether converting what's left would lose anything, and
+//! twig converts. A failure at any step is `None`, which the caller answers by
+//! pasting the plain flavor instead — the whole point of carrying two.
+//!
+//! Flower used to answer the middle step itself, with three separate heuristics
+//! over the input nodes and the output text. twig 3.0 exposes the library's own
+//! measured answer, so all three are gone; see [`parse_fragment`].
+
+use crate::Format;
+use twig::{Document, Fidelity, Kind, Target, Warning};
+
+/// Render a `format` source fragment to HTML, for the clipboard's `text/html`.
+///
+/// `None` when twig can't parse or render it, which for a *substring* of a live
+/// document is a real possibility and not an error worth reporting: the caller
+/// still has the plain flavor, which is what the user copied.
+pub(crate) fn render_fragment(source: &str, format: Format) -> Option<String> {
+    let mut doc = Document::parse_str(source, format.twig()).ok()?;
+    let html = String::from_utf8(doc.render_html().ok()?).ok()?;
+    let html = html.trim();
+    (!html.is_empty()).then(|| html.to_string())
+}
+
+/// Convert clipboard `html` to `format`'s source syntax, or `None` when it does
+/// not survive the trip well enough to paste — see the diagnostics gate below.
+pub(crate) fn parse_fragment(html: &str, format: Format) -> Option<String> {
+    let cleaned = sanitize(html);
+    let mut doc = Document::parse_str(&cleaned, Format::Html.twig()).ok()?;
+
+    // Would this conversion lose anything? twig 3.0 answers that directly, and
+    // it is the whole of the faithfulness test: a paste that degrades is worse
+    // than the plain flavor, because what it degrades *into* is visible markup
+    // in a prose document.
+    //
+    // This replaces three heuristics that each guessed at one corner of the same
+    // question — an "invented directive" scan of the input nodes, a `:::`/`<tag`
+    // pattern match on the output, and a reparse to see whether pipe rows still
+    // spelled a table. Every one of them was flower re-deriving, from the outside,
+    // something twig measures against its own serializers. They also each had a
+    // blind spot: the output patterns only ever looked at *block* starts, so an
+    // inline `<my-widget>` mid-sentence — and a `<sup>` becoming literal `^x^`
+    // in Markdown, which has no superscript — sailed through all three.
+    //
+    // Asked of the HTML parse before serializing, so nothing has to be
+    // pattern-matched back out of the result. `<thead>`/`<tbody>` need no
+    // exemption here the way they needed one from the old node scan: twig folds
+    // them into the table vocabulary and reports a headed table as lossless.
+    //
+    // `Section` is the one degradation that is not flower's business, and one of
+    // the two reasons this reads the warning rather than just its emptiness.
+    // twig reports the loss of a sectioning wrapper — `<html>`, `<body>`,
+    // `<section>`, `<main>` — because Markdown cannot spell one, and for a
+    // *document* conversion that is a true loss. For a paste it is the goal:
+    // the serializer drops the wrapper and writes the children, so nothing
+    // reaches the document that the user did not copy. Every other degraded
+    // kind leaks a visible spelling instead — `<article>` and `<nav>` pass
+    // through as their own tags, a `<sup>` becomes literal `^x^` — which is the
+    // plain flavor's cue. Note that arboard wraps flower's *own* copy in
+    // `<html><head>…</head><body>`, so a flower→flower paste is a section every
+    // time.
+    let warnings = doc.diagnostics(Target::from(format.twig())).ok()?;
+    if warnings.iter().any(would_leak) {
+        return None;
+    }
+
+    let source = String::from_utf8(doc.serialize(format.twig()).ok()?).ok()?;
+
+    // twig's serializers terminate a block with a newline, because a document
+    // ends in one. A paste is not a document — it lands at a caret, usually
+    // mid-sentence — so the terminator would push the text after the caret onto
+    // its own line. Only `\n` is trimmed: a trailing *space* pair is Markdown's
+    // hard line break and belongs to the text.
+    let source = source.trim_matches('\n');
+    if source.is_empty() {
+        return None;
+    }
+    Some(source.to_string())
+}
+
+/// Whether one twig fidelity warning is a reason to decline the paste.
+///
+/// twig 3.6 measures a conversion on two axes, not one: the node — is this
+/// node written, and read back as itself — and, added in 3.6, the node's
+/// **attributes**. The paste gate cares about one question, which is neither
+/// axis by itself: *would converting put something in the document the user
+/// did not copy?* A fragment that comes through as prose minus a styling hook
+/// is a good paste; one that comes through carrying `<div class="MsoNormal">`
+/// is not.
+///
+///   - [`Fidelity::Degraded`] / [`Fidelity::Dropped`] are the node axis and
+///     the original gate: content read back as the wrong thing, or gone.
+///     `Section` is the standing exemption, for the reason in
+///     [`parse_fragment`].
+///   - [`Fidelity::AttrsDegraded`] means the attributes *are* written, where
+///     the target will not read them back as this node's. In Markdown that
+///     spelling is a literal `<div …>` / `</div>` pair around the block (new
+///     in twig 3.6 — before it, a block's attributes were written nowhere and
+///     reported as nothing), which is exactly the visible markup the gate
+///     exists to keep out. Decline.
+///   - [`Fidelity::AttrsDropped`] means they are not written at all. Nothing
+///     reaches the document; the user gets the prose without the decoration,
+///     which for a paste is the goal rather than a loss. **Accept** — and note
+///     that much of what twig reported here was not a loss at all: until
+///     3.9.2 its HTML parser kept `href`, `src` and `alt` in the node's
+///     attribute bag *besides* modelling them as the link's destination and
+///     the image's, so `<a href="…">` and `<img src alt>` were reported
+///     `AttrsDropped` against Markdown even though the Markdown written for
+///     them is `[l](https://x.dev)` and `![p](u)`, destination and all. Declining on this code is what made
+///     every link and image on the clipboard unpasteable under 3.6.0.
+///
+/// The catch-all declines: `Fidelity` is `#[non_exhaustive]`, and an axis twig
+/// adds next is one flower has not weighed.
+fn would_leak(w: &Warning) -> bool {
+    match w.fidelity {
+        Fidelity::Degraded | Fidelity::Dropped => w.kind != Kind::Section,
+        Fidelity::AttrsDropped => false,
+        Fidelity::AttrsDegraded => true,
+        _ => true,
+    }
+}
+
+/// Strip a sole wrapping `<p>`, for a selection that lives inside one block.
+///
+/// `**bold**` renders as `<p><strong>bold</strong></p>`, and the paragraph is an
+/// artifact of parsing the fragment standalone rather than anything the user
+/// selected — pasted into Docs it breaks the line where they copied a word. The
+/// caller decides whether the selection is inline (it has the document; this has
+/// only the fragment); this is the textual half, and it declines when the render
+/// is anything but one paragraph, so a multi-block selection keeps its structure.
+pub(crate) fn strip_sole_paragraph(html: String) -> String {
+    let trimmed = html.trim();
+    let Some(inner) = trimmed
+        .strip_prefix("<p>")
+        .and_then(|h| h.strip_suffix("</p>"))
+    else {
+        return html;
+    };
+    // A second `<p>` means the render is more than the one paragraph this is
+    // allowed to unwrap (`<p>a</p>\n<p>b</p>` also starts `<p>` and ends `</p>`).
+    match inner.contains("<p>") {
+        true => html,
+        false => inner.to_string(),
+    }
+}
+
+/// Elements whose *content* is not prose and must go with them. `head` is Word's
+/// (and arboard's own wrapper's); `script`/`style` are every rich web page's.
+const DROP_TREE: [&str; 4] = ["script", "style", "head", "title"];
+
+/// Void elements that carry no text and that twig would pass through raw.
+const DROP_TAG: [&str; 3] = ["meta", "link", "base"];
+
+/// A namespaced tag — `<o:p>`, `<w:sdt>`, `<v:shape>` — which is Office's, never
+/// prose, and which twig no longer passes through harmlessly: since 2.8 an
+/// unknown element and a text directive are one `container` kind, and Markdown
+/// has only the directive spelling to write one with, so `<o:p></o:p>` comes
+/// back as the literal text `:o:p` in the middle of the pasted sentence.
+/// Dropping the tag and keeping its content is what `DROP_TAG` already does, and
+/// what Word's empty-paragraph marker deserves on its own merits.
+fn namespaced(name: &str) -> bool {
+    name.contains(':')
+}
+
+/// Attributes that style or identify an element rather than say anything about
+/// its content — a pasteboard's own dialect, and never prose.
+///
+/// Every pasteboard writes them: Word ships `class=MsoNormal`, `lang=EN-US` and
+/// `xmlns:o=…`, Google Docs `dir="ltr"`, `id="docs-internal-guid-…"` and a
+/// `style` on everything, Slack a `class` per line. Left on the element they
+/// used to evaporate in the Markdown, harmlessly; since twig 3.6 a block that
+/// carries *any* attribute is written inside a literal `<div …>` … `</div>`
+/// pair, so Word's paragraph came out as `<div class="MsoNormal">` wrapped
+/// around the sentence. Dropping them here is the same fix the `<div>`→`<p>`
+/// rewrite has always applied to a div's, and it keeps the decision where the
+/// rest of the pasteboard dialect is handled.
+///
+/// A deny list and not an allow list, deliberately: an attribute that turns out
+/// to carry content and is not here — `title` on a `<p>` — survives to twig,
+/// which reports it, and [`would_leak`] declines the paste. The failure mode is
+/// a fall back to the plain flavor. An allow list's would be silently losing it.
+fn presentational(name: &str) -> bool {
+    const NAMES: [&str; 11] = [
+        "align", "bgcolor", "class", "dir", "height", "id", "lang", "role", "style", "valign",
+        "width",
+    ];
+    NAMES.contains(&name)
+        || name.starts_with("data-")
+        || name.starts_with("aria-")
+        || name.starts_with("on")
+        || namespaced(name)
+}
+
+/// `attrs` — the raw text between a tag's name and its `>` — with the
+/// [`presentational`] pairs removed, each survivor kept verbatim so its own
+/// quoting survives.
+fn keep_attrs(attrs: &str) -> String {
+    let b = attrs.as_bytes();
+    let mut out = String::new();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i].is_ascii_whitespace() || b[i] == b'/' {
+            i += 1;
+            continue;
+        }
+        let start = i;
+        while i < b.len() && !b[i].is_ascii_whitespace() && b[i] != b'=' && b[i] != b'/' {
+            i += 1;
+        }
+        let name = attrs[start..i].to_ascii_lowercase();
+        // `= value`, when there is one: bare, or quoted with either quote, and
+        // the value may hold whitespace and `/` alike.
+        let mut j = i;
+        while j < b.len() && b[j].is_ascii_whitespace() {
+            j += 1;
+        }
+        if j < b.len() && b[j] == b'=' {
+            j += 1;
+            while j < b.len() && b[j].is_ascii_whitespace() {
+                j += 1;
+            }
+            match b.get(j) {
+                Some(&q @ (b'"' | b'\'')) => {
+                    j += 1;
+                    while j < b.len() && b[j] != q {
+                        j += 1;
+                    }
+                    j = (j + 1).min(b.len());
+                }
+                _ => {
+                    while j < b.len() && !b[j].is_ascii_whitespace() {
+                        j += 1;
+                    }
+                }
+            }
+            i = j;
+        }
+        if !name.is_empty() && !presentational(&name) {
+            out.push(' ');
+            out.push_str(attrs[start..i].trim());
+        }
+    }
+    out
+}
+
+/// Rewrite clipboard HTML into the subset twig converts faithfully.
+///
+/// Not a general sanitizer and not a security boundary — twig renders no HTML we
+/// hand back. It is exactly the set of dialect fixes the pasteboards in practice
+/// require, each one verified against twig-doc 2.1.0:
+///
+///   - comments and doctypes go (Word's `<!--[if gte mso 9]>` conditionals ride
+///     in comments, and twig keeps comments as raw blocks);
+///   - `DROP_TREE` / `DROP_TAG` elements go, with their content where it isn't
+///     prose;
+///   - `<div>` becomes `<p>`, which is what a div-per-line pasteboard means and
+///     the only way to keep Djot's `:::` out of Markdown;
+///   - a `<span>` that spells bold or italic in CSS becomes `<strong>`/`<em>`,
+///     because twig reads no stylesheet and Google Docs writes *all* of its
+///     emphasis this way — without this, pasting from Docs silently loses it;
+///   - Docs' `<b style="font-weight:normal">` document wrapper goes, or the
+///     whole paste comes out bold;
+///   - a [`presentational`] attribute goes wherever it is written, because
+///     since twig 3.6 a block that carries one is written into Markdown inside
+///     a literal `<div …>` pair — see that function.
+///
+/// Unknown elements are left for twig, and for [`parse_fragment`]'s diagnostics
+/// gate to catch if twig doesn't know them either.
+fn sanitize(html: &str) -> String {
+    let mut out = String::with_capacity(html.len());
+    // The close tag owed to each open element this rewrote, innermost last —
+    // rewriting `<div>` to `<p>` is only half a rewrite until `</div>` becomes
+    // `</p>`, and a dropped `<b>` wrapper whose `</b>` survives re-bolds the very
+    // text the drop was for. Keyed by name and popped by name, so the malformed
+    // nesting a pasteboard actually ships resolves to the nearest open match.
+    // `None` is "close it as it came" — an element this left alone, tracked all
+    // the same so a nested close pops it rather than an outer rewrite of the
+    // same name.
+    let mut owed: Vec<(String, Option<&'static str>)> = Vec::new();
+    let bytes = html.as_bytes();
+    let mut i = 0;
+
+    while i < bytes.len() {
+        let Some(lt) = html[i..].find('<').map(|p| i + p) else {
+            out.push_str(&html[i..]);
+            break;
+        };
+        out.push_str(&html[i..lt]);
+
+        if html[lt..].starts_with("<!--") {
+            i = html[lt + 4..]
+                .find("-->")
+                .map_or(bytes.len(), |p| lt + 4 + p + 3);
+            continue;
+        }
+        if html[lt..].starts_with("<!") {
+            i = html[lt..].find('>').map_or(bytes.len(), |p| lt + p + 1);
+            continue;
+        }
+
+        let Some(tag) = parse_tag(html, lt) else {
+            // A bare `<` that opens no tag is text — `a < b` — and belongs in the
+            // output as itself.
+            out.push('<');
+            i = lt + 1;
+            continue;
+        };
+        i = tag.end;
+
+        if tag.close {
+            match owed.iter().rposition(|(n, _)| *n == tag.name) {
+                Some(at) => {
+                    match owed[at].1 {
+                        Some(close) => out.push_str(close),
+                        None => out.push_str(&html[lt..tag.end]),
+                    }
+                    owed.truncate(at);
+                }
+                None if DROP_TREE.contains(&tag.name.as_str())
+                    || DROP_TAG.contains(&tag.name.as_str())
+                    || namespaced(&tag.name) => {}
+                None => out.push_str(&html[lt..tag.end]),
+            }
+            continue;
+        }
+
+        if DROP_TREE.contains(&tag.name.as_str()) {
+            i = skip_tree(html, tag.end, &tag.name);
+            continue;
+        }
+        if DROP_TAG.contains(&tag.name.as_str()) || namespaced(&tag.name) {
+            continue;
+        }
+
+        let rewrite = match tag.name.as_str() {
+            "div" => Some(("<p>", "</p>")),
+            "span" => match css_emphasis(&tag.attrs) {
+                // A span carrying no emphasis carries nothing twig needs: it is
+                // a styling hook, and dropping it is what keeps `<span>a</span>
+                // <span>b</span>` from becoming two blocks.
+                None => Some(("", "")),
+                Some(pair) => Some(pair),
+            },
+            // `font-weight:normal` on a `<b>` is Google Docs' whole-document
+            // wrapper, which means "not bold" and is the opposite of the tag.
+            "b" | "strong" if is_unbolded(&tag.attrs) => Some(("", "")),
+            _ => None,
+        };
+
+        match rewrite {
+            Some((open, close)) => {
+                out.push_str(open);
+                if !tag.self_closing {
+                    owed.push((tag.name, Some(close)));
+                }
+            }
+            None => {
+                // Written back from the parse rather than copied, so the
+                // pasteboard's styling attributes can be left behind.
+                out.push('<');
+                out.push_str(&tag.name);
+                out.push_str(&keep_attrs(&tag.attrs));
+                if tag.self_closing {
+                    out.push_str(" /");
+                }
+                out.push('>');
+                if !tag.self_closing && !VOID.contains(&tag.name.as_str()) {
+                    owed.push((tag.name, None));
+                }
+            }
+        }
+    }
+
+    // An element left open by the fragment (`<p>unclosed <strong>bold`) owes
+    // nothing: twig closes what the input didn't, and the tracking exists to
+    // match closes that *do* arrive.
+    out
+}
+
+/// HTML's void elements — no content, no close tag, so nothing to owe.
+const VOID: [&str; 9] = [
+    "br", "img", "hr", "input", "col", "area", "source", "wbr", "embed",
+];
+
+struct Tag {
+    name: String,
+    attrs: String,
+    close: bool,
+    self_closing: bool,
+    /// One past the `>`.
+    end: usize,
+}
+
+/// Parse the tag opening at `lt` (which must be a `<`), or `None` when what
+/// follows isn't a tag name at all.
+fn parse_tag(html: &str, lt: usize) -> Option<Tag> {
+    let rest = &html[lt + 1..];
+    let close = rest.starts_with('/');
+    let after_slash = lt + 1 + close as usize;
+    let name_len = html[after_slash..]
+        .find(|c: char| !(c.is_ascii_alphanumeric() || c == ':' || c == '-' || c == '_'))
+        .unwrap_or(html.len() - after_slash);
+    if name_len == 0 {
+        return None;
+    }
+    let name = html[after_slash..after_slash + name_len].to_ascii_lowercase();
+
+    // Find the `>` that ends the tag, stepping over quoted attribute values —
+    // Word writes `content="text/html; charset=utf-8"`, and a naive scan for `>`
+    // is fine there but not for the `style="…>…"` a CSS author can legally emit.
+    let mut j = after_slash + name_len;
+    let b = html.as_bytes();
+    let mut quote: Option<u8> = None;
+    while j < b.len() {
+        match (quote, b[j]) {
+            (Some(q), c) if c == q => quote = None,
+            (Some(_), _) => {}
+            (None, c @ (b'"' | b'\'')) => quote = Some(c),
+            (None, b'>') => break,
+            (None, _) => {}
+        }
+        j += 1;
+    }
+    if j >= b.len() {
+        return None;
+    }
+    let attrs = &html[after_slash + name_len..j];
+    Some(Tag {
+        name,
+        attrs: attrs.to_string(),
+        close,
+        self_closing: attrs.trim_end().ends_with('/'),
+        end: j + 1,
+    })
+}
+
+/// Skip past `</name>`, or to the end when the fragment never closes it.
+fn skip_tree(html: &str, from: usize, name: &str) -> usize {
+    let needle = format!("</{name}");
+    let lower = html.to_ascii_lowercase();
+    match lower[from..].find(&needle) {
+        Some(p) => lower[from + p..]
+            .find('>')
+            .map_or(html.len(), |q| from + p + q + 1),
+        None => html.len(),
+    }
+}
+
+/// The `style` attribute's value, lowercased.
+fn style_of(attrs: &str) -> String {
+    let lower = attrs.to_ascii_lowercase();
+    let Some(at) = lower.find("style") else {
+        return String::new();
+    };
+    let Some(eq) = lower[at..].find('=').map(|p| at + p + 1) else {
+        return String::new();
+    };
+    let rest = lower[eq..].trim_start();
+    match rest.starts_with(['"', '\'']) {
+        true => rest[1..]
+            .find(rest.chars().next().unwrap())
+            .map_or(String::new(), |e| rest[1..1 + e].to_string()),
+        false => rest
+            .split_whitespace()
+            .next()
+            .unwrap_or_default()
+            .to_string(),
+    }
+}
+
+/// The emphasis a `<span>`'s CSS spells, as the tag twig would have wanted.
+///
+/// Bold before italic: a span is one tag and can only become one, and a rewrite
+/// that kept both would have to invent nesting the source never had. Bold is the
+/// commoner of the two by a distance, so it wins the tie.
+fn css_emphasis(attrs: &str) -> Option<(&'static str, &'static str)> {
+    let style = style_of(attrs);
+    let weight = css_value(&style, "font-weight");
+    let bold = weight == Some("bold".into())
+        || weight
+            .as_deref()
+            .and_then(|w| w.parse::<u32>().ok())
+            .is_some_and(|w| w >= 600);
+    if bold {
+        return Some(("<strong>", "</strong>"));
+    }
+    match css_value(&style, "font-style").as_deref() {
+        Some("italic") | Some("oblique") => Some(("<em>", "</em>")),
+        _ => None,
+    }
+}
+
+/// Is this `<b>`/`<strong>` explicitly styled *un*-bold (Docs' wrapper)?
+fn is_unbolded(attrs: &str) -> bool {
+    matches!(
+        css_value(&style_of(attrs), "font-weight").as_deref(),
+        Some("normal") | Some("400")
+    )
+}
+
+/// One declaration's value out of a lowercased `style` attribute.
+fn css_value(style: &str, prop: &str) -> Option<String> {
+    style.split(';').find_map(|decl| {
+        let (k, v) = decl.split_once(':')?;
+        (k.trim() == prop).then(|| v.trim().to_string())
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn md(html: &str) -> Option<String> {
+        parse_fragment(html, Format::Markdown)
+    }
+    fn html(src: &str) -> Option<String> {
+        render_fragment(src, Format::Markdown)
+    }
+
+    // ── source → HTML ────────────────────────────────────────────────────────
+
+    #[test]
+    fn renders_inline_and_block_markdown() {
+        assert_eq!(
+            html("a **b** c").as_deref(),
+            Some("<p>a <strong>b</strong> c</p>")
+        );
+        assert_eq!(
+            html("- one\n- two").as_deref(),
+            Some("<ul>\n<li>one</li>\n<li>two</li>\n</ul>")
+        );
+        assert_eq!(html("# head").as_deref(), Some("<h1>head</h1>"));
+    }
+
+    #[test]
+    fn empty_selection_renders_nothing() {
+        assert_eq!(html("   "), None);
+    }
+
+    #[test]
+    fn strip_sole_paragraph_unwraps_only_a_lone_paragraph() {
+        assert_eq!(
+            strip_sole_paragraph("<p><strong>b</strong></p>".into()),
+            "<strong>b</strong>"
+        );
+        // Two blocks: the wrapper is structure the user selected, not an artifact.
+        let two = "<p>a</p>\n<p>b</p>".to_string();
+        assert_eq!(strip_sole_paragraph(two.clone()), two);
+        let list = "<ul>\n<li>one</li>\n</ul>".to_string();
+        assert_eq!(strip_sole_paragraph(list.clone()), list);
+    }
+
+    // ── HTML → source ────────────────────────────────────────────────────────
+
+    #[test]
+    fn converts_clean_fragments() {
+        assert_eq!(md("<ul><li>one</li></ul>").as_deref(), Some("- one"));
+        assert_eq!(
+            md("<p>a <strong>b</strong> c</p>").as_deref(),
+            Some("a **b** c")
+        );
+        assert_eq!(md("<strong>bold</strong>").as_deref(), Some("**bold**"));
+        assert_eq!(md("<h1>head</h1>").as_deref(), Some("# head"));
+        assert_eq!(
+            md(r#"<a href="https://x.dev">l</a>"#).as_deref(),
+            Some("[l](https://x.dev)")
+        );
+    }
+
+    #[test]
+    fn round_trips_through_html() {
+        for src in [
+            "a **b** and [l](https://x.dev)",
+            "- one\n- two",
+            "# head",
+            "> quote",
+        ] {
+            let rendered = html(src).expect("render");
+            assert_eq!(md(&rendered).as_deref(), Some(src), "round trip of {src:?}");
+        }
+    }
+
+    #[test]
+    fn paste_does_not_carry_the_serializer_s_trailing_newline() {
+        // A paste lands at a caret: a trailing newline would break the line.
+        assert_eq!(md("<p>word</p>").as_deref(), Some("word"));
+    }
+
+    // ── HTML from the wild ───────────────────────────────────────────────────
+
+    #[test]
+    fn google_docs_paste_keeps_its_emphasis_and_drops_the_wrapper() {
+        // The real shape: a `<meta>`, a `font-weight:normal` `<b>` around the
+        // whole document, and emphasis spelled only in CSS on `<span>`s.
+        let clip =
+            r#"<meta charset='utf-8'><b style="font-weight:normal;" id="docs-internal-guid-9c1">"#
+                .to_string()
+                + r#"<p dir="ltr" style="line-height:1.38;margin-top:0pt;"><span style="font-size:11pt;font-family:Arial;font-weight:400;">Hello </span>"#
+                + r#"<span style="font-size:11pt;font-weight:700;">bold</span><span style="font-size:11pt;"> world</span></p></b>"#;
+        assert_eq!(md(&clip).as_deref(), Some("Hello **bold** world"));
+    }
+
+    #[test]
+    fn word_paste_drops_the_head_and_the_office_cruft() {
+        let clip = r#"<html xmlns:o="urn:schemas-microsoft-com:office:office"><head>"#.to_string()
+            + r#"<meta http-equiv=Content-Type content="text/html; charset=utf-8">"#
+            + r#"<meta name=Generator content="Microsoft Word 15">"#
+            + r#"<!--[if gte mso 9]><xml><o:OfficeDocumentSettings/></xml><![endif]-->"#
+            + r#"<style><!-- p.MsoNormal {margin:0in;font-size:11.0pt;} --></style></head>"#
+            + r#"<body lang=EN-US><p class=MsoNormal><span style='font-size:12.0pt'>Word <b>bold</b> text<o:p></o:p></span></p></body></html>"#;
+        assert_eq!(md(&clip).as_deref(), Some("Word **bold** text"));
+    }
+
+    #[test]
+    fn div_per_line_html_becomes_paragraphs_not_djot_fences() {
+        // Slack's shape. Raw, twig spells the div `::: … :::` into Markdown.
+        assert_eq!(
+            md(r#"<div class="p-rich_text_section">hi <b>there</b></div>"#).as_deref(),
+            Some("hi **there**")
+        );
+        assert_eq!(md("<div>a</div><div>b</div>").as_deref(), Some("a\n\nb"));
+    }
+
+    #[test]
+    fn arboard_s_own_wrapper_survives_the_round_trip() {
+        // What flower's *own* copy puts on the pasteboard: arboard wraps the HTML
+        // in `<html><head><meta …></head><body>`, so flower→flower paste reads this.
+        let clip = r#"<html><head><meta http-equiv="content-type" content="text/html; charset=utf-8"></head><body><p>a <strong>b</strong> c</p></body></html>"#;
+        assert_eq!(md(clip).as_deref(), Some("a **b** c"));
+    }
+
+    #[test]
+    fn script_and_style_never_reach_the_document() {
+        assert_eq!(
+            md("<p>ok</p><script>alert(1)</script><style>p{color:red}</style>").as_deref(),
+            Some("ok")
+        );
+    }
+
+    #[test]
+    fn fragment_comments_are_dropped() {
+        assert_eq!(
+            md("<!--StartFragment--><p>frag</p><!--EndFragment-->").as_deref(),
+            Some("frag")
+        );
+    }
+
+    #[test]
+    fn plain_text_and_entities_convert() {
+        assert_eq!(
+            md("just some plain text").as_deref(),
+            Some("just some plain text")
+        );
+        assert_eq!(
+            md("<p>a &amp; b &lt;c&gt;</p>").as_deref(),
+            Some("a & b <c>")
+        );
+    }
+
+    #[test]
+    fn unclosed_tags_are_tolerated() {
+        assert_eq!(
+            md("<p>unclosed <strong>bold").as_deref(),
+            Some("unclosed **bold**")
+        );
+    }
+
+    #[test]
+    fn code_and_hard_breaks_survive() {
+        assert_eq!(
+            md("<pre><code>fn x() {}</code></pre>").as_deref(),
+            Some("```\nfn x() {}\n```")
+        );
+        assert_eq!(
+            md("<p>line1<br>line2</p>").as_deref(),
+            Some("line1  \nline2")
+        );
+    }
+
+    // ── the bad cases fall back ──────────────────────────────────────────────
+
+    #[test]
+    fn a_headed_table_converts_and_a_headless_one_declines() {
+        // twig 2.7 maps HTML tables onto the shared table vocabulary, so a
+        // clipboard table converts instead of passing through as raw tags.
+        assert_eq!(
+            md("<table><thead><tr><th>h1</th><th>h2</th></tr></thead>\
+                <tbody><tr><td>a</td><td>b</td></tr></tbody></table>")
+            .as_deref(),
+            Some("| h1 | h2 |\n| --- | --- |\n| a | b |")
+        );
+        // But only when there was a header to write the delimiter row from. With
+        // no `<thead>` the conversion is `| a | b |` alone, which is not a GFM
+        // table at all — it reparses as a paragraph of literal pipes — so this
+        // declines and the caller pastes the plain flavor.
+        assert_eq!(md("<table><tr><td>a</td><td>b</td></tr></table>"), None);
+        assert_eq!(
+            md("<table><tr><td>a</td></tr><tr><td>b</td></tr></table>"),
+            None
+        );
+    }
+
+    #[test]
+    fn an_unknown_element_declines_rather_than_inventing_a_directive() {
+        // twig 2.8 made an unknown element and a text directive one `container`
+        // kind, and Markdown can only spell one as a directive — so a custom
+        // element comes back as `:my-widget`, markup the author never wrote and
+        // twig would read back as a directive. Worse than the plain flavor.
+        assert_eq!(md("<p>a<my-widget></my-widget>b</p>"), None);
+        // The namespaced Office tags `sanitize` knows about are dropped instead,
+        // so the surrounding prose still pastes (see the Word case above).
+        assert_eq!(md("<p>a<o:p></o:p>b</p>").as_deref(), Some("ab"));
+        // …and prose that merely *looks* like a directive is not an invention:
+        // twig reads `:below` and `:bar` back as directives too, so declining on
+        // the reparse alone would throw away half the prose on the clipboard.
+        // The tag has to actually be in the input to have been invented from.
+        assert_eq!(
+            md("<p>see :below for the ratio</p>").as_deref(),
+            Some("see :below for the ratio")
+        );
+        assert_eq!(
+            md("<p>the key is foo:bar here</p>").as_deref(),
+            Some("the key is foo:bar here")
+        );
+    }
+
+    #[test]
+    fn empty_and_whitespace_html_declines() {
+        assert_eq!(md(""), None);
+        assert_eq!(md("   "), None);
+        assert_eq!(md("<meta charset='utf-8'>"), None);
+    }
+
+    #[test]
+    fn a_lossy_conversion_declines_and_a_lossless_one_does_not() {
+        // What twig reports as degraded, flower declines — the paste falls back to
+        // the plain flavor rather than putting invented markup in a prose
+        // document. Asserted through `md` rather than against a helper: the
+        // policy is the behaviour, and twig owns the judgement behind it.
+        for lossy in [
+            "<my-widget>y</my-widget>",
+            "<dl><dt>t</dt><dd>d</dd></dl>",
+            // Both blind spots of the block-start pattern match this replaced: a
+            // container *inline* in a paragraph, and a `<sup>` that Markdown can
+            // only spell as the literal characters `^x^`.
+            "<p>see <my-widget>y</my-widget> here</p>",
+            "<p>x<sup>2</sup></p>",
+        ] {
+            assert_eq!(md(lossy), None, "{lossy:?} should decline");
+        }
+        // …and every faithful conversion still converts.
+        for (good, want) in [
+            ("<p>a <strong>b</strong> c</p>", "a **b** c"),
+            ("<ul><li>one</li></ul>", "- one"),
+            ("<h1>head</h1>", "# head"),
+            ("<blockquote><p>quote</p></blockquote>", "> quote"),
+            ("<pre><code>x</code></pre>", "```\nx\n```"),
+            ("<p><img src=\"u\" alt=\"p\"></p>", "![p](u)"),
+        ] {
+            assert_eq!(md(good).as_deref(), Some(want), "{good:?} should convert");
+        }
+    }
+
+    #[test]
+    fn an_attribute_markdown_cannot_spell_is_a_note_and_not_a_loss() {
+        // twig 3.6's second fidelity axis. Until 3.9.2 its HTML parser kept
+        // `href`, `src` and `alt` in the node's attribute bag *as well as*
+        // modelling them as the link's destination and the image's, so
+        // converting to Markdown — which has no attribute syntax to write the
+        // bag with — reported the node as `AttrsDropped`. The Markdown it
+        // writes carries the destination all the same, which is what these
+        // assert: the warning was about the bag, and there is nothing missing
+        // from the paste.
+        assert_eq!(
+            md(r#"<a href="https://x.dev" title="t">l</a>"#).as_deref(),
+            Some("[l](https://x.dev)")
+        );
+        assert_eq!(
+            md(r#"<p><img src="u" alt="p" width="10"></p>"#).as_deref(),
+            Some("![p](u)")
+        );
+        // Declining on that code is what made every link and image on the
+        // clipboard fall back to the plain flavor under 3.6.0.
+        assert_eq!(
+            md(r#"<p>a <b>b</b> and <a href="https://x.dev">l</a></p>"#).as_deref(),
+            Some("a **b** and [l](https://x.dev)")
+        );
+    }
+
+    #[test]
+    fn an_attribute_markdown_spells_as_a_div_declines() {
+        // The other half of the axis, and the half that leaks. `title` is a
+        // content attribute, so the sanitizer leaves it; Markdown writes it as
+        // `<div title="t">` around the paragraph, which is markup the user
+        // never copied. The plain flavor is the better paste.
+        assert_eq!(md(r#"<p title="t">a</p>"#), None);
+        // `start` was this test's example until twig 3.9.2, whose HTML parser
+        // stopped keeping it in the bag beside the list's own start number —
+        // so an `<ol start>` is now a faithful paste, numbered from where it
+        // was.
+        assert_eq!(
+            md(r#"<ol start="3"><li>a</li><li>b</li></ol>"#).as_deref(),
+            Some("3. a\n4. b")
+        );
+    }
+
+    #[test]
+    fn a_sectioning_wrapper_is_the_one_loss_a_paste_wants() {
+        // twig degrades both of these — neither wrapper has a Markdown spelling
+        // — but only one of them leaks. A `Section` is written by dropping the
+        // wrapper and keeping the children, so the paste is exactly what was
+        // copied; an `<article>` passes through as its own tag, which is markup
+        // the user never wrote. Splitting on the warning's kind is what lets a
+        // flower→flower paste work at all: arboard wraps every copy in
+        // `<html><body>`, which parses as two nested sections.
+        assert_eq!(md("<section><p>a</p></section>").as_deref(), Some("a"));
+        assert_eq!(md("<main><p>a</p></main>").as_deref(), Some("a"));
+        assert_eq!(
+            md("<html><body><p>a</p></body></html>").as_deref(),
+            Some("a")
+        );
+        assert_eq!(md("<article><p>a</p></article>"), None);
+        assert_eq!(md("<nav><p>a</p></nav>"), None);
+    }
+
+    // ── the sanitizer itself ─────────────────────────────────────────────────
+
+    #[test]
+    fn sanitize_rewrites_divs_and_keeps_nesting_straight() {
+        assert_eq!(sanitize("<div>a</div>"), "<p>a</p>");
+        assert_eq!(sanitize("<div><b>a</b></div>"), "<p><b>a</b></p>");
+        // A nested `</b>` pops the inner `<b>`, not the dropped wrapper.
+        assert_eq!(
+            sanitize(r#"<b style="font-weight:normal"><b>x</b></b>"#),
+            "<b>x</b>"
+        );
+    }
+
+    #[test]
+    fn sanitize_maps_css_emphasis_onto_tags() {
+        assert_eq!(
+            sanitize(r#"<span style="font-weight:700">b</span>"#),
+            "<strong>b</strong>"
+        );
+        assert_eq!(
+            sanitize(r#"<span style="font-weight:bold">b</span>"#),
+            "<strong>b</strong>"
+        );
+        assert_eq!(
+            sanitize(r#"<span style="font-style:italic">i</span>"#),
+            "<em>i</em>"
+        );
+        // No emphasis: a styling hook with nothing for twig in it.
+        assert_eq!(sanitize(r#"<span style="color:red">x</span>"#), "x");
+        assert_eq!(sanitize("<span>x</span>"), "x");
+    }
+
+    #[test]
+    fn sanitize_steps_over_a_gt_inside_a_quoted_attribute() {
+        assert_eq!(sanitize(r#"<span style="font-family:'a>b'">x</span>"#), "x");
+    }
+
+    #[test]
+    fn sanitize_leaves_a_bare_less_than_as_text() {
+        assert_eq!(sanitize("a < b"), "a < b");
+    }
+
+    #[test]
+    fn sanitize_leaves_unknown_elements_for_twig() {
+        assert_eq!(sanitize("<figure>x</figure>"), "<figure>x</figure>");
+    }
+
+    #[test]
+    fn sanitize_drops_a_pasteboard_s_styling_attributes_and_keeps_its_content_ones() {
+        // Word's, Google Docs' and Slack's, each verbatim from the clips above.
+        assert_eq!(sanitize("<p class=MsoNormal>a</p>"), "<p>a</p>");
+        assert_eq!(sanitize(r#"<body lang=EN-US>a</body>"#), "<body>a</body>");
+        assert_eq!(
+            sanitize(r#"<html xmlns:o="urn:schemas-microsoft-com:office:office">a</html>"#),
+            "<html>a</html>"
+        );
+        assert_eq!(
+            sanitize(r#"<p dir="ltr" style="line-height:1.38;">a</p>"#),
+            "<p>a</p>"
+        );
+        assert_eq!(sanitize(r#"<h1 id="docs-guid-9c1">h</h1>"#), "<h1>h</h1>");
+        assert_eq!(
+            sanitize(r#"<li data-x="1" aria-label="l">a</li>"#),
+            "<li>a</li>"
+        );
+        // …and the attributes that say what the element *is* stay, quoting and
+        // all. Dropping these would lose the destination itself.
+        assert_eq!(
+            sanitize(r#"<a class="c" href="https://x.dev" title="t">l</a>"#),
+            r#"<a href="https://x.dev" title="t">l</a>"#
+        );
+        assert_eq!(
+            sanitize(r#"<img src=u alt='p' width="10">"#),
+            "<img src=u alt='p'>"
+        );
+        // A value holding a `>`, an unquoted value, and a self-closing tag all
+        // survive the rewrite the attribute scan performs.
+        assert_eq!(
+            sanitize(r#"<figure style="font-family:'a>b'" data-n=3 />"#),
+            "<figure />"
+        );
+    }
+}

@@ -1,6 +1,6 @@
 ---
 title: What you see is what twig-export sets
-description: An exact match between leaf's page and twig-export's PDF needs one layout engine, so leaf's page view is drawn from Typst's layout rather than made to imitate it — a preview first, a caret over it second — with the words handed to Typst as content built from the twig tree, so Typst's language is left only the procedural part of a page, and the flowing editor stays leaf's own and promises the words, not the page
+description: An exact match between flower's page and twig-export's PDF needs one layout engine, so flower's page view is drawn from Typst's layout rather than made to imitate it — a preview first, a caret over it second — with the words handed to Typst as content built from the twig tree, so Typst's language is left only the procedural part of a page, and the flowing editor stays flower's own and promises the words, not the page
 status: draft
 created: 2026-10-26
 updated: 2026-10-27
@@ -15,12 +15,12 @@ part_of: '[Proposals](/docs/proposals/proposals.md)'
 route and a page view that is a mode of its own. What landed:
 
 - **C1**: File ▸ PDF Preview (⌥⌘P) draws twig-export's pages beside the
-  editor (now `crates/leaf-pages/src/pages.rs`), set again on a worker after
+  editor (now `crates/flower-pages/src/pages.rs`), set again on a worker after
   each edit through a `Typesetter` that reads the fonts once. A click on a
   page puts the editor's caret on the word clicked.
 - **C2**: File ▸ Pages (⌥⌘L) draws the pages in the editor's place, with
   the caret and the selection on Typst's glyphs (`pages.rs`). Every edit
-  still goes through the editor and leaf-core's `Doc`; ↑/↓, a screen's move
+  still goes through the editor and flower-doc's `Doc`; ↑/↓, a screen's move
   and a line's edge go by the pages' lines, through the widget's new
   `Lines`, which a host gives the editor.
 - **The words as content, by a shorter road than the spike's.** twig-export
@@ -40,14 +40,14 @@ candidate window is placed by the editor's hidden rows; what twig-export
 does not draw (math, highlights) cannot be edited on the page; a drag does
 not scroll the view; and the rest of this proposal's list still stands.
 
-`draft`, argued 2026-10-26 from leaf `main` at `d11f511a` (after every
+`draft`, argued 2026-10-26 from flower `main` at `d11f511a` (after every
 frontend but Dioxus moved to `archive/`) and twig-export
 `main` at `bf145b7`, which is on twig 6 and fig 7. The numbers are from the
 spike in [`spikes/twig-export-live`](/spikes/twig-export-live/README.md), which
 sets one document two ways: through twig-export's generated `.typ`, and as
 Typst content built in Rust with a template for the procedural part only.
-Nothing else is built. The proposal belongs in leaf because the view that changes is
-leaf's. What it needs from twig-export is listed under
+Nothing else is built. The proposal belongs in flower because the view that changes is
+flower's. What it needs from twig-export is listed under
 **What twig-export needs**, for that repo to take as tasks.
 
 ## The ask
@@ -56,8 +56,8 @@ Adam asked to look at "possibly making the live view reflect the output of
 twig-export exactly". The context is Diaryx's draft proposal
 [A document leaves through one typesetter](https://github.com/diaryx-org/diaryx/blob/main/docs/proposals/a-document-leaves-through-one-typesetter.md),
 which makes twig-export the route for every format that is set on pages,
-and which says that leaf's PDF and twig-export's "could disagree". That
-proposal keeps leaf's PDF as "this page, as I see it" and asks only for a
+and which says that flower's PDF and twig-export's "could disagree". That
+proposal keeps flower's PDF as "this page, as I see it" and asks only for a
 test that keeps the two honest on paper size, columns and body size. This
 proposal asks whether the two can agree *exactly*, and what that costs.
 
@@ -71,8 +71,8 @@ ways to get an exact match, and one way to get a close one:
 | | What matches | What it costs |
 | --- | --- | --- |
 | **A. Shared settings** | The face, the sizes, the paper, the margins, the columns. Not where lines and pages break. | Small. A table of numbers both sides read, and a test. |
-| **B. twig-export sets leaf's layout** (export what leaf draws) | Everything, by construction. | The export would need Blitz and parley wherever a PDF is made, the CLI and the server included, and leaf's layout has no contents page, no footnotes at the foot, no running heads. |
-| **C. leaf draws twig-export's pages** | Everything, by construction. | Typst in the app, and a page view that draws Typst frames. A read-only preview first, then a caret over it. |
+| **B. twig-export sets flower's layout** (export what flower draws) | Everything, by construction. | The export would need Blitz and parley wherever a PDF is made, the CLI and the server included, and flower's layout has no contents page, no footnotes at the foot, no running heads. |
+| **C. flower draws twig-export's pages** | Everything, by construction. | Typst in the app, and a page view that draws Typst frames. A read-only preview first, then a caret over it. |
 
 The recommendation is **A now, then C in two steps**, with the words reaching
 Typst as content built from the twig tree rather than as generated Typst
@@ -80,14 +80,14 @@ markup (**Typst for the procedural part only**, below). B is ruled out below.
 
 ## What exists
 
-**leaf lays out text with parley, and has no page view.** Since
-2026-10-26 leaf's one frontend is the Dioxus editor (`crates/leaf-dioxus`),
-in windows (`apps/leaf-dioxus`) and in a terminal (`apps/leaf-dioxus-tui`);
-the Swift, web, Android and ratatui frontends are in `archive/`. leaf-core
+**flower lays out text with parley, and has no page view.** Since
+2026-10-26 flower's one frontend is the Dioxus editor (`crates/flower-doc-editor`),
+in windows (`apps/flower`) and in a terminal (`apps/flower-tui`);
+the Swift, web, Android and ratatui frontends are in `archive/`. flower-doc
 decides what each glyph is and how it is styled; parley, under Blitz, decides
-where a line breaks (`crates/leaf-dioxus/src/text.rs`), greedily and with no
+where a line breaks (`crates/flower-doc-editor/src/text.rs`), greedily and with no
 hyphenation. The editor is a flowing column: pages exist only in Export as
-PDF and Print (`apps/leaf-dioxus/src/pdf.rs`), which lay out an offscreen
+PDF and Print (`apps/flower/src/pdf.rs`), which lay out an offscreen
 editor as wide as the paper's column, a US Letter sheet with a 72-point
 margin, and break a page between rows, never through one. The paginated view
 with columns was leaf-swift's (`PageSetup.swift`), now archived; Diaryx's
@@ -101,26 +101,26 @@ from the bottom of one line to the top of the next (`leading`), not with the
 font's ascent and descent as parley and Core Text do; it keeps widows and orphans
 off a page; it puts footnotes at the foot of the page; and a block can split
 across a page. Its page carries running heads, page numbers and a contents
-page, which leaf's does not.
+page, which flower's does not.
 
 **They do not draw the same things yet.** twig-export emits no math,
 highlight, strikethrough, superscript or subscript, does not read the
-presentation CSS that leaf writes in a node's `style` attribute
+presentation CSS that flower writes in a node's `style` attribute
 (`text-align`, `line-height`, `font-size`, `font-family`, `color`), and does
-not draw Mermaid. leaf draws math through RaTeX (`leaf-math`); Typst has a
+not draw Mermaid. flower draws math through RaTeX (`flower-math`); Typst has a
 math engine of its own, with different spacing and faces.
 
 **The four setting words are the shared contract.** Diaryx's
 `workspace/src/setting.rs` reads `font`, `size`, `layout` and `columns` from
 a document's frontmatter, and says that "every renderer answers it in its
-own idiom". leaf's PDF has the paper and the margin (72 points), but no
+own idiom". flower's PDF has the paper and the margin (72 points), but no
 columns; the archived `PageSetup` had a column count and a 24-point gutter.
 twig-export's config has the paper, the margin, the size and the leading,
 but no column count.
 
-## Why not B: twig-export sets what leaf draws
+## Why not B: twig-export sets what flower draws
 
-B means: the export *is* leaf's layout, as `apps/leaf-dioxus/src/pdf.rs`
+B means: the export *is* flower's layout, as `apps/flower/src/pdf.rs`
 already does (an offscreen editor, painted into a PDF). With one frontend
 left, B is more plausible than it was: parley sets the same lines wherever
 Dioxus runs. It still fails the Diaryx proposal's two requirements:
@@ -134,7 +134,7 @@ Dioxus runs. It still fails the Diaryx proposal's two requirements:
   row layout is building a second Typst, badly.
 
 So the page that leaves has to be Typst's. The question is only whether
-leaf can show it.
+flower can show it.
 
 ## A. Shared settings: close, now
 
@@ -143,14 +143,14 @@ Make every number that both sides set come from one place, and test it.
 - **The four words** compile to twig-export rules, as the Diaryx proposal
   already says. `columns` needs a document setting in twig-export
   (`#set page(columns: n)`); it has none today.
-- **The numbers under the words**: the margin (leaf's 72 points), the
+- **The numbers under the words**: the margin (flower's 72 points), the
   gutter (24 points), the body leading, and the size and spacing of each
-  heading level. leaf holds these in the Dioxus editor's `Look`. They
-  become one table in leaf-core, which `Look` reads and which Diaryx's
+  heading level. flower holds these in the Dioxus editor's `Look`. They
+  become one table in flower-doc, which `Look` reads and which Diaryx's
   shipped twig-export template is generated from.
 - **The faces**: the generic families map to the same bundled files on both
   sides (`diaryx_faces`), so that `serif` is one font everywhere.
-- **A test**: one document, set by leaf (`pdf.rs`'s offscreen layout, which
+- **A test**: one document, set by flower (`pdf.rs`'s offscreen layout, which
   needs no simulator) and by twig-export, compared on paper size,
   column count, body size, and the line count of each paragraph. The last is
   a tolerance, not an equality: it is the measure of how close A gets.
@@ -162,9 +162,9 @@ greedily on both sides and will often match; a justified one will not, and
 line spacing differs by the leading model, so the page breaks drift down a
 long document.
 
-## C. leaf draws twig-export's pages: exact
+## C. flower draws twig-export's pages: exact
 
-A **page view** in leaf that draws Typst's frames, not leaf's rows. The
+A **page view** in flower that draws Typst's frames, not flower's rows. The
 flowing editor stays as it is.
 
 ### C1. A preview, read-only
@@ -193,7 +193,7 @@ re-emits and recompiles, and the pane redraws the pages that changed.
 - **Click to source.** A click on the preview puts the caret in the editor
   at the word clicked. Through `.typ` that needs a span map in twig-export;
   through content built from the twig tree it needs nothing (below).
-- **Where it lands**: `apps/leaf-dioxus`, which links twig-export directly
+- **Where it lands**: `apps/flower`, which links twig-export directly
   and draws a page as an image (`typst-render`) or as vectors, on the Mac
   first and then wherever that app runs. The terminal editor has no pages to
   show; a web build would need Typst in wasm (**To settle**).
@@ -201,7 +201,7 @@ re-emits and recompiles, and the pane redraws the pages that changed.
 ### C2. A caret on the page
 
 The same page view, editable: the caret, the selection and the IME drawn on
-Typst's glyphs, with every edit still going through leaf-core's `Doc`. Only
+Typst's glyphs, with every edit still going through flower-doc's `Doc`. Only
 the *view* changes; the document model, the commands and the undo stack do
 not.
 
@@ -283,7 +283,7 @@ numbers and footnotes at the foot.
 - **The template is the only Typst.** It runs in Typst's sandbox, it is
   small enough to read, and changing it changes every document the same way.
 - **As fast.** Per keystroke, on an M3 Pro, Typst's share (the twig parse
-  and content build are separate, and leaf already has the tree):
+  and content build are separate, and flower already has the tree):
 
   | Document | Pages | Through `.typ` (no contents, no heads) | As content, with the template |
   | --- | --- | --- | --- |
@@ -315,7 +315,7 @@ numbers and footnotes at the foot.
      hash, so Typst laid out the rest of the document again: 453 ms in the
      middle of a book, 81 ms at its end. A span that is *a block and an
      offset into it* stays the same for every block the edit did not touch.
-     The caller keeps where each block starts now. leaf's own block keys
+     The caller keeps where each block starts now. flower's own block keys
      would serve, if they outlive an edit.
   3. A running head that reads the page of every heading is laid out again
      after any edit: 250 ms a keystroke in a book, against 45 ms for one
@@ -338,7 +338,7 @@ numbers and footnotes at the foot.
 
 Typst's *engine* stays whole: line breaking, hyphenation, pagination,
 footnote placement and introspection are what make the page exact, and what
-leaf does not have. What is stripped is Typst's *language* from the body.
+flower does not have. What is stripped is Typst's *language* from the body.
 A route that kept the source Markdown but parsed it inside Typst (a Typst
 package that reads Markdown, as `cmarker` does through a wasm plugin) was
 not taken: its spans point at the plugin call, not at the Markdown, so it
@@ -346,15 +346,15 @@ loses click to source, and it parses in wasm on every compile.
 
 ## What each promise is
 
-After A and C, leaf makes two promises, and each is true:
+After A and C, flower makes two promises, and each is true:
 
 - **The flowing editor** promises the *words* and the *look*: the same face,
   sizes and colours as the page. It does not promise where a line breaks.
   It has no page, so there is no page for it to disagree with.
 - **The page view** promises the *page*: it is the PDF, drawn.
 
-This replaces "leaf's PDF stays, for what it is good at" in the Diaryx
-proposal. Once C1 exists, leaf's own PDF (`pdf.rs`, and the archived
+This replaces "flower's PDF stays, for what it is good at" in the Diaryx
+proposal. Once C1 exists, flower's own PDF (`pdf.rs`, and the archived
 `pdfData` that Diaryx's Apple app still calls) prints a page nobody will see
 anywhere else, and Export as PDF goes through twig-export on
 every platform. Print as shown can stay as a separate command, if anyone
@@ -364,8 +364,8 @@ asks for it.
 
 None of this is built; each is a task for twig-export.
 
-1. **Draw what leaf draws**: math (Typst's own, or leaf-math's SVG as an
-   image, for an exact match with leaf's flowing view), highlight,
+1. **Draw what flower draws**: math (Typst's own, or flower-math's SVG as an
+   image, for an exact match with flower's flowing view), highlight,
    strikethrough, superscript, subscript, the presentation CSS in `style`
    (`text-align`, `line-height`, `font-size`, `font-family`, `color`),
    the page-break directive, and pictures resolved against the document's
@@ -387,7 +387,7 @@ None of this is built; each is a task for twig-export.
 
 ## Order of work
 
-1. **A**: the shared table of numbers in leaf-core; `columns` in
+1. **A**: the shared table of numbers in flower-doc; `columns` in
    twig-export; the comparison test.
 2. twig-export's items 1, 3 and 4, and the requests to Typst (item 5).
 3. **C1** in the Rust Mac app: a page preview beside the editor, click to
@@ -404,15 +404,15 @@ None of this is built; each is a task for twig-export.
    the content route and `.typ` plus a span map.
 
 2. **Binary size.** The spike's binary is 46 MB stripped, with typst-kit's
-   embedded fonts. The delta over leaf is unmeasured, and so is a phone. The
+   embedded fonts. The delta over flower is unmeasured, and so is a phone. The
    Diaryx proposal has the same open question; one measurement answers both.
 3. **Math.** Typst's math in the page view and RaTeX's in the flowing view
-   are two pictures of one formula. Either the page uses leaf-math's SVG
+   are two pictures of one formula. Either the page uses flower-math's SVG
    (exact with the editor, but no Typst math features), or the flowing view
    accepts that the page's formula looks different.
-4. **Where the numbers live.** A's table could live in leaf-core (leaf's
+4. **Where the numbers live.** A's table could live in flower-doc (flower's
    numbers, which the export follows) or in Diaryx's template (the
-   template's numbers, which leaf follows). leaf-core is proposed because
-   leaf is used without Diaryx; the template then reads leaf's numbers.
+   template's numbers, which flower follows). flower-doc is proposed because
+   flower is used without Diaryx; the template then reads flower's numbers.
 5. **The page view on the web.** Typst in wasm is large; a web page view
    may be the server's job, or not exist.

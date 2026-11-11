@@ -12,10 +12,10 @@ use std::process::Command;
 ///
 /// Asked at *runtime*, not baked in with `env!`. The compile-time answer is a
 /// string literal in the binary, and cargo does not rebuild on a path change
-/// alone: moving the checkout (`~/Code/leaf` → `~/diaryx/leaf`) carries `target/`
+/// alone: moving the checkout (`~/Code/leaf` → `~/diaryx/flower`) carries `target/`
 /// along with it, the stale `xtask` is reused, and every task then reads and
 /// writes a directory that no longer exists. `cargo xtask web` failed that way
-/// with `could not read /Users/adamharris/Code/leaf/packages/leaf-web/src` —
+/// with `could not read /Users/adamharris/Code/leaf/packages/0/src` —
 /// naming a path nothing in the checkout mentions, from a tree that was moved
 /// weeks earlier.
 ///
@@ -203,6 +203,6 @@ mod tests {
         let root = root();
         assert!(root.is_dir(), "{} is not a directory", root.display());
         assert!(root.join("xtask/Cargo.toml").is_file());
-        assert!(root.join("crates/leaf-core/Cargo.toml").is_file());
+        assert!(root.join("crates/flower-doc/Cargo.toml").is_file());
     }
 }

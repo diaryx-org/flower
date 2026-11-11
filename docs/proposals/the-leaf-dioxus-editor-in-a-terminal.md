@@ -1,15 +1,15 @@
 ---
-title: The leaf-dioxus editor in a terminal
+title: The flower-doc-editor editor in a terminal
 part_of: '[Proposals](/docs/proposals/proposals.md)'
 status: draft
 created: 2026-10-21
 ---
 
-# The leaf-dioxus editor in a terminal
+# The flower-doc-editor editor in a terminal
 
 ## Status
 
-`draft`, 2026-10-21. Written with the prototype in `apps/leaf-dioxus-tui`, on
+`draft`, 2026-10-21. Written with the prototype in `apps/flower-tui`, on
 the `dioxus-tui` branch, with unit's `dioxus-tui` branch beside it. Decided by
 Adam on 2026-10-21: keep going (decision 1 below), in the order proposed —
 pictures, then unit's menus and dialogs, then the file features. All three
@@ -19,7 +19,7 @@ untouched; replacing it is still Adam's call.
 Also decided by Adam, 2026-10-21: the renderer goes in the Blitz fork. It is
 now `blitz-tui`, a package on the fork's `leaf` branch beside blitz-paint and
 blitz-shell, which runs any Blitz document, a Dioxus app included; the
-prototype here is what leaf adds to it ([Where the renderer lives](#where-the-renderer-lives)).
+prototype here is what flower adds to it ([Where the renderer lives](#where-the-renderer-lives)).
 
 ## Does Dioxus have a TUI renderer?
 
@@ -35,7 +35,7 @@ renderer to use or revive. The `dioxus-tui` code on crates.io is for the 0.4 /
 ## The two routes
 
 **Revive dioxus-tui.** Port rink/plasmo to Dioxus 0.8. It has its own DOM, its
-own style subset and its own layout. leaf-dioxus would then need to work on two
+own style subset and its own layout. flower-doc-editor would then need to work on two
 DOMs with different CSS support, and the editor depends on Blitz details
 (`keys.rs`, `view.rs` record several). Large, and it doubles the surface.
 
@@ -44,7 +44,7 @@ app uses them, and replace only the last step: walk the laid-out tree and write
 cells instead of pixels. This is the prototype. The cost was small because
 everything above the painter already existed:
 
-- `DioxusDocument::new` runs with no window (`apps/leaf-dioxus/src/headless.rs`
+- `DioxusDocument::new` runs with no window (`apps/flower/src/headless.rs`
   already does it for tests).
 - The editor needs a winit `Window` only for size, scale, theme and redraw
   requests. A stub is enough (`offscreen.rs` already does it for PDF).
@@ -55,12 +55,12 @@ everything above the painter already existed:
   hit-testing count in cells without any change to the editor.
 
 The first prototype was about 1,500 lines in four files and needed no change
-to leaf-dioxus or unit. With pictures, chrome and files it came to about
+to flower-doc-editor or unit. With pictures, chrome and files it came to about
 2,700 lines in eight, with tests. The painter, the terminal and the input are
 now blitz-tui's (about 2,000 lines with its tests); what stays here is about
 1,500. Two small changes outside it:
 
-- **leaf-dioxus:** `Type::grid`, the host's cell, for a surface of character
+- **flower-doc-editor:** `Type::grid`, the host's cell, for a surface of character
   cells. On a grid every run is set at the body size, as the source view
   already does: without it the editor lays a heading out at twice the size
   the painter can draw it, and a click on a heading lands on the wrong
@@ -76,7 +76,7 @@ now blitz-tui's (about 2,000 lines with its tests); what stays here is about
 
 ## Where the renderer lives
 
-In the Blitz fork, `diaryx-org/blitz`, as `packages/blitz-tui` on the `leaf`
+In the Blitz fork, `diaryx-org/blitz`, as `packages/blitz-tui` on the `flower`
 branch (merged from `tui`, diaryx-org/blitz#12). It is a renderer in Blitz's terms, not an engine: it
 replaces blitz-paint and blitz-shell, and keeps the DOM, Stylo and taffy, so
 it changes with Blitz's paint tree in the same repository. It is not an
@@ -91,9 +91,9 @@ lines.
   `blitz_dom::Document`; and `TermWindow` (the `winit` feature).
   `examples/tui_counter` is a Dioxus counter whose clicks and keys work
   through it, tested headlessly.
-- **Leaf's, here:** the editor and unit's chrome, the command table, the file
+- **Flower's, here:** the editor and unit's chrome, the command table, the file
   rules, ⌃ as ⌘ for the editor's shortcuts, the caret classes, the shift of a
-  click by the editor's padding, and leaf-raster as the picture decoder.
+  click by the editor's padding, and flower-raster as the picture decoder.
 - **Not done for other apps:** the text and caret of `<input>` and
   `<textarea>`, `::marker` list markers, outlines, shadows, gradients,
   transforms and scrollbars.
@@ -147,7 +147,7 @@ Against the [leaf-tui inventory](#what-leaf-tui-does) below:
 - **The column's side padding** is still 16px, a cell and two thirds: the
   painter rounds it to a whole cell, and a click is shifted to match
   (`term.rs`). `Type::grid` could make it a cell, as it does a table's.
-- **What leaf-tui adds that leaf-dioxus has no part of:** New, the scrollbar,
+- **What leaf-tui adds that flower-doc-editor has no part of:** New, the scrollbar,
   hover previews, the large-heading rasters, the `::embed` directive card,
   the table commands in a menu, and a fuzzy palette (the command menu is a
   menu, not a search). Each is host work or a small widget change.
@@ -167,7 +167,7 @@ Against the [leaf-tui inventory](#what-leaf-tui-does) below:
 ## What leaf-tui does
 
 `apps/leaf-tui` (about 8,000 lines) and `crates/leaf-ratatui` (about 6,200)
-paint leaf-core's `VisualMap`, a grid of glyphs core lays out for a given
+paint flower-doc's `VisualMap`, a grid of glyphs core lays out for a given
 width. It has a centred column with a scrollbar, a status toast, a find and
 replace bar, two modal choice dialogs, a nested context menu, a fuzzy command
 palette, a one-line prompt and a key reference, all from one table of about 60
@@ -180,7 +180,7 @@ and CI builds it for four targets and ships it to Homebrew.
 For the replacement: one editor, the one the Mac app uses, in every place.
 leaf-ratatui is a second renderer of the same document, with its own input
 mapping, its own layout pass and its own tests. A behaviour fixed in
-leaf-dioxus is fixed in the terminal too. Its chrome could be unit's.
+flower-doc-editor is fixed in the terminal too. Its chrome could be unit's.
 
 Against: the terminal then depends on Dioxus 0.8 alpha, Stylo and the Blitz
 fork, which is a much larger build than ratatui: the prototype's lockfile lists
@@ -197,9 +197,9 @@ unit's cell density is a third way unit draws, to be kept working.
    replaces `Type::uniform`.
 3. ~~Whether unit's `dioxus-tui` branch merges into unit's main~~: merged
    (diaryx-org/unit#10); the prototype takes unit from `main`.
-4. Whether the prototype stays its own workspace, like `apps/leaf-dioxus`, or
+4. Whether the prototype stays its own workspace, like `apps/flower`, or
    joins it, and whether CI builds and tests it.
 5. Only after it matches leaf-tui: whether it replaces leaf-tui.
 6. ~~Whether the fork's `tui` branch merges into its `leaf` branch~~: merged
-   (diaryx-org/blitz#12); the prototype takes Blitz from `leaf`, like the Mac
+   (diaryx-org/blitz#12); the prototype takes Blitz from `flower`, like the Mac
    app. Still open: whether blitz-tui is offered to DioxusLabs/blitz.

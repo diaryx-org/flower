@@ -10,7 +10,7 @@ part_of: '[Tasks](/docs/tasks/tasks.md)'
 `Doc::insert_composing` is the composing form of `insert`: each step puts the
 document back as the composition found it, caret and armed marks included, and
 types the text there, folded into the composition's one undo step. `Composer`
-in `crates/leaf-dioxus/src/ime.rs` composes through it, and that is the one
+in `crates/flower-doc-editor/src/ime.rs` composes through it, and that is the one
 path every Dioxus host takes, so an armed Bold takes the word and a `*` stays
 literal. Not run on a device: the Done when below names Android and iOS, whose
 Dioxus apps have no platform module yet and whose input is the task "What
@@ -18,7 +18,7 @@ Android does not do yet" and "What iOS does not do yet". `leaf-ffi` and
 `leaf-wasm` are archived, so there is no binding to expose it through.
 
 **Since the archive (2026-10-26).** The paths below to `packages/` are under
-`archive/` now. The leaf-dioxus editor closes the undo half (`ime.rs`, through
+`archive/` now. The flower-doc-editor editor closes the undo half (`ime.rs`, through
 `edit_composing` and `end_composition`). The other half is still open there: a
 composition is a raw splice, so an armed Bold and a literal `*` are lost, and
 fixing that needs a composing insert in core.

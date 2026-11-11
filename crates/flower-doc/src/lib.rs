@@ -1,0 +1,69 @@
+//! flower-doc — the frontend-neutral heart of flower.
+//!
+//! A [`Doc`] is a `twig::Editor` plus a byte-offset caret and selection: every
+//! mutation is one of twig's offset-addressed ops, and the document stays a
+//! live, round-trippable AST the whole time you type into it. The [`wysiwyg`]
+//! module resolves that AST into a [`wysiwyg::VisualMap`] — rendered glyphs that
+//! each point back at the source byte they came from, so a caret can ride the
+//! *visible* text and step over hidden markup delimiters.
+//!
+//! The [`source`] module is that map's opposite number: where [`wysiwyg`]
+//! resolves the markup away, it styles the markup *itself*, so the source view
+//! can paint a heading's `# ` and a link's destination as the scaffolding they
+//! are. Both read the same twig AST, so the two views cannot disagree about what
+//! the document is.
+//!
+//! The [`counts`] module reads that same rendering back as numbers — words,
+//! characters, paragraphs — so a host's word count is a count of what the page
+//! shows rather than of the markup underneath it.
+//!
+//! The [`frame`] module is for the bindings that hand that rendering across a
+//! boundary: it says which rows one frame changed from the frame before, so a
+//! binding can cross only those.
+//!
+//! Nothing here depends on a UI toolkit. Glyphs carry a toolkit-agnostic
+//! [`Style`], which a frontend crate (`leaf-tui`, and next `leaf-gui`) maps onto
+//! its own styling. Both frontends share this exact caret math, edit surface,
+//! and offset⇄position mapping — the split is what lets a GUI reuse the hard
+//! parts instead of re-deriving them.
+
+pub mod counts;
+pub mod doc;
+pub mod format;
+pub mod frame;
+mod html;
+pub mod source;
+pub mod style;
+#[cfg(feature = "syntax")]
+pub mod syntax;
+pub mod wysiwyg;
+
+pub use counts::TextCounts;
+pub use doc::{
+    Capabilities, CellSpan, DiskState, Doc, DropTarget, FootnoteDef, FootnoteRef, Heading,
+    Highlight, HighlightCursor, InlineMarks, Landing, LineFlow, MarkupMode, PAGE_BREAK, Quote,
+    TopBlock, TopKind, View, VisualKey, parse_tree,
+};
+pub use frame::{RowDelta, apply_row_delta, row_delta};
+pub use source::{SourceMap, StyledRun};
+pub use style::{
+    Align, Baseline, FaceId, FaceRef, FaceTable, FontFace, FontFamily, FontSize, Hundredths,
+    LineHeight, LineSpacing, MarkColor, Role, SizeStep, Style, TextColor, Token,
+};
+pub use wysiwyg::{
+    BlockClass, Boundary, CodeBlockInfo, ColorScheme, DirectiveInfo, DirectiveKey, DirectiveMark,
+    Glyph, MathInfo, MathMark, MediaInfo, MediaKind, MediaSource, Reveal, Surface, TableCell,
+    TableInfo, TableRow, VRow, VisualMap,
+};
+
+// Re-export the twig types a frontend needs to name when calling into a `Doc`
+// (the toolbar's block/inline kinds), so frontends don't each depend on twig.
+// `Alignment` comes with `TableCell`, which carries one.
+// `Format` too: a filesystem-free host (wasm/FFI) picks the document's format
+// itself when it calls `Doc::from_source`, since there's no file extension to
+// sniff it from the way `Doc::open` does.
+// `Gesture` names one authoring capability for `Doc::supports`, the finer-grained
+// half of `Capabilities` — a frontend wanting a mark flower's own toolbar doesn't
+// offer asks with one of these.
+pub use format::Format;
+pub use twig::{Alignment, BlockContainerKind, BlockKind, Gesture, InlineKind};

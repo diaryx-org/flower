@@ -7,10 +7,10 @@ updated: 2026-10-26
 ---
 # What Android does not do yet
 
-**Where.** `apps/leaf-dioxus` (it has no Android module under
-`src/platform/` yet) and `crates/leaf-dioxus`.
+**Where.** `apps/flower` (it has no Android module under
+`src/platform/` yet) and `crates/flower-doc-editor`.
 
-**What.** Leaf for Android was `archive/apps/leaf-android` over the Compose
+**What.** Flower for Android was `archive/apps/leaf-android` over the Compose
 editor in `archive/packages/leaf-android/leaf-compose`. What it did that the
 Dioxus path does not, with where the archived code shows how:
 

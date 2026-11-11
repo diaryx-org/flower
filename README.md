@@ -1,9 +1,9 @@
 ---
 part_of: id:dx4hxn744/kv2bv2m
-title: leaf
+title: flower
 contents:
 - '[Sample](sample.md)'
-- '[leaf on diaryx.org](/www/index.md)'
+- '[flower on diaryx.org](/www/index.md)'
 - '[Audiences](/vocab/audiences.md)'
 - '[Proposals](/docs/proposals/proposals.md)'
 - '[Tasks](/docs/tasks/tasks.md)'
@@ -11,16 +11,16 @@ contents:
 config: .config/prov.yaml
 registry: registry.yaml
 id: 6h2bs8f
-slug: leaf
+slug: flower
 ---
-# leaf (Work in progress!!)
+# flower (Work in progress!!)
 
 A caret-based rich-text editor for documents, built on [`twig`](https://github.com/diaryx-org/twig).
 
 ## Workspace layout
 
 The caret/selection model and the AST→glyph mapping live in a
-frontend-neutral **core**. One editor widget draws it: `leaf-dioxus`, on
+frontend-neutral **core**. One editor widget draws it: `flower-doc-editor`, on
 Dioxus's native renderer, which draws HTML and CSS through
 [the Blitz fork](https://github.com/diaryx-org/blitz) (branch `leaf`) with no
 webview. Thin **apps** host the widget with a window or a terminal, a
@@ -36,25 +36,25 @@ those behaviours the Dioxus path does not have yet.
 
 | crate | what it is |
 | ----- | ---------- |
-| [`leaf-core`](crates/leaf-core)       | the document model — a `twig::Editor` with a byte-offset caret + selection, and the WYSIWYG `VisualMap`. Glyphs carry a **toolkit-agnostic `Style`**; no UI dependency. Fenced code is syntax-highlighted here too (syntect, two-face's grammars — the set `plates` publishes with), as an eight-way `Token` per glyph that each frontend colours its own way; the `syntax` feature carries the grammars and can be left out. |
-| [`leaf-raster`](crates/leaf-raster)   | the **shared CPU rasterization layer**: image decode (SVG included), path resolution and aspect-fit policy, and oversized-heading rasters with the caret and selection painted into the pixels — how a terminal heading stays editable when cells can't draw over a graphics-protocol image.                    |
-| [`leaf-dioxus`](crates/leaf-dioxus) | the **embeddable widget on Dioxus's native renderer** (`dioxus-native`, Blitz on wgpu): the editor, its rows, input method, find bar and status line, drawn in the `Look` its host gives it and asking a `Host` for the clipboard, Save, the zoom and the context menu. A standalone workspace, since `dioxus-native` is an alpha. |
-| [`leaf-pages`](crates/leaf-pages) | the **Reflow and Pages views** over that widget: the document set by Typst (twig-export) on a worker, drawn a picture a block, with the caret, the selection and presses on Typst's own glyphs, scrolled and zoomed; the built-in templates set in process. A host answers a `Host` (its editor, its area, a way to wake its UI) and may give a `Setup` (installed templates, where else to set them). |
-| [`leaf-math`](crates/leaf-math)       | TeX to a **self-contained SVG picture** with baseline metrics, through RaTeX with KaTeX's outlines embedded — the one door every frontend draws a formula through, so the picture is byte-identical everywhere.                                                    |
-| [`leaf-mermaid`](crates/leaf-mermaid) | Mermaid diagrams to SVG, through mmdr, for the editor to draw a fence with. |
-| [`leaf-session`](crates/leaf-session) | the editors leaf runs itself for a region of a document (a formula today), behind one interface: keys in, splices on the region's content out. |
-| [`leaf-math-edit`](crates/leaf-math-edit) | a structural formula editor whose file format stays TeX (a spike), which `leaf-session` runs. |
+| [`flower-doc`](crates/flower-doc)       | the document model — a `twig::Editor` with a byte-offset caret + selection, and the WYSIWYG `VisualMap`. Glyphs carry a **toolkit-agnostic `Style`**; no UI dependency. Fenced code is syntax-highlighted here too (syntect, two-face's grammars — the set `plates` publishes with), as an eight-way `Token` per glyph that each frontend colours its own way; the `syntax` feature carries the grammars and can be left out. |
+| [`flower-raster`](crates/flower-raster)   | the **shared CPU rasterization layer**: image decode (SVG included), path resolution and aspect-fit policy, and oversized-heading rasters with the caret and selection painted into the pixels — how a terminal heading stays editable when cells can't draw over a graphics-protocol image.                    |
+| [`flower-doc-editor`](crates/flower-doc-editor) | the **embeddable widget on Dioxus's native renderer** (`dioxus-native`, Blitz on wgpu): the editor, its rows, input method, find bar and status line, drawn in the `Look` its host gives it and asking a `Host` for the clipboard, Save, the zoom and the context menu. A standalone workspace, since `dioxus-native` is an alpha. |
+| [`flower-pages`](crates/flower-pages) | the **Reflow and Pages views** over that widget: the document set by Typst (twig-export) on a worker, drawn a picture a block, with the caret, the selection and presses on Typst's own glyphs, scrolled and zoomed; the built-in templates set in process. A host answers a `Host` (its editor, its area, a way to wake its UI) and may give a `Setup` (installed templates, where else to set them). |
+| [`flower-math`](crates/flower-math)       | TeX to a **self-contained SVG picture** with baseline metrics, through RaTeX with KaTeX's outlines embedded — the one door every frontend draws a formula through, so the picture is byte-identical everywhere.                                                    |
+| [`flower-mermaid`](crates/flower-mermaid) | Mermaid diagrams to SVG, through mmdr, for the editor to draw a fence with. |
+| [`flower-session`](crates/flower-session) | the editors flower runs itself for a region of a document (a formula today), behind one interface: keys in, splices on the region's content out. |
+| [`flower-math-edit`](crates/flower-math-edit) | a structural formula editor whose file format stays TeX (a spike), which `flower-session` runs. |
 
 ### `apps/` — runnable frontends
 
 | app | what it is |
 |-----|------------|
-| [`leaf-dioxus`](apps/leaf-dioxus) | **Leaf**, in Rust from `main` up, for every platform Dioxus's native renderer reaches — the Mac's is `Leaf.app` (`org.diaryx.leaf`). A window per document, each a Dioxus page: the toolbar, `crates/leaf-dioxus`'s editor, the context menu and Settings, their buttons, menus and dialogs [unit](https://github.com/diaryx-org/unit)'s. What a platform does its own way is `platform/`: on the Mac an `NSDocument` per window (Open, autosave, Versions, Rename, recents, Finder's Open With), the menu bar, the spelling checker, Look Up and the print panel, through objc2. Export as PDF and Print from the editor's own layout. What it does not do yet is the task "What the Mac app does not do yet". |
-| [`leaf-dioxus-tui`](apps/leaf-dioxus-tui) | the terminal editor: the same `leaf-dioxus` editor, laid out by Blitz and painted into character cells by `blitz-tui`, with unit's menus and dialogs in their cell density. It replaces the archived `leaf-tui`; what it does not do yet is in [its proposal](docs/proposals/the-leaf-dioxus-editor-in-a-terminal.md) and the task "The terminal editor after leaf-tui". |
+| [`flower-doc-editor`](apps/flower) | **Flower**, in Rust from `main` up, for every platform Dioxus's native renderer reaches — the Mac's is `Flower.app` (`org.diaryx.flower`). A window per document, each a Dioxus page: the toolbar, `crates/flower-doc-editor`'s editor, the context menu and Settings, their buttons, menus and dialogs [unit](https://github.com/diaryx-org/unit)'s. What a platform does its own way is `platform/`: on the Mac an `NSDocument` per window (Open, autosave, Versions, Rename, recents, Finder's Open With), the menu bar, the spelling checker, Look Up and the print panel, through objc2. Export as PDF and Print from the editor's own layout. What it does not do yet is the task "What the Mac app does not do yet". |
+| [`flower-tui`](apps/flower-tui) | the terminal editor: the same `flower-doc-editor` editor, laid out by Blitz and painted into character cells by `blitz-tui`, with unit's menus and dialogs in their cell density. It replaces the archived `leaf-tui`; what it does not do yet is in [its proposal](docs/proposals/the-flower-doc-editor-editor-in-a-terminal.md) and the task "The terminal editor after leaf-tui". |
 
 ```sh
-cargo run -p leaf-dioxus-app -- path/to/document.md
-cargo run -p leaf-dioxus-tui -- path/to/document.md
+cargo run -p flower-app -- path/to/document.md
+cargo run -p flower-tui -- path/to/document.md
 ```
 
 Every crate and app is a member of one workspace, on Dioxus 0.8's alpha;
@@ -65,9 +65,9 @@ The Mac app is a bundle put together around its binary, so it has a task in
 the runner in [`xtask/`](xtask):
 
 ```sh
-cargo xtask mac              # build Leaf.app (apps/leaf-dioxus) and launch it, with a copy of the sample open
+cargo xtask mac              # build Flower.app (apps/flower) and launch it, with a copy of the sample open
 cargo xtask mac notes.md     # …with a document of your own
-cargo xtask package          # a signed, notarised Leaf.app in a .dmg, in target/package/
+cargo xtask package          # a signed, notarised Flower.app in a .dmg, in target/package/
 ```
 
 `cargo xtask --help` lists every task and flag. `cargo xtask package` needs a
@@ -84,18 +84,18 @@ moves the version through every manifest and the lockfile, cuts the generated
 region of [`docs/CHANGELOG.md`](docs/CHANGELOG.md) into a released section,
 and commits and tags — locally. Pushing takes `--push`, and a pushed tag is a
 release: [`mac-app.yml`](.github/workflows/mac-app.yml) attaches a signed,
-notarised `Leaf-<version>-aarch64.dmg` to the release and points the tap's
+notarised `Flower-<version>-aarch64.dmg` to the release and points the tap's
 `leaf-editor` cask at it (`brew install --cask diaryx-org/tap/leaf-editor`).
 The crates are not on crates.io (0.5.0 was the last upload): provui and the
-Diaryx app name them from git, `{ git = "https://github.com/diaryx-org/leaf",
+Diaryx app name them from git, `{ git = "https://github.com/diaryx-org/flower",
 branch = "main" }`, and lock the commit they build.
 
 `ship` is the org's release tool, which its other repositories cut releases
-with too; what makes leaf leaf is [`.config/ship.figl`](.config/ship.figl) and
+with too; what makes flower flower is [`.config/ship.figl`](.config/ship.figl) and
 nothing else.
 
 Sibling to [`bough`](https://github.com/diaryx-org/bough): **same backend, opposite model.** Where bough
-moves a selection through the document's AST and edits the *tree*, leaf gives you
+moves a selection through the document's AST and edits the *tree*, flower gives you
 an ordinary text **caret**, mouse, selection, and a formatting toolbar — and
 turns every keystroke into one of twig's offset-addressed edits. The document
 stays a live, round-trippable AST the whole time you type into it, so a Markdown

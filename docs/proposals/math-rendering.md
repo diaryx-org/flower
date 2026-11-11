@@ -1,21 +1,21 @@
 ---
-title: Math in leaf
+title: Math in flower
 status: implemented
 created: 2026-09-19
 updated: 2026-09-19
 part_of: '[Proposals](/docs/proposals/proposals.md)'
 ---
-# Math in leaf
+# Math in flower
 
 ## Status
 
 `implemented` on 2026-09-19, unreleased, in the order the text below gives:
-`leaf-math` in `17dff4b`; the Markdown flag in `d4485c2` and the core
+`flower-math` in `17dff4b`; the Markdown flag in `d4485c2` and the core
 rendering in `eaa73b4`; both bindings in `086fd0d`; leaf-ratatui in
 `f112676`; leaf-web in `c4b644e`; leaf-swift in `ac8fae4`. leaf-gpui
 followed on 2026-10-09, once it was off its archive and on gpui-pre — not
 through gpui's `svg` element as the text below expected, since that paints an
-icon's single colour, but by rasterizing leaf-math's SVG with resvg at the
+icon's single colour, but by rasterizing flower-math's SVG with resvg at the
 window's density and painting it with `paint_image`, in tables too.
 The wasm measure below was then answered: the typesetter moved into a module
 of its own, `leaf-math-wasm`, that the web editor fetches on the first
@@ -47,7 +47,7 @@ formula. Filed in twig, and as `docs/tasks/closed/a-typed-dollar-mints-math-in-t
 ## The picture
 
 A djot document with `$`E = mc^2`` in a sentence and `$$`\int_0^1 x\,dx``
-on a line of its own. Open it in any leaf view.
+on a line of its own. Open it in any flower view.
 
 The inline formula draws as `E = mc^2` in the code style, delimiters hidden —
 the `verbatim | inline_math` arm of the inline walk, which treats math as a
@@ -61,32 +61,32 @@ that lands on the `x` is standing on a delimiter it cannot see.
 A Markdown document has no math at all. [`parse_extensions`] turns on four of
 twig's Markdown flags and not `math`, so `$E = mc^2$` is prose with two
 dollar signs in it, and a `$$` block is a paragraph whose `\,` twig has
-already read as an escaped comma. The formula's source survives — leaf edits
+already read as an escaped comma. The formula's source survives — flower edits
 source and twig writes back what it read — but on the rich surface it is a
 sentence, and an author who types a backslash in it is authoring Markdown,
 not TeX.
 
-Nothing leaf builds on is missing. twig has `inline_math` and `display_math`
+Nothing flower builds on is missing. twig has `inline_math` and `display_math`
 as node kinds in every language: djot's `$`…`` natively, Markdown's `$…$`
 behind a flag, AsciiDoc's `stem:[…]`. What is missing is the thing that turns
 the text between the delimiters into a picture.
 
-[`parse_extensions`]: ../../crates/leaf-core/src/doc/mod.rs
+[`parse_extensions`]: ../../crates/flower-doc/src/doc/mod.rs
 
 ## What was considered
 
 **A WebView.** KaTeX and MathJax are the renderers every Markdown editor with
-math uses, and they need a DOM. leaf's web frontend has one; its terminal,
+math uses, and they need a DOM. flower's web frontend has one; its terminal,
 gpui, and Apple frontends do not, and putting a WebView inside an `NSView`
 for each formula is a process per equation and a caret that stops at its
-edge. Out on the same grounds every other pictured thing in leaf is drawn
+edge. Out on the same grounds every other pictured thing in flower is drawn
 natively.
 
 **MathML.** `latex2mathml` is small, pure Rust, and turns TeX into markup.
 But markup is not a picture: Apple renders MathML only inside WebKit, gpui
 and the terminal never, and the web frontend would be the one platform it
 helped. It also answers a different question — how to *export* a formula —
-which is twig's and plates', not leaf's.
+which is twig's and plates', not flower's.
 
 **typst.** A serious typesetter in Rust with a math mode of its own. Two
 things rule it out here: its syntax is not the TeX that people already have
@@ -107,7 +107,7 @@ what its `<text>`-mode SVG names by `font-family`. Coverage is stated against
 KaTeX's test corpus and tracked, and it carries KaTeX's extensions — mhchem's
 `\ce`, `bussproofs`. MIT, 0.1.14 as of July 2026, one workspace with a
 C ABI, a wasm binding, PNG through tiny-skia, PDF through `pdf-writer`, and
-`ratex-svg`. What matters most for leaf is the last one: with the
+`ratex-svg`. What matters most for flower is the last one: with the
 `standalone` feature, [`render_to_svg`] writes every glyph as a `<path>`,
 producing an SVG document that depends on nothing.
 
@@ -116,10 +116,10 @@ producing an SVG document that depends on nothing.
 
 ## The argument
 
-**A formula is an SVG picture, and leaf already draws those.** Since
+**A formula is an SVG picture, and flower already draws those.** Since
 [SVG as vectors in leaf-swift](svg-as-vectors-on-apple.md), an SVG reaches
 the Mac and iOS views as vectors through resvg-swift and the PDF as real
-paths; the terminal rasterizes one through `leaf-raster::load_svg` and ships
+paths; the terminal rasterizes one through `flower-raster::load_svg` and ships
 the pixels over its graphics protocol; the web gives it to an `<img>`. Every
 one of those paths was built for `![](logo.svg)`, and none of them cares
 where the bytes came from. So the whole of "render math on four frontends"
@@ -148,7 +148,7 @@ and the render is pure layout over embedded fonts: no I/O, no fonts to find,
 fast enough to run on the layout thread and cache by `(tex, display, size,
 colour)`.
 
-**Core keeps doing what it does, and does not typeset.** `leaf-core` renders
+**Core keeps doing what it does, and does not typeset.** `flower-doc` renders
 a document to rows of glyphs with a source offset each, and for anything a
 plain surface cannot draw it emits a placeholder and a side-table — block
 media, leaf directives — that a capable frontend paints over, with
@@ -174,7 +174,7 @@ turned around: a glyph with no source of its own. It is a general mechanism
 **Editing a formula is editing its source, revealed.** `**bold**` hides its
 delimiters because the content between them is the text; a formula's content
 is *not* its picture, so hiding is not enough — there has to be a way to see
-the TeX. leaf already has it: the reveal line. Under `MarkupMode::Full` the
+the TeX. flower already has it: the reveal line. Under `MarkupMode::Full` the
 caret's line renders its markup raw, and a `verbatim` or `inline_math` node
 whose span meets that line already draws its delimiters. The proposal is
 that math reveals on the caret's line **in every mode**, not only `Full`,
@@ -192,32 +192,32 @@ TeX it cannot read. A formula that fails to typeset renders as its revealed
 source with an error tint — the surface says "this is not yet a formula" in
 place, rather than a blank box or a silently dropped node. That is also the
 fallback for a frontend that cannot paint pictures inline at all: the
-terminal, which today has no inline-picture path in leaf-raster, keeps
+terminal, which today has no inline-picture path in flower-raster, keeps
 inline math as the code-styled text it already shows, and gets display math
 as pixels over `rows_span` the way it gets a block image.
 
 **Markdown gets the flag.** `math` joins `parse_extensions` as the fifth
-extension, with the same justification the others have: leaf has somewhere
+extension, with the same justification the others have: flower has somewhere
 to put the node. This is a behavioural change for every Markdown document
-leaf opens — `$` starts to mean something — and it is bounded by twig's own
+flower opens — `$` starts to mean something — and it is bounded by twig's own
 rule that a dollar followed by whitespace never opens math, so `$5 and $6`
 stays prose. It gets a `Behavioural-change:` trailer, and it gets its own
 commit. A fenced code block whose info string is `math` (GitHub's spelling)
 or `stem`/`latexmath` (what twig's AsciiDoc reader hands a stem block back
 as) is the same display atom by another name, and takes the same path.
 
-## What leaf does
+## What flower does
 
-**`leaf-math`, a small crate**, is the one function: `typeset(tex, display,
+**`flower-math`, a small crate**, is the one function: `typeset(tex, display,
 size, colour) -> Result<MathPicture { svg, width, height, depth }, MathError>`
 over `ratex-parser`, `ratex-layout` and `ratex-svg` with `embed-fonts`. A
-crate of its own rather than a corner of `leaf-raster` because `leaf-raster`
+crate of its own rather than a corner of `flower-raster` because `flower-raster`
 carries cosmic-text and resvg, which `leaf-wasm` does not take and should
 not have to for this. `leaf-ffi` and `leaf-wasm` expose it; `leaf-ratatui`
-and `leaf-gpui` call it directly. Nothing in it is leaf's, so if it grows a
-consumer outside leaf it moves out, the way resvg-swift did.
+and `leaf-gpui` call it directly. Nothing in it is flower's, so if it grows a
+consumer outside flower it moves out, the way resvg-swift did.
 
-**`leaf-core`** gains the `display_math` arm it never had, the block
+**`flower-doc`** gains the `display_math` arm it never had, the block
 promotion for a lone display formula, the inline atom, the `math` side-table,
 and reveal-on-caret for math in every `MarkupMode`. The revealed rendering is
 the existing `verbatim | inline_math` arm and needs no change. The Markdown
@@ -228,7 +228,7 @@ the existing `verbatim | inline_math` arm and needs no change. The Markdown
 an inline `<svg>` or `<img>`; gpui through its `svg` element, which is usvg
 underneath and so the first SVG leaf-gpui draws at all; the terminal through
 `load_svg` for display math over `rows_span`, and text for inline. The Swift
-side already force-loads one Rust archive, and `leaf-math` lives inside it.
+side already force-loads one Rust archive, and `flower-math` lives inside it.
 
 **Out of scope, and said so.** A palette or structured formula editor;
 equation numbering that counts across a document (RaTeX numbers within one
@@ -240,4 +240,4 @@ place that number is felt — the web task measures it, and if it is too much
 the web frontend has the option the others do not, `ratex-svg`'s `<text>`
 mode over KaTeX's webfont CSS.
 
-[`block_media_stop`]: ../../crates/leaf-core/src/wysiwyg/visual_map.rs
+[`block_media_stop`]: ../../crates/flower-doc/src/wysiwyg/visual_map.rs

@@ -6,7 +6,7 @@ updated: 2026-11-04
 ---
 # A quote's bar breaks a line Blitz was told not to wrap
 
-**Done (2026-11-04).** In leaf, the third way below, by flex rather than
+**Done (2026-11-04).** In flower, the third way below, by flex rather than
 absolute placing: a line's leading bars stand in a `.bars` box beside the
 `.flow` box that holds its text, so no text layout begins with a box.
 Every line has both boxes and is a flex line, quoted or not, because Blitz
@@ -20,7 +20,7 @@ the first thing in a layout.
 
 **Where.** parley 0.12.0's line breaker (`layout/line_break.rs`), which
 Blitz lays each of the editor's lines out with; the quote gutter's
-`.qbar` box (`crates/leaf-dioxus/src/row.rs`) is what meets it.
+`.qbar` box (`crates/flower-doc-editor/src/row.rs`) is what meets it.
 
 **What.** A wrapped line in a quote can be drawn two lines tall, over the
 line below. Each line is a `white-space: pre` div whose first child is the
@@ -67,7 +67,7 @@ against this toolchain's index.
 - **Fix it upstream** in parley (seed the line's wrap mode from the first
   item's style, or read a box's own) and take it through the Blitz fork.
 - **Patch parley** in the Blitz fork until then, as winit is patched.
-- **Keep the bar out of the line's text flow** in leaf: drawn by the line
+- **Keep the bar out of the line's text flow** in flower: drawn by the line
   (an absolutely placed bar beside `padding-left`) rather than as an inline
   box, so no layout begins with a box.
 

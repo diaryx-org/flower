@@ -1,17 +1,17 @@
 ---
-title: leaf
-nav_title: leaf
+title: flower
+nav_title: flower
 nav_order: 40
-description: leaf — a caret-based rich-text editor that edits the document's AST. One editing core, from terminal to iOS to the browser.
+description: flower — a caret-based rich-text editor that edits the document's AST. One editing core, from terminal to iOS to the browser.
 audience: public
-part_of: '[leaf](/README.md)'
+part_of: '[flower](/README.md)'
 id: z4z2w13
 ---
 <section class="pj-head">
   <div class="wrap">
     <p><a class="crumb" href="../about/#projects">diaryx.org / projects /</a></p>
     <div class="pj-title" style="margin-top: 1rem">
-      <h1>leaf</h1>
+      <h1>flower</h1>
       <span class="pj-tags">
         <span class="tag-chip">Rust · Swift</span>
         <span class="tag-chip">MIT / Apache-2.0</span>
@@ -27,7 +27,7 @@ id: z4z2w13
 <div class="wrap pj-layout reveal">
 <div class="pj-body">
 
-leaf gives you an ordinary text caret — mouse, selection, a
+flower gives you an ordinary text caret — mouse, selection, a
 formatting toolbar — and turns every keystroke into an
 offset-addressed edit on twig's tree. The document stays a live,
 round-trippable AST the whole time you type into it, so a Markdown
@@ -40,7 +40,7 @@ operations.
 
 ## Where it fits
 
-leaf is the editor underneath [Diaryx](id:dx4hxn744/80k72t9)'s writing
+flower is the editor underneath [Diaryx](id:dx4hxn744/80k72t9)'s writing
 surface — the same core that renders an entry on Mac renders it on
 iPhone. It edits documents through [twig](id:dx94n1gx2/wxmq0ww)'s
 tree. Standalone, it's embeddable anywhere a rich-text view over
@@ -56,14 +56,14 @@ images, and undo/redo are the known next steps.
 <aside class="pj-aside">
 <div class="install">
 <span class="install-head">Install</span>
-<div class="cmd">cargo add leaf-core <small>Rust</small></div>
+<div class="cmd">cargo add flower-doc <small>Rust</small></div>
 </div>
 <div class="facts">
 <div class="row"><span class="k">Language</span><span class="v">Rust · Swift · TypeScript (web package)</span></div>
 <div class="row"><span class="k">Built on</span><span class="v"><a href="../twig/index.md">twig</a></span></div>
 <div class="row"><span class="k">Used by</span><span class="v"><a href="../index.html">Diaryx</a> — the writing surface</span></div>
-<div class="row"><span class="k">Source</span><span class="v"><a href="https://github.com/diaryx-org/leaf">github.com/diaryx-org/leaf</a></span></div>
-<div class="row"><span class="k">Packages</span><span class="v"><a href="https://crates.io/crates/leaf-core">crates.io/crates/leaf-core</a></span></div>
+<div class="row"><span class="k">Source</span><span class="v"><a href="https://github.com/diaryx-org/flower">github.com/diaryx-org/flower</a></span></div>
+<div class="row"><span class="k">Packages</span><span class="v"><a href="https://crates.io/crates/flower-doc">crates.io/crates/flower-doc</a></span></div>
 <div class="row"><span class="k">License</span><span class="v">MIT or Apache-2.0</span></div>
 </div>
 </aside>

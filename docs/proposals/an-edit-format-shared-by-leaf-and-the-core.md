@@ -1,15 +1,15 @@
 ---
-title: An edit format shared by leaf and the core
+title: An edit format shared by flower and the core
 part_of: '[Proposals](/docs/proposals/proposals.md)'
 status: draft
 created: 2026-10-22
 ---
 
-# An edit format shared by leaf and the core
+# An edit format shared by flower and the core
 
 ## Status
 
-`draft`, 2026-10-22. Written by reading, with nothing built. Sources: leaf
+`draft`, 2026-10-22. Written by reading, with nothing built. Sources: flower
 at `b6a4eebd`, diaryx `origin/main` at `a3f10fce6`, historica at `2fd34e7`,
 twig and fig as checked out in the org directory. The decisions under
 [Decided](#decided) are Adam's, made in a conversation on 2026-10-22 before
@@ -18,7 +18,7 @@ open to change.
 
 It answers decision 11 of Diaryx's
 [The author's app runs in a browser](id:dxg6h4ncm/v1b592m): "Edits instead
-need an edit format shared by the core and leaf's `Doc`, which leaf is to
+need an edit format shared by the core and flower's `Doc`, which flower is to
 design first."
 
 ## Open questions
@@ -42,7 +42,7 @@ design first."
    The graph keeps every event that an undo step can still name, so the cap
    also limits the graph's memory.
 6. **Markdown after a merge.** Two people who edit one bold run at once can
-   merge into broken markup. leaf's mark-edge rule repairs only local typing.
+   merge into broken markup. flower's mark-edge rule repairs only local typing.
    Should a merged text get the same repair, as a local event, or stay as
    merged?
 7. **The other hosts.** leaf-ffi (the Swift apps) and leaf-wasm
@@ -64,9 +64,9 @@ Adam, 2026-10-22:
    ordering, as historica merges revisions. The same format serves the page
    and the worker now, and live peers later.
 4. **One merge crate, verified with Verus**, in a new public repository,
-   used by leaf and historica. historica's walk and its proofs move into it.
+   used by flower and historica. historica's walk and its proofs move into it.
 5. **twig gets a major version first**: ops applied with one reparse, and no
-   snapshot history under leaf.
+   snapshot history under flower.
 6. **Undo is local only, and lives in the merge layer.** ⌘Z takes back only
    the person's own edits, rebased past the others. An undo is an event.
 7. **The editor and the worker each hold a replica** of the open page. The
@@ -76,7 +76,7 @@ Adam, 2026-10-22:
 
 ## What exists
 
-- **leaf.** A `Doc` is a twig `Editor` plus a byte-offset caret and
+- **flower.** A `Doc` is a twig `Editor` plus a byte-offset caret and
   selection. Every change to the text reaches twig through
   `edit_range(start, end, text)` (`doc/splice.rs`, `splice_exact`) or one of
   a few twig verbs, and every one passes `Doc::refresh`. twig returns a
@@ -84,7 +84,7 @@ Adam, 2026-10-22:
   undo keeps up to 200 **whole-source snapshots**, each with a caret blob
   (`twig/src/ast/splicer.rs`, `MAX_UNDO`). `Doc::replace_source` reduces a
   new text to the one span that differs, and leaves the caret where it was
-  (`doc/editing.rs`). `leaf-session` already has
+  (`doc/editing.rs`). `flower-session` already has
   `Splice { range, text }`.
 - **The Diaryx editor.** The page loads the body into `Doc::from_source`.
   It saves the **whole body** 600 ms after the last edit, through
@@ -169,13 +169,13 @@ offsets, as leaf-wasm does now.
 Positions count the body only. A change to the frontmatter, which flower
 edits apart from the body, moves none of them.
 
-### In leaf's `Doc`
+### In flower's `Doc`
 
 The `Doc` keeps a replica beside its twig `Editor`: the event graph, its
 frontier, and its own agent.
 
 - **A local edit becomes an event in `refresh`.** That is the one funnel
-  every change passes, and twig's `Change` there gives the span. leaf adds
+  every change passes, and twig's `Change` there gives the span. flower adds
   `Retain(old.start)`, `Delete(old.len())` and `Insert(new text)`. A gesture
   of several twig edits (a split list item that is renumbered, a mark-edge
   repair) is one event *(proposed)*: the ops of each edit are composed until
@@ -291,12 +291,12 @@ Three kinds of concurrency use the one mechanism:
 
 ### Undo
 
-Undo is local only (decision 6). leaf keeps its undo stack as **steps**.
+Undo is local only (decision 6). flower keeps its undo stack as **steps**.
 A step is the names of the local events it took, with the caret before and
 after. Coalescing of typing, undo groups and the 200-step cap keep their
 rules from `doc/undo.rs`.
 
-To undo a step, leaf asks the crate for one inverse event for each of the
+To undo a step, flower asks the crate for one inverse event for each of the
 step's events, newest first. The inverse of an event is stated **against
 that event's own version**, and the event is its only parent: an insert
 becomes a delete of the items it made, and a delete becomes an insert of
@@ -315,7 +315,7 @@ copies of the page. Decision 5 changes twig first, in a major version:
 
 - **`Editor::apply(splices)`**: several splices, each against the text the
   one before it left, with one reparse and one bounding `Change`.
-- **History becomes optional**, off for leaf. `undo`, `redo`,
+- **History becomes optional**, off for flower. `undo`, `redo`,
   `coalesce_last_undo` and the caret blob are twig's only for a caller that
   asks for them. Other twig callers keep their behaviour if they ask.
 
@@ -324,7 +324,7 @@ copies of the page. Decision 5 changes twig first, in a major version:
 The shared crate holds historica's walk, made generic:
 
 - **over the item**: a line with its terminator for historica, a byte for
-  leaf;
+  flower;
 - **over the name**: `(revision digest, index)` for historica,
   `(agent, seq)` for live events;
 
@@ -371,7 +371,7 @@ the Fugue reference must pass unchanged on the crate.
 ## What it costs
 
 - **The order.** twig's major version and the crate come before any of
-  leaf or Diaryx changes. The crate needs a new repository.
+  flower or Diaryx changes. The crate needs a new repository.
 - **The proof work.** historica's walk is about 4,800 lines and its proof
   about 3,800. Making them generic over the item and the name, and adding
   the incremental walk, is the largest part. Verus may make generic proofs
@@ -408,14 +408,14 @@ In order. A task in another repository is that repository's to write.
 
 8. Merge through eg-walker-merge, with the same bytes from every store.
 
-**leaf:**
+**flower:**
 
-9. leaf-core: a replica in `Doc`. `refresh` records events,
+9. flower-doc: a replica in `Doc`. `refresh` records events,
    `take_events` and `apply` cross them, and the caret, the selection and
    highlights move with a remote change.
-10. leaf-core: undo and redo as inverse events, on twig with no history.
+10. flower-doc: undo and redo as inverse events, on twig with no history.
     Steps, groups and coalescing keep their tests.
-11. leaf-dioxus: the editor hands its events to the host and takes the
+11. flower-doc-editor: the editor hands its events to the host and takes the
     host's in, through the host seam.
 12. leaf-ffi and leaf-wasm, when their hosts want it (open question 7).
 

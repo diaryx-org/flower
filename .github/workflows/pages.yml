@@ -1,9 +1,9 @@
 name: Pages
-# Publish Leaf in a browser (apps/leaf-dioxus-web: the leaf-dioxus editor,
+# Publish Flower in a browser (apps/flower-web: the flower-doc-editor editor,
 # drawn by Blitz into a canvas through WebGPU) to GitHub Pages, as part of
 # cutting a release, at:
 #
-#     https://diaryx-org.github.io/leaf/
+#     https://diaryx-org.github.io/flower/
 #
 # It replaces what the archived workflow (archive/.github/workflows/pages.yml)
 # last deployed there, the archived leaf-web editor.
@@ -42,7 +42,7 @@ env:
 
 jobs:
   build:
-    name: Build Leaf for the browser
+    name: Build Flower for the browser
     runs-on: ubuntu-latest
     steps:
     # Full history, because a hand dispatch has to resolve `v*.*.*` tags that
@@ -95,7 +95,7 @@ jobs:
       run: |
         set -euo pipefail
         mkdir -p _site
-        cd apps/leaf-dioxus-web
+        cd apps/flower-web
         cp -R index.html pkg fonts media ../../_site/
         cd ../..
         # Pages runs Jekyll over the artifact unless told not to, and Jekyll

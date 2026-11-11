@@ -1,5 +1,5 @@
 {
-  description = "leaf — a caret-based rich-text document editor";
+  description = "flower — a caret-based rich-text document editor";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -14,7 +14,7 @@
     flake-utils.lib.eachDefaultSystem (system:
       {
         # No package: the terminal editor this flake built, leaf-tui, is
-        # archived (archive/README.md). Its successor, apps/leaf-dioxus-tui,
+        # archived (archive/README.md). Its successor, apps/flower-tui,
         # is not packaged here yet.
 
         # The shared Rust shell: the pinned Rust toolchain rather than

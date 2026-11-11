@@ -5,6 +5,7 @@
 #     scripts/install-linux.sh              # build (debug), then install
 #     scripts/install-linux.sh --release    # the release profile
 #     scripts/install-linux.sh --no-build   # install what target/ already holds
+#     scripts/install-linux.sh --default    # …and open these files with Flower
 #
 # What goes where, under $PREFIX (default ~/.local):
 #
@@ -15,6 +16,13 @@
 #                                  is the terminal data editor's name
 #   share/icons/hicolor/scalable/apps/org.diaryx.flower.svg     the leaf
 #   share/applications/org.diaryx.flower.desktop
+#   share/mime/packages/org.diaryx.flower.xml    Djot's and figl's types,
+#                                  which the desktop's database does not have
+#
+# `--default` makes Flower the user's default for Markdown, Djot, JSON, YAML,
+# TOML and figl (`xdg-mime default`, which writes ~/.config/mimeapps.list). It
+# is asked for, never assumed: without it the entry only offers Flower in
+# Open With. HTML is left to the browser either way.
 #
 # The desktop entry is named for the app id every window carries
 # (`platform::APP_ID` in apps/flower), which is how a dock finds the icon for
@@ -27,10 +35,12 @@ cd "$(dirname "$0")/.."
 
 profile=debug
 build=1
+default=0
 for arg in "$@"; do
     case $arg in
     --release) profile=release ;;
     --no-build) build=0 ;;
+    --default) default=1 ;;
     -h | --help)
         sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//'
         exit 0
@@ -44,6 +54,10 @@ done
 
 prefix=${PREFIX:-$HOME/.local}
 id=org.diaryx.flower
+# What Flower opens by default when asked to: the desktop's own types for
+# Markdown, JSON, YAML and TOML, and the two declared below.
+types=(text/markdown text/x-markdown application/json application/yaml
+    application/x-yaml application/toml text/x-djot application/x-figl)
 
 if ((build)); then
     flags=()
@@ -62,7 +76,8 @@ home=$prefix/share/flower
 echo "▸ Installing to $prefix…"
 rm -rf "$home/resources"
 install -d "$home/resources" "$prefix/bin" \
-    "$prefix/share/icons/hicolor/scalable/apps" "$prefix/share/applications"
+    "$prefix/share/icons/hicolor/scalable/apps" "$prefix/share/applications" \
+    "$prefix/share/mime/packages"
 # To a new name and renamed over, so a Flower that is running keeps its file.
 install -s -m755 "$binary" "$home/Flower.new"
 mv -f "$home/Flower.new" "$home/Flower"
@@ -82,17 +97,48 @@ Icon=$id
 Terminal=false
 Categories=Office;TextEditor;
 Keywords=markdown;djot;html;json;yaml;toml;frontmatter;editor;
-MimeType=text/markdown;text/x-markdown;application/json;application/yaml;application/x-yaml;application/toml;
+MimeType=$(printf '%s;' "${types[@]}")
 StartupWMClass=$id
 DESKTOP
 
+# Djot and figl, which shared-mime-info has no types for: without one, a
+# `.dj` or a `.figl` is plain text, and whatever opens plain text opens it.
+cat >"$prefix/share/mime/packages/$id.xml" <<'MIME'
+<?xml version="1.0" encoding="UTF-8"?>
+<mime-info xmlns="http://www.freedesktop.org/standards/shared-mime-info">
+  <mime-type type="text/x-djot">
+    <comment>Djot document</comment>
+    <sub-class-of type="text/plain"/>
+    <glob pattern="*.dj"/>
+    <glob pattern="*.djot"/>
+  </mime-type>
+  <mime-type type="application/x-figl">
+    <comment>figl data</comment>
+    <sub-class-of type="text/plain"/>
+    <glob pattern="*.figl"/>
+  </mime-type>
+</mime-info>
+MIME
+
 # The desktop's indexes, where it keeps them.
+if command -v update-mime-database >/dev/null 2>&1; then
+    update-mime-database "$prefix/share/mime" >/dev/null 2>&1 || true
+fi
 if command -v update-desktop-database >/dev/null 2>&1; then
     update-desktop-database -q "$prefix/share/applications" || true
 fi
 if command -v gtk-update-icon-cache >/dev/null 2>&1 \
     && [[ -f $prefix/share/icons/hicolor/index.theme ]]; then
     gtk-update-icon-cache -q -t "$prefix/share/icons/hicolor" || true
+fi
+
+if ((default)); then
+    if command -v xdg-mime >/dev/null 2>&1; then
+        xdg-mime default "$id.desktop" "${types[@]}"
+        echo "▸ Flower is the default for: ${types[*]}"
+    else
+        echo "install-linux.sh: no xdg-mime, so no defaults were set" >&2
+    fi
 fi
 
 echo "✓ Flower $profile build installed: $prefix/bin/flower-app"

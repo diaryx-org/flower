@@ -78,6 +78,11 @@ pub struct Chrome {
     /// menu is built again when a choice it ticks, or an item it lists,
     /// changes.
     pub menus: u64,
+    /// The document has frontmatter, and the window shows it in place of
+    /// the document (`front.rs`): `can_undo` and `can_redo` are then the
+    /// frontmatter's editor's.
+    pub frontmatter: bool,
+    pub front: bool,
     /// The window holds a data file, not a document: of everything above,
     /// only `dirty`, `can_undo` and `can_redo` are read off it.
     pub data: bool,
@@ -105,6 +110,8 @@ impl Chrome {
             pages: false,
             reflow: false,
             menus: crate::menus::generation(),
+            frontmatter: crate::front::has(d),
+            front: false,
             data: false,
         }
     }
@@ -142,6 +149,8 @@ pub struct DocInit {
     /// the window, told its id once it is made.
     pub pages: Rc<Pages>,
     pub desk: Rc<crate::pages::Desk>,
+    /// The frontmatter's view, in the document's place while shown.
+    pub front: Rc<crate::front::Front>,
 }
 
 impl DocInit {
@@ -153,6 +162,7 @@ impl DocInit {
             made: Made::default(),
             pages: Rc::new(Pages::new(desk.clone())),
             desk,
+            front: Rc::default(),
         }
     }
 }
@@ -181,6 +191,9 @@ pub fn DocumentPage() -> Element {
             {crate::toolbar::render(&ed, &chrome.read())}
             style { {themed(flower_pages::CSS, appearance)} }
             flower_pages::PagesPane { pages: init.pages.clone() }
+            if chrome.read().front {
+                crate::front::Pane {}
+            }
         }
     }
 }
@@ -311,6 +324,45 @@ impl Page {
         }
     }
 
+    /// The frontmatter's editor, while the window shows it in the
+    /// document's place: the keys and the pointer are then its own.
+    fn front(&self) -> Option<flower_data_editor::Editor> {
+        let front = &self.init()?.front;
+        if !front.shown.get() {
+            return None;
+        }
+        front.editor.borrow().clone()
+    }
+
+    /// Show the document's frontmatter in its place, or the document again.
+    fn toggle_front(&self) {
+        let Some(init) = self.init() else { return };
+        if init.front.shown.get() {
+            self.hide_front();
+            return;
+        }
+        match self.with_doc(|d| init.front.prepare(d)) {
+            Some(Ok(())) => {
+                init.front.shown.set(true);
+                init.shell.stale.set(true);
+                app::poll(self.window.id());
+            }
+            Some(Err(e)) => self.say(&e),
+            None => {}
+        }
+    }
+
+    /// The document again, drawn as the frontmatter's edits left it.
+    fn hide_front(&self) {
+        let Some(init) = self.init() else { return };
+        if !init.front.shown.get() {
+            return;
+        }
+        init.front.hide();
+        init.shell.stale.set(true);
+        self.with_editor(|ed, _| ed.refresh());
+    }
+
     /// A data file's editor, if the page has made it.
     pub fn data_editor(&self) -> Option<flower_data_editor::Editor> {
         self.data()?.editor.borrow().clone()
@@ -424,6 +476,12 @@ impl Page {
                         return false;
                     }
                 }
+                if let Some(front) = self.front() {
+                    if !platform::shortcut(self, &code, m) {
+                        self.in_scope(|| front.key(k, code, as_command(m)));
+                    }
+                    return true;
+                }
                 if self.data().is_some() {
                     // Where there is no menu bar, the keys of its commands;
                     // the rest are the editor's.
@@ -458,6 +516,10 @@ impl Page {
                 if self.unit().is_some_and(|u| u.typing()) {
                     return false;
                 }
+                if let Some(front) = self.front() {
+                    self.in_scope(|| front.window_event(event));
+                    return true;
+                }
                 if self.data().is_some() {
                     self.with_data(|ed| ed.window_event(event));
                     return true;
@@ -478,6 +540,36 @@ impl Page {
                     platform::spelling::after_typing(self, &t);
                 }
                 true
+            }
+            // The frontmatter is over the document: what the pointer does is
+            // its own, and the document hears only of the window's size.
+            WindowEvent::SurfaceResized(_) if self.front().is_some() => {
+                self.with_editor(|ed, _| ed.window_event(event));
+                if let Some(front) = self.front() {
+                    self.in_scope(|| front.window_event(event));
+                }
+                false
+            }
+            WindowEvent::PinchGesture { .. } | WindowEvent::TouchpadPressure { .. }
+                if self.front().is_some() =>
+            {
+                false
+            }
+            WindowEvent::MouseWheel { .. }
+            | WindowEvent::PointerMoved { .. }
+            | WindowEvent::PointerButton { .. }
+            | WindowEvent::PointerEntered { .. }
+            | WindowEvent::PointerLeft { .. }
+                if self.front().is_some() =>
+            {
+                if let WindowEvent::PointerMoved { position, .. } = event {
+                    let s = self.window.scale_factor();
+                    self.pointer.set(Some((position.x / s, position.y / s)));
+                }
+                if let Some(front) = self.front() {
+                    self.in_scope(|| front.window_event(event));
+                }
+                false
             }
             // A trackpad's pinch, over the pages: they zoom about the
             // pointer.
@@ -654,6 +746,14 @@ impl Page {
         if let Some(unit) = self.unit() {
             self.in_scope(|| unit.set_viewport(w, h));
         }
+        if let Some(front) = self.front() {
+            self.in_scope(|| {
+                front.set_bounds(flower_data_editor::Bounds {
+                    top: chrome_height(),
+                    bottom: 0.0,
+                })
+            });
+        }
         // A data file's editor has the window, below the title bar's band.
         self.with_data(|ed| {
             ed.set_bounds(flower_data_editor::Bounds {
@@ -695,6 +795,22 @@ impl Page {
         init.pages.follow(chrome.source_view);
         chrome.pages = init.pages.mode() == Mode::Pages;
         chrome.reflow = init.pages.mode() == Mode::Reflow;
+        // The frontmatter went, by an edit to the source or a file read
+        // again: so does its view.
+        if init.front.shown.get() && !chrome.frontmatter {
+            init.front.hide();
+        }
+        chrome.front = init.front.shown.get();
+        // One view is shown: the frontmatter, or one of the document's.
+        if chrome.front {
+            chrome.pages = false;
+            chrome.reflow = false;
+        }
+        if let Some(front) = self.front() {
+            let m = front.model();
+            chrome.can_undo = m.history_len() > 0;
+            chrome.can_redo = m.redo_len() > 0;
+        }
         init.pages.update();
         if chrome.dirty && chrome.revision != self.reported.get() {
             self.reported.set(chrome.revision);
@@ -807,6 +923,7 @@ impl Page {
             return;
         }
         let Some(init) = self.init() else { return };
+        self.hide_front();
         let mut doc = init.shell.document.take_doc_from(source);
         doc.dirty = false;
         self.with_editor(|ed, _| ed.install(doc));
@@ -873,7 +990,27 @@ impl Page {
             self.data_command(c);
             return;
         }
+        // The frontmatter is shown in the document's place: a command for
+        // the document's text has nothing to act on, and a chord is a key
+        // for the frontmatter's editor.
+        if let Some(front) = self.front() {
+            match c {
+                Command::Frontmatter
+                | Command::Save
+                | Command::SaveAs
+                | Command::Close
+                | Command::ExportPdf => {}
+                Command::Reflow | Command::PageView => self.hide_front(),
+                Command::Chord(k, code, m) => {
+                    self.in_scope(|| front.key(k, code, as_command(m)));
+                    return;
+                }
+                ref c if c.is_app() => {}
+                _ => return,
+            }
+        }
         match c {
+            Command::Frontmatter => self.toggle_front(),
             Command::Link => crate::context::prompt_link(self),
             Command::InstallTemplate => crate::templates::prompt_install(self),
             Command::InsertImage => crate::insert::image(self),

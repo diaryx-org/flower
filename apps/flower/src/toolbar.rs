@@ -197,6 +197,14 @@ fn Toolbar(props: ToolbarProps) -> Element {
                     "Pages"
                 }
                 {chord("Source", "Source", "", c.source_view, true, "e", Code::KeyE, CMD)}
+                // The frontmatter, for a document that has some.
+                if c.frontmatter {
+                    ToggleButton { class: "tool", label: "Frontmatter", pressed: c.front,
+                        refuses_keys: true,
+                        onchange: move |_| app::post(AppEvent::Command(id, Command::Frontmatter)),
+                        "Frontmatter"
+                    }
+                }
                 {popup("Aa".into(), "Display", menus::display())}
             }
         }

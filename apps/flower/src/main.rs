@@ -46,6 +46,7 @@ mod context;
 mod data;
 #[cfg(debug_assertions)]
 mod drive;
+mod front;
 mod guard;
 mod head;
 #[cfg(test)]

@@ -67,6 +67,9 @@ pub enum Command {
     /// Show the reflowed view, where the document is edited as one page as
     /// wide as the window: the default.
     Reflow,
+    /// Show the document's frontmatter in the structural editor, in place
+    /// of the document; or go back to the document (`front.rs`).
+    Frontmatter,
     /// Save, Save As and Close: on the Mac, the document system's own menu
     /// items; elsewhere, the app's.
     Save,
@@ -189,11 +192,16 @@ pub fn status(c: &Command, chrome: Option<&Chrome>, app: &AppState) -> Status {
         return Status::OFF;
     };
     let enabled = |yes| if yes { Status::ON } else { Status::OFF };
-    // A data file's window: the file's commands, the zoom, and Undo and
-    // Redo. Everything else is a document's.
-    if chrome.data {
+    // A data file's window, or a document's showing its frontmatter: the
+    // file's commands, the zoom, and Undo and Redo. Everything else is for
+    // a document's text.
+    if chrome.data || chrome.front {
         return match c {
-            Command::Save | Command::SaveAs | Command::Close | Command::Zoom(_) => Status::ON,
+            Command::Frontmatter => Status::tick(chrome.front),
+            // Leaving the frontmatter for one of the document's views.
+            Command::Reflow | Command::PageView if chrome.front => Status::ON,
+            Command::Zoom(_) => enabled(chrome.data),
+            Command::Save | Command::SaveAs | Command::Close => Status::ON,
             Command::Chord(Key::Character(s), _, m) if s == "z" && *m == CMD => {
                 enabled(chrome.can_undo)
             }
@@ -241,6 +249,7 @@ pub fn status(c: &Command, chrome: Option<&Chrome>, app: &AppState) -> Status {
         Command::PreserveBreaks => Status::tick(chrome.preserve_breaks),
         Command::OpenLink | Command::CopyLink => enabled(chrome.link),
         Command::CheckDocument => enabled(rich),
+        Command::Frontmatter => enabled(chrome.frontmatter),
         Command::PageView => Status::tick(chrome.pages),
         Command::Reflow => Status::tick(chrome.reflow),
         _ => Status::ON,

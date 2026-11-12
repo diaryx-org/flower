@@ -8,24 +8,43 @@ when:
   - event: ["pull_request"]
     branch: ["main"]
 
-engine: microvm
-image: nixos
+# A container, not a microVM: the hosted spindle's VM is 2 cores and 4 GiB,
+# and stops a workflow at 15 minutes, which the workspace's first build from
+# an empty cache does not fit in. A container there has the host's cores.
+engine: nixery
 
 # rustup, so the toolchain is the one rust-toolchain.toml pins. fontique,
 # under Blitz's text, links fontconfig, and a dependency links OpenSSL; stylo's
-# build script runs Python.
+# build script runs Python. A `.dev` is the half of a package pkg-config
+# reads, and fontconfig's names FreeType's, which names the rest. The image
+# has nothing a step does not ask for but bash, git and coreutils, so the
+# tools the scripts call are listed too. The list is the image's name, which
+# may be 255 characters long: there is room for two or three more.
 dependencies:
-  - gcc
-  - pkg-config
-  - fontconfig
-  - openssl
-  - python3
-  - git
-  - rustup
+  nixpkgs:
+    - gcc
+    - pkg-config
+    - fontconfig.dev
+    - openssl.dev
+    - freetype.dev
+    - zlib.dev
+    - bzip2.dev
+    - libpng.dev
+    - brotli.dev
+    - expat.dev
+    - python3
+    - rustup
+    - gnugrep
+    - gnused
+    - findutils
+    - diffutils
 
+# Every step is a new container over the same workspace, so what must last
+# from one step to the next (cargo's and rustup's homes) is kept inside it.
 environment:
-  CARGO_HOME: /workspace/repo/.cache/cargo
-  RUSTUP_HOME: /workspace/repo/.cache/rustup
+  CARGO_HOME: /tangled/workspace/.cache/cargo
+  RUSTUP_HOME: /tangled/workspace/.cache/rustup
+  PKG_CONFIG_PATH: /lib/pkgconfig
   CARGO_INCREMENTAL: "0"
   CARGO_NET_GIT_FETCH_WITH_CLI: "true"
   CARGO_PROFILE_DEV_DEBUG: "0"

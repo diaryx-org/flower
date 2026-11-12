@@ -70,7 +70,7 @@ images, and undo/redo are the known next steps.
 <div class="row"><span class="k">Language</span><span class="v">Rust · Swift · TypeScript (web package)</span></div>
 <div class="row"><span class="k">Built on</span><span class="v"><a href="../twig/index.md">twig</a></span></div>
 <div class="row"><span class="k">Used by</span><span class="v"><a href="../index.html">Diaryx</a> — the writing surface</span></div>
-<div class="row"><span class="k">Source</span><span class="v"><a href="https://github.com/diaryx-org/flower">github.com/diaryx-org/flower</a></span></div>
+<div class="row"><span class="k">Source</span><span class="v"><a href="https://tangled.org/adammharris.com/flower">tangled.org/adammharris.com/flower</a></span></div>
 <div class="row"><span class="k">Packages</span><span class="v"><a href="https://crates.io/crates/flower-doc">crates.io/crates/flower-doc</a></span></div>
 <div class="row"><span class="k">License</span><span class="v">MIT or Apache-2.0</span></div>
 </div>

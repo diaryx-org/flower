@@ -27,6 +27,8 @@ contents:
 - '[The terminal and the browser open one half each](/docs/tasks/the-terminal-and-the-browser-open-one-half-each.md)'
 - '[The Mac app''s data windows and frontmatter view have not been run on a Mac](/docs/tasks/the-mac-apps-data-windows-have-not-been-run-on-a-mac.md)'
 - '[The next generated changelog lists leaf''s whole history](/docs/tasks/the-next-generated-changelog-lists-leafs-whole-history.md)'
+- '[A picture test in the app races the picture it waits for](/docs/tasks/a-picture-test-in-the-app-races-the-picture-it-waits-for.md)'
+- '[A spindle''s test job cannot finish from an empty cache](/docs/tasks/a-spindles-test-job-cannot-finish-from-an-empty-cache.md)'
 part_of: '[flower](/README.md)'
 ---
 # Tasks

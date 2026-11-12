@@ -1,0 +1,59 @@
+# Web host: one of the jobs in .config/ship.figl, run as `ship ci web`. What the job
+# runs is written there and nowhere else; this file only brings a machine up
+# for it. A spindle has no matrix, so each job has a file like this one, and
+# they run side by side. `ship ci` runs them all locally.
+when:
+  - event: ["push"]
+    branch: ["main"]
+  - event: ["pull_request"]
+    branch: ["main"]
+
+engine: microvm
+image: nixos
+
+# rustup, so the toolchain is the one rust-toolchain.toml pins. fontique,
+# under Blitz's text, links fontconfig, and a dependency links OpenSSL; stylo's
+# build script runs Python.
+dependencies:
+  - gcc
+  - pkg-config
+  - fontconfig
+  - openssl
+  - python3
+  - git
+  - rustup
+
+environment:
+  CARGO_HOME: /workspace/repo/.cache/cargo
+  RUSTUP_HOME: /workspace/repo/.cache/rustup
+  CARGO_INCREMENTAL: "0"
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+  CARGO_PROFILE_DEV_DEBUG: "0"
+  CARGO_TERM_COLOR: always
+
+cache:
+  - key: cargo-web
+    hash:
+      - Cargo.lock
+    fallback: true
+    when: always
+    paths:
+      - .cache/cargo/registry/index
+      - .cache/cargo/registry/cache
+      - .cache/cargo/git/db
+      - .cache/cargo/bin
+      - .cache/rustup
+      - target
+
+steps:
+  - name: Install ship
+    command: |
+      export PATH="$CARGO_HOME/bin:$PATH"
+      command -v ship || cargo install --locked --git https://github.com/diaryx-org/ship ship
+
+  - name: Add the wasm target
+    command: rustup target add wasm32-unknown-unknown
+  - name: Web host
+    command: |
+      export PATH="$CARGO_HOME/bin:$PATH"
+      ship ci web

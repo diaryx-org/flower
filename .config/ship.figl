@@ -27,24 +27,25 @@ tag_starts
 > > workflow = pages.yml
 > > does = builds Flower for the browser (`cargo xtask web`) and deploys it to https://diaryx-org.github.io/flower/, in place of what is there
 
-# CI. `.github/workflows/ci.yml` asks `ship ci --matrix` for these and runs one
-# per runner, as `ship ci <id>`; `ship ci` runs them all here, in this order,
-# with the same shell, and stops at the first that fails. Changing CI is an edit
-# here and nowhere else.
+# CI. Each job has a file in `.tangled/workflows/` that runs it on a spindle as
+# `ship ci <id>`; `ship ci` runs them all here, in this order, with the same
+# shell, and stops at the first that fails. Changing what a job runs is an edit
+# here and nowhere else; a new job also needs a file there, since a spindle has
+# no matrix to read this list with.
 #
-# A job is `id` (what `ship ci <id>` takes), `name` (the check GitHub shows as
-# `CI / <name>` — renaming it renames the required status check) and `run` (run
-# by `bash -eo pipefail -c` at the repository root). `runner` is the workflow's:
-# `components` are the rustup components it installs, `apt` the Ubuntu
-# packages (space-separated) it installs for a job that links a system
-# library, and `builds = false` skips restoring the cargo cache. A job's `run`
-# never installs anything itself, so `ship ci` here asks for no `sudo`.
+# A job is `id` (what `ship ci <id>` takes), `name` (what `ship ci` prints) and
+# `run` (run by `bash -eo pipefail -c` at the repository root). A job's `run`
+# never installs anything itself, so `ship ci` here asks for no `sudo`: what a
+# job needs installed is its workflow file's `dependencies`. `runner` is left
+# from GitHub's workflow, which read it (`components`, the rustup components;
+# `apt`, Ubuntu packages; `builds = false`, no cargo cache); nothing reads it
+# now.
 # Cheapest and most likely to fail first, so the run that is going to fail
 # fails in seconds rather than after everything compiles.
 #
 # The lanes that compile go through scripts/cargo.sh: corgi where it is
 # installed (corgi.toml: one build store for every checkout, the one unit and
-# diaryx build in), cargo where it is not, as on GitHub's runners.
+# diaryx build in), cargo where it is not, as on a spindle.
 #
 # Every job but the first compiles Blitz and wgpu: the workspace is one, on
 # Dioxus's native renderer. fontique, under Blitz's text, links fontconfig on

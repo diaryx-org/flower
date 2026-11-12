@@ -11,7 +11,7 @@
 # takes the same commands and flags as cargo for what they run: build, check,
 # clippy, test and run. Anything else (fmt, doc) goes to cargo.
 #
-# Where corgi is missing (GitHub's runners), or with FLOWER_CARGO=1, it is
+# Where corgi is missing (a spindle), or with FLOWER_CARGO=1, it is
 # cargo.
 #
 # corgi keys a test pass on the test binaries, the filters and the harness's

@@ -7,6 +7,19 @@ part_of: '[flower](/README.md)'
 
 Rules for this repository alone; the org's `AGENTS.md` has the rest.
 
+## Where it lives
+
+The repository is on Tangled, https://tangled.org/adammharris.com/flower:
+branches, pull requests and issues are there. `github.com/diaryx-org/flower`
+is a mirror of it, which other repos' git dependencies still name, and where a
+pushed tag's release workflows (`.github/workflows/`) run. Nothing is merged
+on GitHub.
+
+The gate's jobs run on Tangled's spindle for a push to `main` and for a pull
+request: a file per job in `.tangled/workflows/`, each running `ship ci <id>`.
+`tg` is the command line for Tangled, as `gh` is for GitHub
+(`tg pipeline status`, `tg pipeline logs`, `tg pr create`).
+
 ## The gate
 
 `ship ci` is the gate: rustfmt, clippy with warnings denied, the workspace's
@@ -21,7 +34,7 @@ them, and `.config/ship.figl` is where they are written.
 https://corgi.build): one build store for every checkout on the machine, the
 one unit and diaryx build in, so Blitz, Stylo and wgpu are built once for all
 three. The gate's lanes call `scripts/cargo.sh`, which runs corgi where it is
-on PATH and cargo where it is not, as on GitHub's runners. Formatting,
+on PATH and cargo where it is not, as on a spindle. Formatting,
 `cargo xtask` itself and `scripts/gen-bindings.sh` are cargo's everywhere.
 `FLOWER_CARGO=1` makes the script use cargo.
 

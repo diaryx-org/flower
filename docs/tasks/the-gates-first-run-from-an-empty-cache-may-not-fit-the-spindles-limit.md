@@ -1,10 +1,10 @@
 ---
-title: The gate's first run from an empty cache has a minute to spare
+title: The gate's first run from an empty cache may not fit the spindle's limit
 part_of: '[Tasks](/docs/tasks/tasks.md)'
 status: open
-description: On the hosted spindle's container engine all six jobs pass from an empty cache, but Test and Package isolation take 14 of the 15 minutes a workflow may run
+description: 'On the hosted spindle''s container engine Test and Package isolation take about 15 minutes from an empty cache, which is where a workflow is stopped: they have passed once and been stopped once'
 ---
-# The gate's first run from an empty cache has a minute to spare
+# The gate's first run from an empty cache may not fit the spindle's limit
 
 **What.** Tangled's hosted spindle stops a workflow 15 minutes after it
 starts, on either engine (measured 2026-11-11 with a workflow that only
@@ -22,12 +22,17 @@ isolation 14 and a half. Test alone on the host built its binaries in 5
 minutes; with the other jobs beside it, in 12. The cores are shared with the
 other jobs and with other people's.
 
+The same day, the first push of those workflows to `main` (its caches empty
+again, being the microVM's) was a busier hour: Test and Package isolation were
+both stopped at 15 minutes. Retried from the caches they had saved, they
+passed in 9.
+
 **Why it matters.** A cache is kept per workflow file and branch, and a branch
 with none takes `main`'s, so a pull request starts warm and so does a change
 to `Cargo.lock` (`fallback: true`). Everything is rebuilt when `main`'s cache
 is gone (unused for 30 days, or evicted for room) or when
-`rust-toolchain.toml` moves. On that day a busier host than the one measured
-puts Test or Package isolation past 15 minutes. A stopped job still saves its
+`rust-toolchain.toml` moves. On that day Test and Package isolation pass or are stopped by how busy the
+host is: one of each has been seen. A stopped job still saves its
 cache (`when: always`), so `tg pipeline retry` passes; nothing in the log says
 so.
 

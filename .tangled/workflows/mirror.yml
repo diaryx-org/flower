@@ -1,0 +1,54 @@
+# Mirror `main` and the tags to github.com/diaryx-org/flower, which other
+# repos' git dependencies name and where a pushed tag's release workflows run.
+# Tangled has no mirroring of its own, so a push here is what carries one there.
+#
+# The push is not forced: GitHub is only ever written by this, so if it has
+# something Tangled does not, that is a mistake to look at, not to overwrite.
+#
+# The key is a deploy key of that one repository, with write access. Its
+# private half is the spindle's secret GITHUB_DEPLOY_KEY (Settings ->
+# Pipelines -> Secrets), base64 on one line so that pasting it cannot bend it:
+#
+#     ssh-keygen -t ed25519 -N "" -f key
+#     gh repo deploy-key add key.pub -R diaryx-org/flower --allow-write
+#     base64 -w0 key          # the secret's value
+when:
+  - event: ["push"]
+    branch: ["main"]
+  - event: ["push"]
+    tag: ["v*"]
+
+engine: microvm
+image: nixos
+
+# The spindle's clone is one commit deep, and a push of several commits needs
+# them all: the step fetches the repository itself.
+clone:
+  skip: true
+
+dependencies:
+  - git
+  - openssh
+
+environment:
+  FROM: https://tangled.org/adammharris.com/flower
+  TO: git@github.com:diaryx-org/flower.git
+  # GitHub's host key (https://api.github.com/meta), so the push goes to
+  # GitHub or nowhere.
+  GITHUB_HOST_KEY: github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl
+
+steps:
+  - name: Push main and the tags to GitHub
+    command: |
+      set -euo pipefail
+      if [ -z "${GITHUB_DEPLOY_KEY:-}" ]; then
+        echo "GITHUB_DEPLOY_KEY is not set: add it under Settings -> Pipelines -> Secrets" >&2
+        exit 1
+      fi
+      work=$(mktemp -d)
+      cd "$work"
+      (umask 077; printf '%s' "$GITHUB_DEPLOY_KEY" | base64 -d > key)
+      printf '%s\n' "$GITHUB_HOST_KEY" > known_hosts
+      export GIT_SSH_COMMAND="ssh -i $work/key -o IdentitiesOnly=yes -o UserKnownHostsFile=$work/known_hosts -o StrictHostKeyChecking=yes"
+      git clone --quiet --bare "$FROM" repo.git
+      git -C repo.git push "$TO" refs/heads/main:refs/heads/main 'refs/tags/*:refs/tags/*'

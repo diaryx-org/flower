@@ -12,8 +12,9 @@ Rules for this repository alone; the org's `AGENTS.md` has the rest.
 The repository is on Tangled, https://tangled.org/adammharris.com/flower:
 branches, pull requests and issues are there. `github.com/diaryx-org/flower`
 is a mirror of it, which other repos' git dependencies still name, and where a
-pushed tag's release workflows (`.github/workflows/`) run. Nothing is merged
-on GitHub.
+pushed tag's release workflows (`.github/workflows/`) run. A push of `main`
+or a tag to Tangled is carried there by `.tangled/workflows/mirror.yml`.
+Nothing is merged on GitHub, and nothing else pushes to it.
 
 The gate's jobs run on Tangled's spindle for a push to `main` and for a pull
 request: a file per job in `.tangled/workflows/`, each running `ship ci <id>`.

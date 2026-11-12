@@ -1353,7 +1353,7 @@ pub enum Token {
 impl Token {
     /// The class id a frontend keys a stylesheet or a palette on — the first
     /// atom of the scope it stands for, so a rule written for `plates` output
-    /// (`plates-keyword`) and one written for flower (`leaf-t-keyword`) name the
+    /// (`plates-keyword`) and one written for flower (`flower-t-keyword`) name the
     /// same thing.
     pub const fn name(self) -> &'static str {
         match self {

@@ -144,7 +144,7 @@ pub fn config(ty: &Type, sheet: Sheet) -> Config {
 /// colour, a superscript, a subscript), and a block's alignment, as flower
 /// writes it (`text-align` in its `style`) and as flower 0.2 did (a `class`
 /// token). The highlights are the editor's (`flower-doc-editor`'s
-/// `--leaf-mark` inks), in light ink or dark.
+/// `--flower-mark` inks), in light ink or dark.
 fn rules(dark: bool) -> Vec<Rule> {
     use twig_export::style::{Align, RawTypst};
     let rule = |select: &str, style: Style| Rule {
@@ -195,15 +195,15 @@ fn rules(dark: bool) -> Vec<Rule> {
             "yellow" => "mark".to_owned(),
             _ => format!("mark[data-color={name}]"),
         };
-        let f = format!("leaf-mark-{name}");
+        let f = format!("flower-mark-{name}");
         let define = format!("#let {f} = highlight.with(fill: rgb({r}, {g}, {b}, 28%))");
         rules.push(rule(&select, wrap(&f, Some(define))));
     }
     // Justified is a paragraph's setting, not an alignment, in Typst.
     let justify = || {
         wrap(
-            "leaf-justify",
-            Some("#let leaf-justify(body) = { set par(justify: true); body }".to_owned()),
+            "flower-justify",
+            Some("#let flower-justify(body) = { set par(justify: true); body }".to_owned()),
         )
     };
     let align = |a: Align| Style {
@@ -356,10 +356,10 @@ mod tests {
             for set in [
                 "#underline[underlined]",
                 "#strike[struck]",
-                "#leaf-mark-yellow[marked]",
+                "#flower-mark-yellow[marked]",
                 "#set align(center)",
                 "#set align(right)",
-                "#leaf-justify[",
+                "#flower-justify[",
             ] {
                 assert!(typst.contains(set), "no {set:?} in:\n{typst}");
             }
@@ -378,7 +378,7 @@ mod tests {
 
     #[test]
     fn a_picture_beside_the_document_is_found() {
-        let dir = std::env::temp_dir().join(format!("leaf-pdf-picture-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("flower-pdf-picture-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
             dir.join("dot.svg"),

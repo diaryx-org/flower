@@ -38,7 +38,7 @@ use crate::motion::{offset_at, pos_of};
 /// The element [`Editor::render`] draws the document's rows in, by its DOM
 /// id: the node a host finds in Blitz's tree and hands to
 /// [`Editor::describe`].
-pub const TEXT_ID: &str = "leaf-text";
+pub const TEXT_ID: &str = "flower-text";
 
 /// The first of the ids [`Editor::describe`] gives the text runs, clear of
 /// the ids Blitz gives a document's nodes (their slab indices).

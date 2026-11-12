@@ -2,7 +2,7 @@ use super::*;
 
 // ── math ─────────────────────────────────────────────────────────────────
 
-/// [`map_leaf`] on a chosen surface and reveal — the whole of what a math
+/// [`map_flower`] on a chosen surface and reveal — the whole of what a math
 /// rendering turns on.
 fn map_math(src: &str, format: Format, surface: &Surface, reveal: Option<Reveal>) -> VisualMap {
     let mut ed = Editor::new_with_flags(
@@ -25,7 +25,7 @@ fn pictures() -> Surface {
 fn markdown_reads_math_and_a_dollar_before_whitespace_stays_prose() {
     // The `math` extension is on for every flower document; twig's own rule
     // keeps a price out of it.
-    let m = map_leaf("Say $E = mc^2$ for $5 and $6.\n", Format::Markdown);
+    let m = map_flower("Say $E = mc^2$ for $5 and $6.\n", Format::Markdown);
     assert_eq!(row_texts(&m), vec!["Say E = mc^2 for $5 and $6."]);
     let e = m.rows[0].glyphs.iter().find(|g| g.ch == 'E').unwrap();
     assert_eq!(
@@ -47,7 +47,7 @@ fn a_plain_surface_draws_inline_math_as_code_with_the_delimiters_hidden() {
         ("a $x+y$ b\n", Format::Markdown),
         ("a $`x+y` b\n", Format::Djot),
     ] {
-        let m = map_leaf(src, fmt);
+        let m = map_flower(src, fmt);
         assert_eq!(row_texts(&m), vec!["a x+y b"], "{src:?}");
         let x = m.rows[0].glyphs.iter().find(|g| g.ch == 'x').unwrap();
         assert_eq!(x.style.role, Role::Code);
@@ -60,11 +60,11 @@ fn display_math_in_a_line_of_prose_puts_its_text_at_the_text_s_own_offset() {
     // `display_math` had no arm and fell to the default one, which pushed
     // the text at the *node's* start: three bytes short in djot, past `$$`
     // and the backtick.
-    let m = map_leaf("Before $$`x`$$ after\n", Format::Djot);
+    let m = map_flower("Before $$`x`$$ after\n", Format::Djot);
     let x = m.rows[0].glyphs.iter().find(|g| g.ch == 'x').unwrap();
     assert_eq!(x.src, "Before $$`".len());
     assert_eq!(x.style.role, Role::Code);
-    let m = map_leaf("Before $$x$$ after\n", Format::Markdown);
+    let m = map_flower("Before $$x$$ after\n", Format::Markdown);
     let x = m.rows[0].glyphs.iter().find(|g| g.ch == 'x').unwrap();
     assert_eq!(x.src, "Before $$".len());
 }

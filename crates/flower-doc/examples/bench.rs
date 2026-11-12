@@ -145,7 +145,7 @@ fn main() {
 
         println!("  -- the whole path, as a frontend calls it --");
         let mut p = std::env::temp_dir();
-        p.push(format!("leaf_bench_{kb}.md"));
+        p.push(format!("flower_bench_{kb}.md"));
         std::fs::write(&p, &src).unwrap();
         let mut d = Doc::open(p).unwrap();
         d.view = View::Wysiwyg;

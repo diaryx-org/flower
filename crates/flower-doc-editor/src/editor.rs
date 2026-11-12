@@ -274,7 +274,7 @@ pub struct Signals {
     /// What the find bar draws.
     pub bar: Signal<BarView>,
     /// The viewport: how far down the document it starts, and how tall it
-    /// is. The editor scrolls itself rather than letting `.leaf` overflow:
+    /// is. The editor scrolls itself rather than letting `.flower` overflow:
     /// Blitz can scroll an element only from a task, and dioxus-native polls
     /// tasks while Blitz holds its document borrowed, so following the caret
     /// that way panicked ("RefCell already borrowed"). Owning the offset makes

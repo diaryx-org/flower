@@ -125,8 +125,8 @@ define_class!(
 
     impl AppDelegate {
         /// A menu bar item that is one of the app's commands.
-        #[unsafe(method(leafCommand:))]
-        fn leaf_command(&self, sender: &NSMenuItem) {
+        #[unsafe(method(flowerCommand:))]
+        fn flower_command(&self, sender: &NSMenuItem) {
             if let Some(c) = menubar::command(sender.tag()) {
                 run(c);
             }
@@ -174,7 +174,7 @@ fn validate(item: &NSMenuItem) -> bool {
     let Some(action) = item.action() else {
         return true;
     };
-    let command = if action == sel!(leafCommand:) {
+    let command = if action == sel!(flowerCommand:) {
         menubar::command(item.tag())
     } else {
         Some(edit_chord(action))

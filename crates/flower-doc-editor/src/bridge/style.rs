@@ -108,109 +108,109 @@ fn token_class(t: Token) -> &'static str {
 pub const STYLESHEET: &str = r#"
 :root {
   color-scheme: light dark;
-  --leaf-bg: #ffffff;
-  --leaf-text: #262626;
-  --leaf-secondary: #808080;
-  --leaf-tertiary: #b3b3b3;
-  --leaf-accent: #007aff;
-  --leaf-misspelled: #ff3b30;
-  --leaf-link: #0068da;
-  --leaf-selection: #b3d7ff;
-  --leaf-code-bg: rgba(0, 0, 0, 0.05);
-  --leaf-separator: rgba(0, 0, 0, 0.12);
-  --leaf-table-head: rgba(0, 0, 0, 0.05);
-  --leaf-mark: rgba(255, 204, 0, 0.28);
-  --leaf-mark-red: rgba(255, 59, 48, 0.28);
-  --leaf-mark-orange: rgba(255, 149, 0, 0.28);
-  --leaf-mark-green: rgba(52, 199, 89, 0.28);
-  --leaf-mark-blue: rgba(0, 122, 255, 0.28);
-  --leaf-mark-purple: rgba(175, 82, 222, 0.28);
-  --leaf-mark-brown: rgba(162, 132, 94, 0.28);
-  --leaf-t-punct: #6a7580;
-  --leaf-t-kw: #9526a0;
-  --leaf-t-entity: #2b62d9;
-  --leaf-t-support: #016a99;
-  --leaf-t-const: #98590a;
-  --leaf-t-str: #0a7040;
-  --leaf-t-comment: #6a7580;
-  --leaf-t-invalid: #c02617;
+  --flower-bg: #ffffff;
+  --flower-text: #262626;
+  --flower-secondary: #808080;
+  --flower-tertiary: #b3b3b3;
+  --flower-accent: #007aff;
+  --flower-misspelled: #ff3b30;
+  --flower-link: #0068da;
+  --flower-selection: #b3d7ff;
+  --flower-code-bg: rgba(0, 0, 0, 0.05);
+  --flower-separator: rgba(0, 0, 0, 0.12);
+  --flower-table-head: rgba(0, 0, 0, 0.05);
+  --flower-mark: rgba(255, 204, 0, 0.28);
+  --flower-mark-red: rgba(255, 59, 48, 0.28);
+  --flower-mark-orange: rgba(255, 149, 0, 0.28);
+  --flower-mark-green: rgba(52, 199, 89, 0.28);
+  --flower-mark-blue: rgba(0, 122, 255, 0.28);
+  --flower-mark-purple: rgba(175, 82, 222, 0.28);
+  --flower-mark-brown: rgba(162, 132, 94, 0.28);
+  --flower-t-punct: #6a7580;
+  --flower-t-kw: #9526a0;
+  --flower-t-entity: #2b62d9;
+  --flower-t-support: #016a99;
+  --flower-t-const: #98590a;
+  --flower-t-str: #0a7040;
+  --flower-t-comment: #6a7580;
+  --flower-t-invalid: #c02617;
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --leaf-bg: #1e1e1e;
-    --leaf-text: #dfdfdf;
-    --leaf-secondary: #8c8c8c;
-    --leaf-tertiary: #595959;
-    --leaf-accent: #0a84ff;
-    --leaf-misspelled: #ff453a;
-    --leaf-link: #419cff;
-    --leaf-selection: #3f638b;
-    --leaf-code-bg: rgba(255, 255, 255, 0.07);
-    --leaf-separator: rgba(255, 255, 255, 0.16);
-    --leaf-table-head: rgba(255, 255, 255, 0.07);
-    --leaf-mark: rgba(255, 214, 10, 0.28);
-    --leaf-mark-red: rgba(255, 69, 58, 0.28);
-    --leaf-mark-orange: rgba(255, 159, 10, 0.28);
-    --leaf-mark-green: rgba(48, 209, 88, 0.28);
-    --leaf-mark-blue: rgba(10, 132, 255, 0.28);
-    --leaf-mark-purple: rgba(191, 90, 242, 0.28);
-    --leaf-mark-brown: rgba(172, 142, 104, 0.28);
-    --leaf-t-punct: #7f8b99;
-    --leaf-t-kw: #c678dd;
-    --leaf-t-entity: #7aa2f7;
-    --leaf-t-support: #56b6c2;
-    --leaf-t-const: #e0af68;
-    --leaf-t-str: #9ece6a;
-    --leaf-t-comment: #7f8b99;
-    --leaf-t-invalid: #f7768e;
+    --flower-bg: #1e1e1e;
+    --flower-text: #dfdfdf;
+    --flower-secondary: #8c8c8c;
+    --flower-tertiary: #595959;
+    --flower-accent: #0a84ff;
+    --flower-misspelled: #ff453a;
+    --flower-link: #419cff;
+    --flower-selection: #3f638b;
+    --flower-code-bg: rgba(255, 255, 255, 0.07);
+    --flower-separator: rgba(255, 255, 255, 0.16);
+    --flower-table-head: rgba(255, 255, 255, 0.07);
+    --flower-mark: rgba(255, 214, 10, 0.28);
+    --flower-mark-red: rgba(255, 69, 58, 0.28);
+    --flower-mark-orange: rgba(255, 159, 10, 0.28);
+    --flower-mark-green: rgba(48, 209, 88, 0.28);
+    --flower-mark-blue: rgba(10, 132, 255, 0.28);
+    --flower-mark-purple: rgba(191, 90, 242, 0.28);
+    --flower-mark-brown: rgba(172, 142, 104, 0.28);
+    --flower-t-punct: #7f8b99;
+    --flower-t-kw: #c678dd;
+    --flower-t-entity: #7aa2f7;
+    --flower-t-support: #56b6c2;
+    --flower-t-const: #e0af68;
+    --flower-t-str: #9ece6a;
+    --flower-t-comment: #7f8b99;
+    --flower-t-invalid: #f7768e;
   }
 }
-.leaf { font: 15px/1.5 ui-monospace, monospace; white-space: pre; tab-size: 4;
-        caret-color: transparent; outline: none; color: var(--leaf-text); }
-.leaf .row { position: relative; min-height: 1.5em; }
-.leaf .row.code { background: var(--leaf-code-bg); }
-.leaf .row.decoration { color: var(--leaf-secondary); }
-.leaf .caret { position: absolute; width: 2px; background: var(--leaf-accent);
-               top: 0.1em; bottom: 0.1em; animation: leaf-blink 1s step-end infinite; }
-@keyframes leaf-blink { 50% { opacity: 0; } }
-.leaf .sel { background: var(--leaf-selection); }
-.leaf .h1 { font-size: 2em; font-weight: 700; }
-.leaf .h2 { font-size: 1.6em; font-weight: 700; }
-.leaf .h3 { font-size: 1.3em; font-weight: 700; }
-.leaf .h4, .leaf .h5, .leaf .h6 { font-weight: 700; }
-.leaf .b { font-weight: 700; }
-.leaf .i { font-style: italic; }
-.leaf .u { text-decoration: underline; }
-.leaf .s { text-decoration: line-through; }
-.leaf .sup { vertical-align: super; font-size: 0.8em; }
-.leaf .sub { vertical-align: sub; font-size: 0.8em; }
-.leaf .link { color: var(--leaf-link); text-decoration: underline; }
-.leaf .delim { color: var(--leaf-secondary); }
-.leaf .marker { color: var(--leaf-secondary); }
-.leaf .gutter { color: var(--leaf-tertiary); }
-.leaf .rule { color: var(--leaf-secondary); }
-.leaf .mark, .leaf .hl { background: var(--leaf-mark); }
-.leaf .hl.red { background: var(--leaf-mark-red); }
-.leaf .hl.orange { background: var(--leaf-mark-orange); }
-.leaf .hl.green { background: var(--leaf-mark-green); }
-.leaf .hl.blue { background: var(--leaf-mark-blue); }
-.leaf .hl.purple { background: var(--leaf-mark-purple); }
-.leaf .hl.brown { background: var(--leaf-mark-brown); }
-.leaf .mark.red { background: var(--leaf-mark-red); }
-.leaf .mark.orange { background: var(--leaf-mark-orange); }
-.leaf .mark.yellow { background: var(--leaf-mark); }
-.leaf .mark.green { background: var(--leaf-mark-green); }
-.leaf .mark.blue { background: var(--leaf-mark-blue); }
-.leaf .mark.purple { background: var(--leaf-mark-purple); }
-.leaf .mark.brown { background: var(--leaf-mark-brown); }
-.leaf .t-punct { color: var(--leaf-t-punct); }
-.leaf .t-kw { color: var(--leaf-t-kw); }
-.leaf .t-entity { color: var(--leaf-t-entity); }
-.leaf .t-support { color: var(--leaf-t-support); }
-.leaf .t-const { color: var(--leaf-t-const); }
-.leaf .t-str { color: var(--leaf-t-str); }
-.leaf .t-comment { color: var(--leaf-t-comment); font-style: italic; }
-.leaf .t-invalid { color: var(--leaf-t-invalid); text-decoration: underline wavy; }
+.flower { font: 15px/1.5 ui-monospace, monospace; white-space: pre; tab-size: 4;
+        caret-color: transparent; outline: none; color: var(--flower-text); }
+.flower .row { position: relative; min-height: 1.5em; }
+.flower .row.code { background: var(--flower-code-bg); }
+.flower .row.decoration { color: var(--flower-secondary); }
+.flower .caret { position: absolute; width: 2px; background: var(--flower-accent);
+               top: 0.1em; bottom: 0.1em; animation: flower-blink 1s step-end infinite; }
+@keyframes flower-blink { 50% { opacity: 0; } }
+.flower .sel { background: var(--flower-selection); }
+.flower .h1 { font-size: 2em; font-weight: 700; }
+.flower .h2 { font-size: 1.6em; font-weight: 700; }
+.flower .h3 { font-size: 1.3em; font-weight: 700; }
+.flower .h4, .flower .h5, .flower .h6 { font-weight: 700; }
+.flower .b { font-weight: 700; }
+.flower .i { font-style: italic; }
+.flower .u { text-decoration: underline; }
+.flower .s { text-decoration: line-through; }
+.flower .sup { vertical-align: super; font-size: 0.8em; }
+.flower .sub { vertical-align: sub; font-size: 0.8em; }
+.flower .link { color: var(--flower-link); text-decoration: underline; }
+.flower .delim { color: var(--flower-secondary); }
+.flower .marker { color: var(--flower-secondary); }
+.flower .gutter { color: var(--flower-tertiary); }
+.flower .rule { color: var(--flower-secondary); }
+.flower .mark, .flower .hl { background: var(--flower-mark); }
+.flower .hl.red { background: var(--flower-mark-red); }
+.flower .hl.orange { background: var(--flower-mark-orange); }
+.flower .hl.green { background: var(--flower-mark-green); }
+.flower .hl.blue { background: var(--flower-mark-blue); }
+.flower .hl.purple { background: var(--flower-mark-purple); }
+.flower .hl.brown { background: var(--flower-mark-brown); }
+.flower .mark.red { background: var(--flower-mark-red); }
+.flower .mark.orange { background: var(--flower-mark-orange); }
+.flower .mark.yellow { background: var(--flower-mark); }
+.flower .mark.green { background: var(--flower-mark-green); }
+.flower .mark.blue { background: var(--flower-mark-blue); }
+.flower .mark.purple { background: var(--flower-mark-purple); }
+.flower .mark.brown { background: var(--flower-mark-brown); }
+.flower .t-punct { color: var(--flower-t-punct); }
+.flower .t-kw { color: var(--flower-t-kw); }
+.flower .t-entity { color: var(--flower-t-entity); }
+.flower .t-support { color: var(--flower-t-support); }
+.flower .t-const { color: var(--flower-t-const); }
+.flower .t-str { color: var(--flower-t-str); }
+.flower .t-comment { color: var(--flower-t-comment); font-style: italic; }
+.flower .t-invalid { color: var(--flower-t-invalid); text-decoration: underline wavy; }
 "#;
 
 #[cfg(test)]

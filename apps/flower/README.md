@@ -52,7 +52,7 @@ under the same names (`platform/mod.rs` lists them):
 | | the Mac (`platform/macos`) |
 |---|---|
 | a document | `FlowerDocument`, an `NSDocument` subclass defined from Rust: Open, Save, autosave in place, Versions, Duplicate, Rename, Move To, Revert, Open Recent, Finder's Open With, the question an untitled document asks as it closes |
-| the menu bar | `menus::bar()` as `NSMenu`s; AppKit's own items by selector, the rest `leafCommand:` |
+| the menu bar | `menus::bar()` as `NSMenu`s; AppKit's own items by selector, the rest `flowerCommand:` |
 | spelling | `NSSpellChecker`: underlines, guesses, Check Document Now, autocorrect, smart quotes and dashes, text replacement — `Spelling.swift`'s rules |
 | Look Up | the Dictionary's popover, by force click or the context menu |
 | paper | the print panel over `pdf.rs`'s PDF, and Export's save sheet |
@@ -162,8 +162,8 @@ differs from a browser in six ways an editor walks straight into:
 | focus only form controls on a click, and *clear* focus on anything else | reads keys from winit (`use_window_event`), not `onkeydown` |
 | report ⌘ as `SUPER`, not `META` (through 0.3.0-beta.3; beta.4 reports `META`, `keyboard-types` 0.8 having retired `SUPER`) | matches the one Blitz reports, `META` now; matching the other typed ⌘I as an `i` |
 | poll tasks while it holds its document borrowed, so `MountedData::scroll` / `set_focus` from a handler panic ("RefCell already borrowed") | scrolls itself: owns the offset, shifts the rows by a margin |
-| paint the first frame of an `overflow: hidden` element and not its changes | clips at `body`, never `.leaf` |
-| skip painting a child that hangs past its parent's box | gives `.leaf` no fixed height |
+| paint the first frame of an `overflow: hidden` element and not its changes | clips at `body`, never `.flower` |
+| skip painting a child that hangs past its parent's box | gives `.flower` no fixed height |
 | lay out an absolutely positioned element on the first paint and not when a later frame inserts it | draws the caret inline, spliced into the run |
 | leave a freed node in its layout tree when a box is shown in the frame rows arrive in an absolutely positioned child of it — every layout after panics (a `should_panic` test in `headless.rs` keeps watch) | keeps the page's overlay displayed, letting the pointer through (`pointer-events: none`), and shows and hides what is in it |
 

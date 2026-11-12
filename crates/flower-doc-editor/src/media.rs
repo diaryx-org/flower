@@ -559,7 +559,7 @@ mod tests {
 
     #[test]
     fn a_picture_on_disk_is_measured_and_drawn_from_its_file_url() {
-        let dir = std::env::temp_dir().join(format!("agent-leaf-media-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("agent-flower-media-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         image::RgbImage::new(64, 48)
             .save(dir.join("pic.png"))
@@ -664,7 +664,7 @@ mod tests {
         photo.extend_from_slice(app1);
         photo.extend_from_slice(&jpeg[2..]);
         assert_eq!(picture_size(&photo), Some((16.0, 32.0)));
-        let dir = std::env::temp_dir().join(format!("agent-leaf-photo-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("agent-flower-photo-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("photo.jpg");
         std::fs::write(&file, &photo).unwrap();

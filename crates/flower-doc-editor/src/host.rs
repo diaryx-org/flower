@@ -457,7 +457,7 @@ mod tests {
 
     #[test]
     fn a_picture_in_an_untitled_document_draws_from_where_the_host_says() {
-        let dir = std::env::temp_dir().join(format!("agent-leaf-locate-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("agent-flower-locate-{}", std::process::id()));
         std::fs::create_dir_all(dir.join("pics")).unwrap();
         image::RgbImage::new(30, 20)
             .save(dir.join("pics/cat.png"))

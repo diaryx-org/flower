@@ -8,7 +8,7 @@
 //! and adds Emoji & Symbols and Start Dictation to the menu titled Edit, and
 //! the tab items to the Window menu.
 //!
-//! Every other item is `leafCommand:`, its tag an index into the commands
+//! Every other item is `flowerCommand:`, its tag an index into the commands
 //! the bar was built with; the app delegate (`mod.rs`) answers it and
 //! validates it with `commands::status`, as a page's own menus do.
 
@@ -62,7 +62,7 @@ fn build(mtm: MainThreadMarker, title: &str, nodes: &[Node]) -> Retained<NSMenu>
                 *key,
             ),
             Node::Item(label, c) => {
-                let it = item(mtm, label, Some(sel!(leafCommand:)), c.shortcut());
+                let it = item(mtm, label, Some(sel!(flowerCommand:)), c.shortcut());
                 let tag = COMMANDS.with_borrow_mut(|cs| {
                     cs.push(c.clone());
                     cs.len() - 1

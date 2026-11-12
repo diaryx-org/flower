@@ -96,7 +96,7 @@ pub fn bundle(release: bool) -> Result<PathBuf> {
     // The icon: Assets.car for the system's own rendering, leaf.icns for
     // older readers, both named by Info.plist.
     let sources = root.join("apps/flower/resources");
-    let partial = out.join("leaf-icon.plist");
+    let partial = out.join("flower-icon.plist");
     run(cmd("xcrun")
         .arg("actool")
         .arg(sources.join("leaf.icon"))
@@ -125,10 +125,10 @@ pub fn bundle(release: bool) -> Result<PathBuf> {
     Ok(app)
 }
 
-/// The bundled sample and its media, copied to `target/leaf-sample/` so the
+/// The bundled sample and its media, copied to `target/flower-sample/` so the
 /// app opens it as a file — one the developer can edit and save.
 pub fn sample_copy() -> Result<PathBuf> {
-    let dir = root().join("target/leaf-sample");
+    let dir = root().join("target/flower-sample");
     std::fs::create_dir_all(&dir)?;
     let app = root().join("apps/flower/resources");
     std::fs::copy(app.join("Sample.md"), dir.join("Sample.md"))?;

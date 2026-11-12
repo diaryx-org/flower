@@ -67,8 +67,8 @@ const LEADING: f32 = 1.5;
 /// cell's line, which the editor aligns in its cell: the room would move
 /// right-aligned text off its padding.
 const TERM_CSS: &str = "
-.leaf .line { margin-right: -16px; }
-.leaf .tcell .line { margin-right: 0; }
+.flower .line { margin-right: -16px; }
+.flower .tcell .line { margin-right: 0; }
 ";
 
 /// What the command line asked for.

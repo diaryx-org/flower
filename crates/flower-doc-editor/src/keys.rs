@@ -4,7 +4,7 @@
 //! to the root element — and its default actions clear focus: a click on
 //! anything but a form control does, and so, on a double-click, does
 //! something `preventDefault` on `mousedown` and `click` does not reach. So
-//! `.leaf`'s `onkeydown` went deaf at random, and the editor cannot take
+//! `.flower`'s `onkeydown` went deaf at random, and the editor cannot take
 //! focus back: `MountedData::set_focus` from a handler is the same "RefCell
 //! already borrowed" panic as scrolling from one.
 //!

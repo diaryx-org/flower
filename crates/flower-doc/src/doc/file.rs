@@ -350,13 +350,13 @@ fn follow_links(path: &Path) -> std::io::Result<PathBuf> {
 }
 
 /// A new file in `dir` for a save to be written to before it is renamed:
-/// `.leaf-save-<process>-<n>`, never one that is already there.
+/// `.flower-save-<process>-<n>`, never one that is already there.
 #[cfg(feature = "fs")]
 fn create_beside(dir: &Path) -> std::io::Result<(PathBuf, std::fs::File)> {
     static NEXT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
     loop {
         let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let temp = dir.join(format!(".leaf-save-{}-{n}", std::process::id()));
+        let temp = dir.join(format!(".flower-save-{}-{n}", std::process::id()));
         match std::fs::OpenOptions::new()
             .write(true)
             .create_new(true)

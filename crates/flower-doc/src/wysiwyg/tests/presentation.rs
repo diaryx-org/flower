@@ -31,20 +31,20 @@ fn style_of(m: &VisualMap, ch: char) -> Style {
 fn a_block_carries_its_alignment_on_every_row_it_draws() {
     // HTML, on the paragraph. `lead` is somebody else's class and is
     // neither read nor in the way.
-    let html = map_leaf("<p class=\"lead center\">hi</p>\n", Format::Html);
+    let html = map_flower("<p class=\"lead center\">hi</p>\n", Format::Html);
     assert_eq!(line_facts(&html), vec![(Some(Align::Center), None)]);
 
     // djot's attribute line, on the block.
-    let dj = map_leaf("{.right}\nhi\n", Format::Djot);
+    let dj = map_flower("{.right}\nhi\n", Format::Djot);
     assert_eq!(line_facts(&dj), vec![(Some(Align::Right), None)]);
 
     // A heading carries it too, and on every row a wrapped one draws.
-    let h = map_leaf("{.center}\n# a heading\n", Format::Djot);
+    let h = map_flower("{.center}\n# a heading\n", Format::Djot);
     assert_eq!(line_facts(&h), vec![(Some(Align::Center), None)]);
     assert_eq!(h.rows[0].heading, Some(1));
 
     // Both keys at once, and the line spacing is read the same way.
-    let both = map_leaf("{.justify data-line-height=\"1.5\"}\nhi\n", Format::Djot);
+    let both = map_flower("{.justify data-line-height=\"1.5\"}\nhi\n", Format::Djot);
     assert_eq!(
         line_facts(&both),
         vec![(
@@ -56,12 +56,12 @@ fn a_block_carries_its_alignment_on_every_row_it_draws() {
     // An unknown token is somebody else's and the block draws at the
     // theme's alignment; a ratio outside the menu's three is the author's
     // own and draws at exactly what they wrote.
-    let other = map_leaf("{.lead data-line-height=\"1.3\"}\nhi\n", Format::Djot);
+    let other = map_flower("{.lead data-line-height=\"1.3\"}\nhi\n", Format::Djot);
     assert_eq!(line_facts(&other), vec![(None, LineHeight::ratio(1.3))]);
 
     // A value the grammar does not cover is neither: carried by the
     // document, drawn at the theme's spacing, and read as nothing at all.
-    let em = map_leaf("{data-line-height=\"1.3em\"}\nhi\n", Format::Djot);
+    let em = map_flower("{data-line-height=\"1.3em\"}\nhi\n", Format::Djot);
     assert_eq!(line_facts(&em), vec![(None, None)]);
 }
 
@@ -70,7 +70,7 @@ fn a_block_carries_its_alignment_on_every_row_it_draws() {
 /// shape twig's `set_block_attrs` writes in Markdown.
 #[test]
 fn a_div_lends_its_alignment_to_every_block_inside_it() {
-    let m = map_leaf(
+    let m = map_flower(
         "<div class=\"center\" data-line-height=\"2\">\n\none\n\ntwo\n\n</div>\n",
         Format::Markdown,
     );
@@ -90,7 +90,7 @@ fn a_div_lends_its_alignment_to_every_block_inside_it() {
 
     // The nearer node wins, and the block after the div is untouched — the
     // context is restored, not left running.
-    let nested = map_leaf(
+    let nested = map_flower(
         "<div class=\"center\">\n\n<div class=\"right\">\n\ninner\n\n</div>\n\nouter\n\n</div>\n\nafter\n",
         Format::Markdown,
     );
@@ -113,7 +113,7 @@ fn a_span_s_size_beats_its_block_s_and_its_face_falls_through() {
     // The span is not first on its line: a `<span …>` opening one is an
     // HTML *block* to CommonMark, which is a fact about Markdown and not
     // about this.
-    let m = map_leaf(
+    let m = map_flower(
         "<div data-font=\"serif\">\n\nc <span data-size=\"small\">a</span> b\n\n</div>\n",
         Format::Markdown,
     );
@@ -126,7 +126,7 @@ fn a_span_s_size_beats_its_block_s_and_its_face_falls_through() {
     assert_eq!(b.font, Some(FaceRef::Generic(FontFamily::Serif)));
 
     // djot spells the same span anonymously and it reads identically.
-    let dj = map_leaf(
+    let dj = map_flower(
         "{data-size=\"large\"}\nx [y]{data-size=\"xx-large\" data-color=\"blue\"} z\n",
         Format::Djot,
     );
@@ -156,7 +156,7 @@ fn a_span_s_size_beats_its_block_s_and_its_face_falls_through() {
 /// interns it and the glyph carries the id.
 #[test]
 fn an_exact_size_face_and_colour_reach_the_glyph_and_the_row() {
-    let m = map_leaf(
+    let m = map_flower(
         "<div data-line-height=\"1.3\">\n\nc <span data-size=\"14pt\" \
              data-color=\"#c03030\" data-font=\"Garamond\">a</span> b\n\n</div>\n",
         Format::Markdown,
@@ -181,7 +181,7 @@ fn an_exact_size_face_and_colour_reach_the_glyph_and_the_row() {
 
     // One name, one entry, however many spans wear it — the table is what
     // keeps a `Style` `Copy` and it should not grow per run.
-    let twice = map_leaf(
+    let twice = map_flower(
         "x <span data-font=\"Garamond\">a</span> y <span data-font=\"Garamond\">b</span>\n",
         Format::Markdown,
     );
@@ -193,7 +193,7 @@ fn an_exact_size_face_and_colour_reach_the_glyph_and_the_row() {
     );
 
     // A generic needs no entry at all: it names itself.
-    let generic = map_leaf(
+    let generic = map_flower(
         "<div data-font=\"serif\">\n\nhi\n\n</div>\n",
         Format::Markdown,
     );
@@ -210,12 +210,12 @@ fn an_exact_size_face_and_colour_reach_the_glyph_and_the_row() {
 /// no collision — and a mark inside a coloured span wears both.
 #[test]
 fn a_mark_keeps_its_highlight_colour_and_a_span_colours_the_text() {
-    let m = map_leaf("a ==\u{1f534} red== b\n", Format::Markdown);
+    let m = map_flower("a ==\u{1f534} red== b\n", Format::Markdown);
     let r = style_of(&m, 'r');
     assert_eq!(r.role, Role::Mark(Some(MarkColor::Red)));
     assert_eq!(r.color, None, "a highlight is not a text colour");
 
-    let both = map_leaf(
+    let both = map_flower(
         "<span data-color=\"blue\">a ==\u{1f534} red== b</span>\n",
         Format::Markdown,
     );
@@ -245,7 +245,7 @@ fn a_page_break_reads_the_same_in_every_format() {
         ),
         (Format::Asciidoc, "a\n\n<<<\n\nb\n"),
     ] {
-        let m = map_leaf(src, fmt);
+        let m = map_flower(src, fmt);
         let marks: Vec<&DirectiveMark> = m
             .rows
             .iter()
@@ -270,7 +270,7 @@ fn a_page_break_reads_the_same_in_every_format() {
     // A Markdown `:::note` with nothing in it is *not* this: its name is
     // its own, and nothing about it says "a block with no body" the way
     // djot's spelling of a leaf directive does.
-    let empty_fence = map_leaf("::: note\n:::\n", Format::Markdown);
+    let empty_fence = map_flower("::: note\n:::\n", Format::Markdown);
     assert!(
         empty_fence.rows.iter().all(|r| r.leaf_directive.is_none()),
         "a named empty fence keeps the reading it has"
@@ -282,7 +282,7 @@ fn a_page_break_reads_the_same_in_every_format() {
 /// names nothing itself, the *first* class token is the name.
 #[test]
 fn a_djot_fence_s_first_class_is_the_directive_s_name_and_the_rest_is_attributes() {
-    let m = map_leaf("{.page-break .wide}\n:::\n:::\n", Format::Djot);
+    let m = map_flower("{.page-break .wide}\n:::\n:::\n", Format::Djot);
     let mark = m
         .rows
         .iter()
@@ -304,7 +304,7 @@ fn a_djot_fence_s_word_is_the_directive_s_name_behind_an_attribute_line() {
         "{.wide src=\"u\"}\n::: x-card\n:::\n",
         "> {.wide src=\"u\"}\n> ::: x-card\n> :::\n",
     ] {
-        let m = map_leaf(src, Format::Djot);
+        let m = map_flower(src, Format::Djot);
         let mark = m
             .rows
             .iter()

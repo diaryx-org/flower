@@ -201,7 +201,7 @@ pub fn Pane() -> Element {
     let top = chrome_height();
     rsx! {
         div { style: "position: fixed; left: 0; right: 0; top: {top}px; bottom: 0; z-index: 2; \
-                      background: var(--leaf-bg); overflow: hidden;",
+                      background: var(--flower-bg); overflow: hidden;",
             FlowerPages { editor: ed }
         }
     }

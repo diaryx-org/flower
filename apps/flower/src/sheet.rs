@@ -368,7 +368,7 @@ mod tests {
         .expect("an editor");
         let inner = document.inner.borrow();
         let column = inner
-            .query_selector(".leaf")
+            .query_selector(".flower")
             .ok()
             .flatten()
             .map(|id| *inner.get_node(id).unwrap().final_layout())

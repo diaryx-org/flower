@@ -178,7 +178,7 @@ pub const CSS: &str = "
          background: var(--desk-bg); color: var(--desk-text);
          border-left: 1px solid var(--field-border); }
 .pages .spread { position: absolute; }
-.pages.reflow { background: var(--leaf-bg); border-left: none; }
+.pages.reflow { background: var(--flower-bg); border-left: none; }
 .pages.reflow .sheet { background: transparent; box-shadow: none; }
 .pages .sheet { position: absolute; display: block; background: white;
                 box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3); }

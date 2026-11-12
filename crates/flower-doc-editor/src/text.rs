@@ -780,7 +780,7 @@ mod tests {
             heading.height
         );
         assert_eq!(heading.height, body.height);
-        assert!(crate::view::css(&ty).contains(".leaf .h1, .leaf .h2"));
+        assert!(crate::view::css(&ty).contains(".flower .h1, .flower .h2"));
     }
 
     #[test]
@@ -876,8 +876,8 @@ mod tests {
 
     #[test]
     fn a_face_the_host_brings_is_measured() {
-        const FACE: &[u8] = include_bytes!("../tests/faces/leaf-test-face.ttf");
-        const NAME: &str = "Leaf Test Face";
+        const FACE: &[u8] = include_bytes!("../tests/faces/flower-test-face.ttf");
+        const NAME: &str = "Flower Test Face";
         let mut f = Fonts::new(Type::default());
         assert!(!f.has_family(NAME));
 

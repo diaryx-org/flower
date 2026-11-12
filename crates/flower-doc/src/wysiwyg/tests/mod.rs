@@ -61,7 +61,7 @@ fn map_directives(src: &str) -> VisualMap {
 /// extensions [`crate::doc::parse_extensions`] turns on, which is what
 /// pairs a Markdown `<div …>` with its `</div>` into a container and makes
 /// `::page-break` a directive rather than a paragraph of colons.
-fn map_leaf(src: &str, format: Format) -> VisualMap {
+fn map_flower(src: &str, format: Format) -> VisualMap {
     let mut ed = Editor::new_with_flags(
         src.as_bytes(),
         format.twig(),

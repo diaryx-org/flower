@@ -25,7 +25,7 @@ pub enum Appearance {
 
 /// What the widget adds to the bridge's stylesheet: proportional body text
 /// with code and tables in cells, in the type `text.rs` measures with;
-/// `.leaf` as a viewport the editor scrolls itself; a known left edge for
+/// `.flower` as a viewport the editor scrolls itself; a known left edge for
 /// [`row::PAD`]; the inline caret and a selection's grab handles
 /// `row.rs` draws; tables; the find bar and
 /// the status line.
@@ -39,8 +39,8 @@ pub enum Appearance {
 // Two Blitz behaviours shape this, both found the hard way:
 //
 // - It paints the first frame of an `overflow: hidden` element and not the
-//   changes after it, so the clip is on `body`, never on `.leaf`.
-// - It skips painting a child that hangs past its parent's box, so `.leaf`
+//   changes after it, so the clip is on `body`, never on `.flower`.
+// - It skips painting a child that hangs past its parent's box, so `.flower`
 //   has no fixed height: its box is as tall as the rows in it, shifted up by
 //   the scroll, and the window cuts it off. The status line is pinned to the
 //   bottom of the editor's box over it, and the find bar to its top, each in
@@ -65,31 +65,31 @@ pub fn css(ty: &Type) -> String {
         ..
     } = Rules::of(ty);
     let mut css = format!(
-        "html, body {{ margin: 0; overflow: hidden; height: 100vh; background: var(--leaf-bg); }}
+        "html, body {{ margin: 0; overflow: hidden; height: 100vh; background: var(--flower-bg); }}
 body {{ position: relative; }}
-.leaf {{ padding: 0 16px; box-sizing: border-box; font-family: {body}; font-size: {size}px; line-height: {leading}; }}
-.leaf .row.code, .leaf .row.table, .leaf .row.source, .leaf .code {{ font-family: {mono}; }}
-.leaf .row.source .g {{ font-size: 1em; vertical-align: baseline; }}
-.leaf .row, .leaf .line {{ min-height: {leading}em; }}
-.leaf .qbar {{ display: inline-block; width: {quote}px; vertical-align: top; box-sizing: border-box;
+.flower {{ padding: 0 16px; box-sizing: border-box; font-family: {body}; font-size: {size}px; line-height: {leading}; }}
+.flower .row.code, .flower .row.table, .flower .row.source, .flower .code {{ font-family: {mono}; }}
+.flower .row.source .g {{ font-size: 1em; vertical-align: baseline; }}
+.flower .row, .flower .line {{ min-height: {leading}em; }}
+.flower .qbar {{ display: inline-block; width: {quote}px; vertical-align: top; box-sizing: border-box;
                border-left: 3px solid currentColor; }}
-.leaf .line {{ display: flex; }}
-.leaf .bars {{ display: flex; flex: none; }}
-.leaf .bars .qbar {{ flex: none; }}
-.leaf .flow {{ flex: 1 0 auto; }}
-.leaf .ghost {{ color: transparent; background: none; }}
-.leaf .ime {{ text-decoration: underline; text-decoration-color: var(--leaf-accent); }}
-.leaf .miss {{ text-decoration: underline wavy; text-decoration-color: var(--leaf-misspelled); }}
-.leaf .table {{ box-sizing: border-box; }}
-.leaf .trow {{ display: flex; box-sizing: border-box; }}
-.leaf .trow.head .tcell {{ background: var(--leaf-table-head); }}
-.leaf .trow:first-child .tcell {{ border-top: {down}px solid var(--leaf-separator); }}
-.leaf .tprefix {{ flex: none; white-space: pre; }}
-.leaf .tcell {{ flex: none; box-sizing: border-box; padding: {pad_y}px {pad_x}px;
-                border-right: {across}px solid var(--leaf-separator); border-bottom: {down}px solid var(--leaf-separator); }}
-.leaf .tprefix + .tcell {{ border-left: {across}px solid var(--leaf-separator); }}
-.leaf .tcell.center {{ text-align: center; }}
-.leaf .tcell.end {{ text-align: right; }}
+.flower .line {{ display: flex; }}
+.flower .bars {{ display: flex; flex: none; }}
+.flower .bars .qbar {{ flex: none; }}
+.flower .flow {{ flex: 1 0 auto; }}
+.flower .ghost {{ color: transparent; background: none; }}
+.flower .ime {{ text-decoration: underline; text-decoration-color: var(--flower-accent); }}
+.flower .miss {{ text-decoration: underline wavy; text-decoration-color: var(--flower-misspelled); }}
+.flower .table {{ box-sizing: border-box; }}
+.flower .trow {{ display: flex; box-sizing: border-box; }}
+.flower .trow.head .tcell {{ background: var(--flower-table-head); }}
+.flower .trow:first-child .tcell {{ border-top: {down}px solid var(--flower-separator); }}
+.flower .tprefix {{ flex: none; white-space: pre; }}
+.flower .tcell {{ flex: none; box-sizing: border-box; padding: {pad_y}px {pad_x}px;
+                border-right: {across}px solid var(--flower-separator); border-bottom: {down}px solid var(--flower-separator); }}
+.flower .tprefix + .tcell {{ border-left: {across}px solid var(--flower-separator); }}
+.flower .tcell.center {{ text-align: center; }}
+.flower .tcell.end {{ text-align: right; }}
 {CHROME}{REST}"
     );
     if let Some(Grid {
@@ -104,9 +104,9 @@ body {{ position: relative; }}
         let label = 7.0 * w;
         let count = 8.0 * w;
         css.push_str(&format!(
-            ".leaf .h1, .leaf .h2, .leaf .h3, .leaf .sup, .leaf .sub {{ font-size: 1em; vertical-align: baseline; }}
-.leaf .tcell {{ border-bottom-width: 0; }}
-.leaf .trow.head .tcell, .leaf .trow:last-child .tcell {{ border-bottom-width: {down}px; }}
+            ".flower .h1, .flower .h2, .flower .h3, .flower .sup, .flower .sub {{ font-size: 1em; vertical-align: baseline; }}
+.flower .tcell {{ border-bottom-width: 0; }}
+.flower .trow.head .tcell, .flower .trow:last-child .tcell {{ border-bottom-width: {down}px; }}
 .status {{ height: {h}px; line-height: {h}px; padding: 0 {w}px; gap: {w}px; font: {size}px {mono}; border-top: 0; }}
 .find {{ padding: 0 {w}px; font: {size}px {mono}; border-bottom: 0; }}
 .find .find-row {{ height: {h}px; gap: {w}px; }}
@@ -116,7 +116,7 @@ body {{ position: relative; }}
         ));
     }
     if std::env::var_os("FLOWER_OUTLINE").is_some() {
-        css.push_str(".leaf .line { outline: 1px solid #f00; } .leaf .line > span { outline: 1px solid #0a0; }");
+        css.push_str(".flower .line { outline: 1px solid #f00; } .flower .line > span { outline: 1px solid #0a0; }");
     }
     css
 }
@@ -164,32 +164,32 @@ const CHROME: &str = "
 ";
 
 const REST: &str = "
-.leaf .caret-in { display: inline-block; width: 0; height: 1.2em;
-                  border-left: 2px solid var(--leaf-accent); margin-right: -2px;
+.flower .caret-in { display: inline-block; width: 0; height: 1.2em;
+                  border-left: 2px solid var(--flower-accent); margin-right: -2px;
                   vertical-align: text-bottom; }
-.leaf .grip { display: inline-block; width: 10px; margin: 0 -5px; vertical-align: text-bottom; }
-.leaf .grip.start { margin-top: -10px; }
-.leaf .grip.end { margin-bottom: -10px; }
-.leaf .grip .stem { display: block; width: 2px; height: 1.2em; margin-left: 4px; background: var(--leaf-accent); }
-.leaf .grip .knob { display: block; width: 10px; height: 10px; border-radius: 5px; background: var(--leaf-accent); }
+.flower .grip { display: inline-block; width: 10px; margin: 0 -5px; vertical-align: text-bottom; }
+.flower .grip.start { margin-top: -10px; }
+.flower .grip.end { margin-bottom: -10px; }
+.flower .grip .stem { display: block; width: 2px; height: 1.2em; margin-left: 4px; background: var(--flower-accent); }
+.flower .grip .knob { display: block; width: 10px; height: 10px; border-radius: 5px; background: var(--flower-accent); }
 .status { position: absolute; z-index: 1;
           height: 24px; line-height: 24px; padding: 0 16px; box-sizing: border-box;
-          font: 12px ui-monospace, monospace; color: var(--leaf-secondary); background: var(--chrome-bg);
-          border-top: 1px solid var(--leaf-separator); display: flex; gap: 16px; white-space: pre; }
+          font: 12px ui-monospace, monospace; color: var(--flower-secondary); background: var(--chrome-bg);
+          border-top: 1px solid var(--flower-separator); display: flex; gap: 16px; white-space: pre; }
 .status .grow { flex: 1; }
 .find { position: absolute; z-index: 1; box-sizing: border-box;
-        padding: 0 16px; background: var(--chrome-bg); border-bottom: 1px solid var(--leaf-separator);
+        padding: 0 16px; background: var(--chrome-bg); border-bottom: 1px solid var(--flower-separator);
         font: 13px system-ui, sans-serif; color: var(--chrome-text); }
 .find .find-row { display: flex; align-items: center; gap: 8px; height: 34px; }
-.find .label { width: 56px; color: var(--leaf-secondary); }
+.find .label { width: 56px; color: var(--flower-secondary); }
 .find .field { flex: 1; height: 22px; line-height: 22px; padding: 0 6px; white-space: pre;
                background: var(--field-bg); border: 1px solid var(--field-border); border-radius: 5px; overflow: hidden; }
-.find .field.focused { border-color: var(--leaf-accent); }
-.find .count { min-width: 72px; color: var(--leaf-secondary); text-align: right; }
+.find .field.focused { border-color: var(--flower-accent); }
+.find .count { min-width: 72px; color: var(--flower-secondary); text-align: right; }
 .find .btn { height: 22px; line-height: 22px; padding: 0 9px; background: var(--field-bg);
              border: 1px solid var(--field-border); border-radius: 5px; }
 .find .caret-in { display: inline-block; width: 0; height: 16px; vertical-align: text-bottom;
-                  border-left: 2px solid var(--leaf-accent); margin-right: -2px; }";
+                  border-left: 2px solid var(--flower-accent); margin-right: -2px; }";
 
 /// The custom properties a stylesheet uses, and those it sets for each
 /// appearance — so a host with chrome of its own, drawn in the editor's
@@ -330,7 +330,7 @@ fn render(ed: &Editor) -> Element {
         // cancelling the pointer event stops Blitz dispatching `mousedown`.
         // The element assistive tech is given the document's text as
         // (`access.rs`), by its id.
-        div { class: "leaf", id: crate::access::TEXT_ID, style: "width: {column}px; margin-left: {margin}px; position: relative; left: {slide}px",
+        div { class: "flower", id: crate::access::TEXT_ID, style: "width: {column}px; margin-left: {margin}px; position: relative; left: {slide}px",
             // The wheel and the trackpad, in CSS pixels: a line is 20.
             onwheel: move |e: WheelEvent| {
                 e.prevent_default();

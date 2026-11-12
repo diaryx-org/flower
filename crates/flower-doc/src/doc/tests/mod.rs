@@ -56,7 +56,7 @@ thread_local! {
 /// concurrent one, removed when the calling test ends. Nothing is written.
 fn fixture_path(file_name: &str) -> PathBuf {
     let dir = tempfile::Builder::new()
-        .prefix("leaf_test_")
+        .prefix("flower_test_")
         .tempdir()
         .unwrap();
     let p = dir.path().join(file_name);

@@ -317,7 +317,7 @@ pub fn pictures() -> PathBuf {
     // writing the pictures while another reads them reads half a picture.
     static CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
     let call = CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let dir = std::env::temp_dir().join(format!("leaf-parity-{}-{call}", std::process::id()));
+    let dir = std::env::temp_dir().join(format!("flower-parity-{}-{call}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let small = image::RgbImage::from_fn(120, 80, |x, y| {
         image::Rgb([(x * 2) as u8, (y * 3) as u8, 160])

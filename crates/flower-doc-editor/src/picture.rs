@@ -31,7 +31,7 @@ use crate::row::{PAD, Pointer, PointerSink, Target, press_mode};
 /// at its natural size — the Swift editor's Mermaid fence.
 const MAX_DIAGRAM: f32 = 600.0;
 
-/// The ink a formula is set in: the body text's, `--leaf-text`.
+/// The ink a formula is set in: the body text's, `--flower-text`.
 const INK_LIGHT: [u8; 4] = [0x26, 0x26, 0x26, 0xff];
 const INK_DARK: [u8; 4] = [0xdf, 0xdf, 0xdf, 0xff];
 
@@ -399,11 +399,11 @@ pub fn PictureBlock(block: Block) -> Element {
     let (w, h) = block.size;
     let caret = |past: bool| {
         (block.caret == Some(past)).then(|| {
-            rsx! { span { style: "flex: none; width: 0; height: {h}px; border-left: 2px solid var(--leaf-accent); margin-right: -2px;" } }
+            rsx! { span { style: "flex: none; width: 0; height: {h}px; border-left: 2px solid var(--flower-accent); margin-right: -2px;" } }
         })
     };
     let ring = if block.selected {
-        "outline: 3px solid var(--leaf-selection);"
+        "outline: 3px solid var(--flower-selection);"
     } else {
         ""
     };
@@ -412,12 +412,12 @@ pub fn PictureBlock(block: Block) -> Element {
             img { src: "{s.url}", style: "display: block; width: {w}px; height: {h}px; {ring}" }
         },
         Body::Pending => rsx! {
-            div { style: "width: {w}px; height: {h}px; border-radius: 6px; border: 1px dashed var(--leaf-tertiary); {ring}" }
+            div { style: "width: {w}px; height: {h}px; border-radius: 6px; border: 1px dashed var(--flower-tertiary); {ring}" }
         },
         Body::Error(message) => rsx! {
             div { style: "display: flex; align-items: center; padding: 0 10px; box-sizing: border-box;
-                          width: {w}px; height: {h}px; border-radius: 6px; border: 1px dashed var(--leaf-tertiary);
-                          font-size: 13px; color: var(--leaf-secondary); white-space: pre; overflow: hidden; {ring}",
+                          width: {w}px; height: {h}px; border-radius: 6px; border: 1px dashed var(--flower-tertiary);
+                          font-size: 13px; color: var(--flower-secondary); white-space: pre; overflow: hidden; {ring}",
                 "{message}"
             }
         },
